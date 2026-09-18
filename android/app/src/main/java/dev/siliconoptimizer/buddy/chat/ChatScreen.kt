@@ -74,6 +74,15 @@ fun ChatScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val expanded = remember { mutableStateOf(setOf<String>()) }
+    // A clock that only runs while something is being waited for, so the spinner can
+    // say how long it has been rather than sitting at zero.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(model.isSending) {
+        while (model.isSending) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
 
     val photoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -125,6 +134,7 @@ fun ChatScreen(
                     MessageBubble(
                         message = message,
                         waitingSince = if (message.isStreaming) model.sendingSince else null,
+                        now = now,
                         isReasoningExpanded = expanded.value.contains(message.id),
                         onToggleReasoning = {
                             expanded.value = if (expanded.value.contains(message.id)) {
@@ -214,6 +224,7 @@ private fun AttachmentThumb(dataUrl: String, onRemove: () -> Unit) {
 private fun MessageBubble(
     message: ChatMessage,
     waitingSince: Long?,
+    now: Long,
     isReasoningExpanded: Boolean,
     onToggleReasoning: () -> Unit,
     onCopy: () -> Unit,
@@ -309,7 +320,7 @@ private fun MessageBubble(
         if (message.isStreaming && message.content.isEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                val seconds = waitingSince?.let { (System.currentTimeMillis() - it) / 1000 }
+                val seconds = waitingSince?.let { (now - it) / 1000 }
                 Text(
                     if (seconds != null) "  Thinking… ${seconds}s" else "  Thinking…",
                     style = MaterialTheme.typography.bodySmall,

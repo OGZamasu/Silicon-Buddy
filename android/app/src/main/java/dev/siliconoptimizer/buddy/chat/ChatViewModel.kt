@@ -22,8 +22,15 @@ import kotlinx.coroutines.launch
  */
 class ChatViewModel(
     application: Application,
-    private val store: ConversationStore = ConversationStore(application),
+    private val store: ConversationStore,
 ) : AndroidViewModel(application) {
+
+    /**
+     * The constructor the default ViewModel factory looks for. A default argument would
+     * not do: the factory reflects for exactly `(Application)` and a synthesised
+     * constructor is not it — which crashed the app on its first launch.
+     */
+    constructor(application: Application) : this(application, ConversationStore(application))
 
     val conversations = mutableStateListOf<Conversation>()
     var current by mutableStateOf<Conversation?>(null)
