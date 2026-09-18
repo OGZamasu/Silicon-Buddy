@@ -53,6 +53,14 @@ public struct DashboardView: View {
             await reload()
             model.startLiveUpdates(using: app.transport)
         }
+        // Pairing happens in a sheet over this screen, so the first reading has to be
+        // triggered by the Mac arriving, not only by the screen appearing.
+        .onChange(of: app.config) { _, _ in
+            Task {
+                await reload()
+                model.startLiveUpdates(using: app.transport)
+            }
+        }
         .onDisappear { model.stopLiveUpdates() }
     }
 

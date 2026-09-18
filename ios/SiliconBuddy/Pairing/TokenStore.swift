@@ -13,8 +13,16 @@ public struct TokenStore: Sendable {
         self.service = service
     }
 
-    public enum StoreError: Error, Equatable {
+    public enum StoreError: Error, Equatable, LocalizedError {
         case keychain(OSStatus)
+
+        public var errorDescription: String? {
+            switch self {
+            case .keychain(let status):
+                let detail = SecCopyErrorMessageString(status, nil) as String?
+                return "Keychain error \(status)" + (detail.map { ": \($0)" } ?? "")
+            }
+        }
     }
 
     public func save(_ token: String, account: String = "default") throws {

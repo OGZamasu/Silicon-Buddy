@@ -27,8 +27,11 @@ public final class ChatModel {
     public private(set) var error: String?
 
     /// Whether the Mac answered `/chat/stream` and `/conversations`, learned by asking.
+    /// Conversations start out local: claiming they are synced before anything has
+    /// asked would be a promise the app cannot keep.
     public private(set) var usesStreaming = true
-    public private(set) var usesRemoteConversations = true
+    public private(set) var usesRemoteConversations = false
+    private var askedAboutConversations = false
 
     public var draft = ""
     public var attachments: [ChatAttachment] = []
@@ -36,6 +39,18 @@ public final class ChatModel {
     /// How much history to send. The Mac has the whole transcript when it stores the
     /// conversation; when the phone does, the prompt has to stay bounded.
     public var historyLimit = 24
+
+    /// A ceiling on the answer.
+    ///
+    /// Without one, a reasoning model asked a small question can think for ten minutes
+    /// and the phone shows a spinner the whole time — which is what happened the first
+    /// time this was pointed at a 27B. A generous cap is better than an open one: it is
+    /// the difference between a slow answer and no answer.
+    public var maxTokens = 2048
+
+    /// When the current reply was asked for, so the transcript can say how long it has
+    /// been rather than spinning silently.
+    public private(set) var sendingSince: Date?
 
     private let store: ConversationStore
     private var sendTask: Task<Void, Never>?
@@ -47,19 +62,23 @@ public final class ChatModel {
     // MARK: - Conversations
 
     public func loadConversations(using transport: (any ControlTransport)?) async {
-        if let transport, usesRemoteConversations {
+        if let transport, usesRemoteConversations || !askedAboutConversations {
+            askedAboutConversations = true
             do {
                 conversations = try await transport.conversations()
                 usesRemoteConversations = true
                 return
-            } catch let error as TransportError where error.isMissingRoute {
-                // The Mac has not grown conversations yet; the device keeps them.
-                usesRemoteConversations = false
             } catch {
+                // The Mac has not grown conversations yet; the device keeps them.
                 usesRemoteConversations = false
             }
         }
         conversations = await store.all().map(\.summary)
+        // A conversation started but not yet sent to is not in the store. Losing it from
+        // the list because another screen reloaded would be a small betrayal.
+        if let current, !conversations.contains(where: { $0.id == current.id }) {
+            conversations.insert(current.summary, at: 0)
+        }
     }
 
     public func newConversation(using transport: (any ControlTransport)?) async {
@@ -130,12 +149,14 @@ public final class ChatModel {
         conversation = conversation.titledFromFirstMessage()
         current = conversation
         isSending = true
+        sendingSince = Date()
         error = nil
 
         sendTask?.cancel()
         sendTask = Task { [weak self] in
             await self?.run(replyTo: placeholder.id, using: transport)
             self?.isSending = false
+            self?.sendingSince = nil
         }
     }
 
@@ -143,6 +164,7 @@ public final class ChatModel {
         sendTask?.cancel()
         sendTask = nil
         isSending = false
+        sendingSince = nil
         finishStreamingMessage(failure: "Stopped.")
     }
 
@@ -162,7 +184,7 @@ public final class ChatModel {
                 .suffix(historyLimit)
                 .map(\.wireMessage)
         )
-        let request = ControlAPI.ChatRequest(messages: history)
+        let request = ControlAPI.ChatRequest(messages: history, maxTokens: maxTokens)
 
         if usesStreaming {
             // First choice: the conversation route, so the Mac keeps the transcript.
@@ -219,6 +241,7 @@ public final class ChatModel {
                     tokensPerSecond: response.tokensPerSecond
                 )
                 message.isStreaming = false
+                message.failure = Self.truncationNote(for: message, limit: maxTokens)
             }
         } catch {
             let description = (error as? TransportError)?.localizedDescription
@@ -264,6 +287,7 @@ public final class ChatModel {
             update(messageID) {
                 $0.metrics = metrics
                 $0.isStreaming = false
+                $0.failure = Self.truncationNote(for: $0, limit: maxTokens) ?? $0.failure
             }
         case .failed(let message):
             update(messageID) {
@@ -272,6 +296,17 @@ public final class ChatModel {
             }
             error = message
         }
+    }
+
+    /// A reasoning model can spend its whole budget thinking and answer nothing. An
+    /// empty bubble would look like a bug; saying what happened is the honest version.
+    static func truncationNote(for message: ChatMessage, limit: Int) -> String? {
+        guard message.content.isEmpty,
+              let metrics = message.metrics,
+              metrics.generatedTokens >= limit
+        else { return nil }
+        return "The model spent all \(limit) tokens thinking and never got to an answer. "
+            + "Ask again more narrowly, or load a model that thinks less."
     }
 
     private func update(_ messageID: String, _ change: (inout ChatMessage) -> Void) {

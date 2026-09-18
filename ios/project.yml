@@ -20,12 +20,10 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    # The app talks to the owner's own Mac over the tailnet, and to 127.0.0.1 in the
-    # Simulator. Both are plain HTTP on a private network; there is no certificate to
-    # pin and no public endpoint to protect.
-    CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: ""
-    CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: NO
-    CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+    # Sign to run locally. An unsigned Simulator build has no entitlements at all, and
+    # the first thing that fails is the Keychain: SecItemAdd answers
+    # errSecMissingEntitlement (-34018) and pairing cannot store its token.
+    CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
 
 targets:
   SiliconBuddy:

@@ -81,6 +81,7 @@ public struct ChatView: View {
                         ForEach(conversation.messages) { message in
                             MessageBubble(
                                 message: message,
+                                waitingSince: message.isStreaming ? model.sendingSince : nil,
                                 isReasoningExpanded: expandedReasoning.contains(message.id),
                                 toggleReasoning: {
                                     if expandedReasoning.contains(message.id) {
@@ -233,6 +234,10 @@ struct AttachmentThumb: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
+    /// Set while this message is the one being waited for, so the spinner can say how
+    /// long it has been. A model that thinks for a minute is working, not broken, and
+    /// the difference has to be visible.
+    var waitingSince: Date?
     let isReasoningExpanded: Bool
     let toggleReasoning: () -> Void
 
@@ -292,8 +297,20 @@ struct MessageBubble: View {
             if message.isStreaming, message.content.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Thinking…").font(.caption).foregroundStyle(.secondary)
+                    if let waitingSince {
+                        TimelineView(.periodic(from: waitingSince, by: 1)) { context in
+                            Text(
+                                "Thinking… \(Int(context.date.timeIntervalSince(waitingSince)))s"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        }
+                    } else {
+                        Text("Thinking…").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                .accessibilityLabel("Waiting for the model")
             }
 
             if let failure = message.failure {
