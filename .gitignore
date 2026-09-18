@@ -1,0 +1,10 @@
+.DS_Store
+ios/build/
+ios/*.xcodeproj/xcuserdata/
+ios/DerivedData/
+android/.gradle/
+android/build/
+android/**/build/
+android/local.properties
+android/.idea/
+*.keystore
