@@ -1,0 +1,105 @@
+package dev.siliconoptimizer.buddy.transport
+
+import kotlinx.serialization.json.Json
+import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+
+/**
+ * Why a call to the Mac did not answer.
+ *
+ * The distinctions here are the ones a person can act on. "Unreachable" means turn
+ * Tailscale on; "the app isn't running" means open Silicon Optimizer; "unauthorized"
+ * means pair again. Collapsing those into one "network error" would make the app
+ * useless exactly when something is wrong.
+ */
+sealed class TransportError(message: String) : Exception(message) {
+    /** Nothing at that address answered: wrong host, tailnet down, Mac asleep. */
+    data class Unreachable(val host: String) :
+        TransportError("Can't reach $host. Check that Tailscale is on and the Mac is awake.")
+
+    /** The address answered but nothing is listening on the port. */
+    data object AppNotRunning :
+        TransportError("The Mac answered, but Silicon Optimizer isn't running on it.")
+
+    data object TimedOut : TransportError("The Mac took too long to answer.")
+
+    /** 401: the token is wrong, or the Mac revoked this device. */
+    data object Unauthorized :
+        TransportError("This device isn't paired any more. Pair it again from the Mac.")
+
+    /** 404 on a route this app knows about: that Mac has not shipped it yet. */
+    data class RouteUnavailable(val path: String) :
+        TransportError("This Mac doesn't have $path yet.")
+
+    /** 400 with the Mac's own explanation; most often "no model is loaded". */
+    data class BadRequest(val detail: String) : TransportError(detail)
+
+    /** 429: the Mac is already doing as much of this as it will do at once. */
+    data class Busy(val detail: String) : TransportError(detail)
+
+    data class Server(val status: Int, val detail: String) :
+        TransportError(if (detail.isBlank()) "The Mac returned an error ($status)." else detail)
+
+    data class Decoding(val detail: String) :
+        TransportError("The Mac's answer didn't match what this app expects: $detail")
+
+    data object NotConfigured : TransportError("No Mac is paired yet.")
+
+    data object Cancelled : TransportError("Cancelled.")
+
+    val isMissingRoute: Boolean get() = this is RouteUnavailable
+
+    /** What to offer the person, when there is something to offer. */
+    val recovery: String?
+        get() = when (this) {
+            is Unreachable -> "Open Tailscale, then pull to refresh."
+            is AppNotRunning -> "Open Silicon Optimizer on the Mac."
+            is Unauthorized -> "Settings, Silicon Buddy, Pair a device."
+            is BadRequest -> "Load a model from the Models tab."
+            else -> null
+        }
+
+    companion object {
+        private val lenient = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Maps what the socket layer says.
+         *
+         * [ConnectException] is the interesting one: the connection was actively
+         * refused, which means the host is there and the port is not — the Mac is awake
+         * and the app is closed.
+         */
+        fun from(error: IOException, host: String): TransportError = when (error) {
+            is SocketTimeoutException -> TimedOut
+            is ConnectException -> AppNotRunning
+            is UnknownHostException, is NoRouteToHostException -> Unreachable(host)
+            else -> {
+                val text = error.message.orEmpty()
+                when {
+                    text.contains("ECONNREFUSED", true) ||
+                        text.contains("refused", true) -> AppNotRunning
+                    text.contains("timed out", true) -> TimedOut
+                    else -> Unreachable(host)
+                }
+            }
+        }
+
+        /** Maps an HTTP status plus the Mac's error body. Null when the call succeeded. */
+        fun from(status: Int, body: String, path: String): TransportError? {
+            if (status in 200..299) return null
+            val detail = runCatching {
+                lenient.decodeFromString(ErrorResponse.serializer(), body).error
+            }.getOrElse { body.trim() }
+            return when (status) {
+                401, 403 -> Unauthorized
+                404 -> RouteUnavailable(path)
+                400 -> BadRequest(detail.ifBlank { "The Mac rejected the request." })
+                429 -> Busy(detail.ifBlank { "The Mac is busy." })
+                else -> Server(status, detail)
+            }
+        }
+    }
+}

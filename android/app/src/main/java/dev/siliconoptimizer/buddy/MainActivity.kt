@@ -1,0 +1,330 @@
+package dev.siliconoptimizer.buddy
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.siliconoptimizer.buddy.chat.ChatScreen
+import dev.siliconoptimizer.buddy.chat.ChatViewModel
+import dev.siliconoptimizer.buddy.dashboard.DashboardScreen
+import dev.siliconoptimizer.buddy.dashboard.DashboardViewModel
+import dev.siliconoptimizer.buddy.modelsui.ModelsScreen
+import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
+import dev.siliconoptimizer.buddy.pairing.PairingInvite
+import dev.siliconoptimizer.buddy.pairing.PairingScreen
+import dev.siliconoptimizer.buddy.ui.SiliconBuddyTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        // The QR is a link too: opening it here pairs without a camera at all.
+        val invite = intent?.data?.let { runCatching { PairingInvite.parse(it) }.getOrNull() }
+        setContent {
+            SiliconBuddyTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    BuddyApp(initialInvite = invite)
+                }
+            }
+        }
+    }
+}
+
+private enum class Destination(val label: String) {
+    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BuddyApp(initialInvite: PairingInvite? = null) {
+    val app: AppState = viewModel()
+    val dashboard: DashboardViewModel = viewModel()
+    val models: ModelsViewModel = viewModel()
+    val chat: ChatViewModel = viewModel()
+
+    var destination by remember { mutableStateOf(Destination.Dashboard) }
+    var pairing by remember { mutableStateOf(false) }
+    var openConversation by remember { mutableStateOf<String?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    LaunchedEffect(Unit) {
+        app.refreshReachability()
+        initialInvite?.let {
+            runCatching { app.pair(it) }.onFailure { pairing = true }
+        }
+    }
+
+    // Pairing happens over the dashboard, so the first reading has to be triggered by
+    // the Mac arriving, not only by the screen appearing.
+    LaunchedEffect(app.config) {
+        dashboard.refresh(app.transport, app)
+        dashboard.startLiveUpdates(app.transport)
+        models.refresh(app.transport)
+        chat.loadConversations(app.transport)
+    }
+
+    val windowWidth = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+    val wide = windowWidth >= 600
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        when (destination) {
+                            Destination.Dashboard -> "Silicon Buddy"
+                            Destination.Models -> "Models"
+                            Destination.Chat -> chat.current?.title ?: "Chat"
+                            Destination.Settings -> "Settings"
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                actions = {
+                    when (destination) {
+                        Destination.Dashboard -> IconButton(onClick = {
+                            app.refreshReachability()
+                            dashboard.refresh(app.transport, app)
+                        }) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        }
+                        Destination.Chat -> IconButton(onClick = {
+                            chat.newConversation()
+                            openConversation = chat.current?.id
+                        }) {
+                            Icon(Icons.Filled.Add, contentDescription = "New conversation")
+                        }
+                        else -> Unit
+                    }
+                },
+            )
+        },
+        bottomBar = {
+            if (!wide) {
+                NavigationBar {
+                    Destination.entries.forEach { entry ->
+                        NavigationBarItem(
+                            selected = destination == entry,
+                            onClick = { destination = entry },
+                            icon = { Icon(iconFor(entry), contentDescription = null) },
+                            label = { Text(entry.label) },
+                        )
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+            if (wide) {
+                // A tablet has room for the conversation list beside the transcript.
+                NavigationRail {
+                    Destination.entries.forEach { entry ->
+                        NavigationRailItem(
+                            selected = destination == entry,
+                            onClick = { destination = entry },
+                            icon = { Icon(iconFor(entry), contentDescription = null) },
+                            label = { Text(entry.label) },
+                        )
+                    }
+                }
+                if (destination == Destination.Chat) {
+                    Column(modifier = Modifier.width(260.dp).fillMaxSize()) {
+                        ConversationList(chat, app) { openConversation = it }
+                    }
+                    HorizontalDivider()
+                }
+            }
+
+            when (destination) {
+                Destination.Dashboard -> DashboardScreen(
+                    app = app,
+                    model = dashboard,
+                    onPair = { pairing = true },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Destination.Models -> ModelsScreen(app, models, Modifier.fillMaxSize())
+                Destination.Chat -> {
+                    if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
+                        ConversationList(chat, app) { openConversation = it }
+                    } else {
+                        LaunchedEffect(openConversation) {
+                            openConversation?.let { chat.open(it, app.transport) }
+                        }
+                        ChatScreen(app, chat, Modifier.fillMaxSize())
+                    }
+                }
+                Destination.Settings -> SettingsScreen(app, chat) { pairing = true }
+            }
+        }
+    }
+
+    if (pairing) {
+        ModalBottomSheet(onDismissRequest = { pairing = false }, sheetState = sheetState) {
+            PairingScreen(app = app, onDone = { pairing = false })
+        }
+    }
+}
+
+private fun iconFor(destination: Destination) = when (destination) {
+    Destination.Dashboard -> Icons.Filled.Speed
+    Destination.Models -> Icons.Filled.Layers
+    Destination.Chat -> Icons.AutoMirrored.Filled.Chat
+    Destination.Settings -> Icons.Filled.Settings
+}
+
+@Composable
+private fun ConversationList(
+    chat: ChatViewModel,
+    app: AppState,
+    onOpen: (String) -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(chat.conversations, key = { it.id }) { conversation ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+            ) {
+                TextButton(onClick = { onOpen(conversation.id) }) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(conversation.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "${conversation.messageCount} messages",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            HorizontalDivider()
+        }
+        item {
+            Text(
+                chat.storageNote,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(12.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(app: AppState, chat: ChatViewModel, onPair: () -> Unit) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Text("Mac", style = MaterialTheme.typography.titleMedium)
+            SettingRow("Name", app.macDisplayName)
+            app.config?.let {
+                SettingRow("Address", it.displayAddress)
+                SettingRow(
+                    "Token",
+                    if (app.tokenIsEncrypted) {
+                        "Stored encrypted on this device"
+                    } else {
+                        "Stored on this device (keystore unavailable)"
+                    },
+                )
+                it.deviceID?.let { id -> SettingRow("Device id", id) }
+            }
+            SettingRow("Status", app.reachability.headline)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onPair) {
+                    Text(if (app.isPaired) "Pair with another Mac" else "Pair with a Mac")
+                }
+                if (app.isPaired) {
+                    TextButton(onClick = { app.forget() }) { Text("Forget this Mac") }
+                }
+            }
+        }
+        item {
+            HorizontalDivider()
+            Text("What this Mac supports", style = MaterialTheme.typography.titleMedium)
+            SettingRow(
+                "Streaming replies",
+                if (chat.usesStreaming) "Using /chat/stream" else "Falling back to /chat",
+            )
+            SettingRow(
+                "Conversations",
+                if (chat.usesRemoteConversations) "On the Mac" else "On this device",
+            )
+            Text(
+                "Silicon Buddy asks for the newer routes and falls back quietly when a Mac " +
+                    "doesn't have them yet. Nothing here needs configuring.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item {
+            HorizontalDivider()
+            Text("This device", style = MaterialTheme.typography.titleMedium)
+            SettingRow("Name", AppState.deviceName)
+            SettingRow("Platform", AppState.platform)
+            SettingRow("App", BuildConfig.VERSION_NAME)
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}

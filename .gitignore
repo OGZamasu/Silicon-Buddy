@@ -9,3 +9,4 @@ android/local.properties
 android/.idea/
 *.keystore
 ios/SiliconBuddy.xcodeproj/
+android/app/build/
