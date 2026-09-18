@@ -1,0 +1,9 @@
+{
+  "cpuUtilization" : 0.6448663853727145,
+  "gpuUtilization" : 0.98,
+  "memoryPressure" : "Normal",
+  "memoryTotalBytes" : 38654705664,
+  "memoryUsedBytes" : 34462220288,
+  "memoryWiredBytes" : 15536111616,
+  "swapUsedBytes" : 13269336064
+}

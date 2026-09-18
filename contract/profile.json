@@ -1,0 +1,12 @@
+{
+  "chip" : "Apple M3 Max",
+  "diskFreeBytes" : 29532500032,
+  "efficiencyCores" : 4,
+  "generation" : "M3",
+  "gpuCores" : 30,
+  "memoryBandwidthGBps" : 300,
+  "modelBudgetBytes" : 28604482191,
+  "neuralEngineCores" : 16,
+  "performanceCores" : 10,
+  "totalMemoryBytes" : 38654705664
+}

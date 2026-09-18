@@ -1,0 +1,47 @@
+{
+  "peers" : [
+    {
+      "baseURL" : "http:\/\/100.118.191.121:8790",
+      "capabilities" : [
+        {
+          "id" : "image-to-mesh",
+          "kind" : "mesh",
+          "ready" : true
+        },
+        {
+          "id" : "retopologize",
+          "kind" : "retopo",
+          "ready" : true
+        },
+        {
+          "id" : "portrait-animate",
+          "kind" : "portrait-animate",
+          "ready" : true
+        },
+        {
+          "id" : "text-to-video",
+          "kind" : "video",
+          "ready" : true
+        },
+        {
+          "id" : "text-to-image",
+          "kind" : "image",
+          "ready" : true
+        },
+        {
+          "id" : "talking-head",
+          "kind" : "talking-head",
+          "ready" : true
+        },
+        {
+          "id" : "llm-qwen3.8-27b",
+          "kind" : "llm",
+          "ready" : true
+        }
+      ],
+      "name" : "silicon-node",
+      "reachable" : true
+    }
+  ],
+  "polledSecondsAgo" : 7.284527897834778
+}

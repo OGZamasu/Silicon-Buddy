@@ -1,0 +1,500 @@
+[
+  {
+    "author" : "Black Forest Labs",
+    "blocks" : 57,
+    "defaultSteps" : 4,
+    "id" : "flux1-schnell",
+    "isGated" : true,
+    "license" : "Apache-2.0",
+    "name" : "FLUX.1 schnell",
+    "parameters" : "17B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 26.6 GB whatever precision was asked for. Saving a quantized copy removes that spike.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 27347198735,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 26929481820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 9823625036
+        },
+        {
+          "detail" : "4 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 24803746575
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 27347198735
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 4,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Will swap",
+      "width" : 512
+    },
+    "summary" : "Distilled for speed: four steps is enough for a finished image, where most models need twenty or more. The best starting point on Apple Silicon, and permissively licensed."
+  },
+  {
+    "author" : "Black Forest Labs",
+    "blocks" : 25,
+    "defaultSteps" : 8,
+    "id" : "flux2-klein-4b",
+    "isGated" : false,
+    "license" : "FLUX.2 Community Licence",
+    "name" : "FLUX.2 klein 4B",
+    "parameters" : "8.2B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 768,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 12.6 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first."
+      ],
+      "peakBytes" : 14399804255,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 12967606820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 9079741556
+        },
+        {
+          "detail" : "8 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 8667599711
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 14399804255
+        }
+      ],
+      "quantization" : "MLX-8bit",
+      "steps" : 8,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Comfortable",
+      "width" : 768
+    },
+    "summary" : "A quarter the size of schnell with a far smaller text encoder, so it fits where nothing else will. The right choice on 16 GB machines."
+  },
+  {
+    "author" : "Black Forest Labs",
+    "blocks" : 32,
+    "defaultSteps" : 8,
+    "id" : "flux2-klein-9b",
+    "isGated" : true,
+    "license" : "FLUX.2 Community Licence",
+    "name" : "FLUX.2 klein 9B",
+    "parameters" : "12B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 19.5 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first."
+      ],
+      "peakBytes" : 21402198736,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 19789044320
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 6851937536
+        },
+        {
+          "detail" : "8 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 18867266256
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 21402198736
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 8,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Tight",
+      "width" : 512
+    },
+    "summary" : "Noticeably stronger than the 4B at roughly twice the memory."
+  },
+  {
+    "author" : "Black Forest Labs",
+    "blocks" : 57,
+    "defaultSteps" : 20,
+    "id" : "flux1-dev",
+    "isGated" : true,
+    "license" : "FLUX.1 Non-Commercial Licence",
+    "name" : "FLUX.1 dev",
+    "parameters" : "17B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 26.6 GB whatever precision was asked for. Saving a quantized copy removes that spike.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 27347198735,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 26929481820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 9823625036
+        },
+        {
+          "detail" : "20 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 24803746575
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 27347198735
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 20,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Will swap",
+      "width" : 512
+    },
+    "summary" : "The highest quality of the FLUX.1 family, at roughly five times the steps of schnell. Non-commercial licence, and gated on Hugging Face."
+  },
+  {
+    "author" : "Black Forest Labs \/ Krea",
+    "blocks" : 57,
+    "defaultSteps" : 20,
+    "id" : "flux1-krea-dev",
+    "isGated" : true,
+    "license" : "FLUX.1 Non-Commercial Licence",
+    "name" : "FLUX.1 Krea dev",
+    "parameters" : "17B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 26.6 GB whatever precision was asked for. Saving a quantized copy removes that spike.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 27347198735,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 26929481820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 9823625036
+        },
+        {
+          "detail" : "20 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 24803746575
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 27347198735
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 20,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Will swap",
+      "width" : 512
+    },
+    "summary" : "A dev finetune tuned against Krea's own aesthetic preference data for more photorealistic output. Same cost as dev; non-commercial licence, gated."
+  },
+  {
+    "author" : "Qwen",
+    "blocks" : 60,
+    "defaultSteps" : 20,
+    "id" : "qwen-image",
+    "isGated" : false,
+    "license" : "Apache-2.0",
+    "name" : "Qwen-Image",
+    "parameters" : "29B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 45.6 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 45931231820,
+      "peakPhase" : "Load",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 45931231820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 16563500036
+        },
+        {
+          "detail" : "20 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 42314434076
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 44857886236
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 20,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Won't fit",
+      "width" : 512
+    },
+    "summary" : "A 20B-parameter model with unusually strong text rendering inside the image itself. Its text encoder is a full 8B vision-language model, which is most of what it costs to load."
+  },
+  {
+    "author" : "Tongyi-MAI",
+    "blocks" : 30,
+    "defaultSteps" : 8,
+    "id" : "z-image-turbo",
+    "isGated" : false,
+    "license" : "Apache-2.0",
+    "name" : "Z-Image Turbo",
+    "parameters" : "10B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 16.7 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 17008169320,
+      "peakPhase" : "Load",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 17008169320
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 11238250036
+        },
+        {
+          "detail" : "8 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 13074886335
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 15611948735
+        }
+      ],
+      "quantization" : "MLX-8bit",
+      "steps" : 8,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Comfortable",
+      "width" : 512
+    },
+    "summary" : "Distilled for speed at 6B parameters total — the smallest model in this catalogue by a wide margin, and correspondingly the cheapest to load."
+  },
+  {
+    "author" : "Tongyi-MAI",
+    "blocks" : 30,
+    "defaultSteps" : 20,
+    "id" : "z-image",
+    "isGated" : false,
+    "license" : "Apache-2.0",
+    "name" : "Z-Image",
+    "parameters" : "10B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 16.7 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 17008169320,
+      "peakPhase" : "Load",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 17008169320
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 11238250036
+        },
+        {
+          "detail" : "20 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 13074886335
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 15611948735
+        }
+      ],
+      "quantization" : "MLX-8bit",
+      "steps" : 20,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Comfortable",
+      "width" : 512
+    },
+    "summary" : "The undistilled base Z-Image checkpoint Turbo was distilled from. Same size, more steps."
+  },
+  {
+    "author" : "Baidu",
+    "blocks" : 36,
+    "defaultSteps" : 8,
+    "id" : "ernie-image-turbo",
+    "isGated" : false,
+    "license" : "Apache-2.0",
+    "name" : "ERNIE-Image Turbo",
+    "parameters" : "12B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 18.3 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 19420241951,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 18613856820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 7067205752
+        },
+        {
+          "detail" : "8 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 16885309471
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 19420241951
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 8,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Tight",
+      "width" : 512
+    },
+    "summary" : "Baidu's distilled, fast image model. Text-heavy prompts are its particular strength."
+  },
+  {
+    "author" : "Baidu",
+    "blocks" : 36,
+    "defaultSteps" : 20,
+    "id" : "ernie-image",
+    "isGated" : false,
+    "license" : "Apache-2.0",
+    "name" : "ERNIE-Image",
+    "parameters" : "12B",
+    "recommendation" : {
+      "budgetBytes" : 23487621365,
+      "height" : 512,
+      "notes" : [
+        "Weights are downloaded at full precision and quantized one component at a time, so loading peaks at 18.3 GB whatever precision was asked for. This runtime cannot load a quantized copy back for this model family, so the spike applies to every run, not just the first.",
+        "This estimate is extrapolated. The memory model was fitted to measured FLUX.2 klein runs; nothing in this model's family has been measured against it, so treat the figure as an order of magnitude rather than a number."
+      ],
+      "peakBytes" : 19420241951,
+      "peakPhase" : "Decode",
+      "phases" : [
+        {
+          "detail" : "Reads full-precision weights and quantizes them in memory",
+          "name" : "Load",
+          "residentBytes" : 18613856820
+        },
+        {
+          "detail" : "Text encoders turn the prompt into conditioning",
+          "name" : "Encode",
+          "residentBytes" : 7067205752
+        },
+        {
+          "detail" : "20 steps through the transformer",
+          "name" : "Denoise",
+          "residentBytes" : 16885309471
+        },
+        {
+          "detail" : "VAE reconstructs the image",
+          "name" : "Decode",
+          "residentBytes" : 19420241951
+        }
+      ],
+      "quantization" : "MLX-4bit",
+      "steps" : 20,
+      "suggestions" : [
+
+      ],
+      "verdict" : "Tight",
+      "width" : 512
+    },
+    "summary" : "The undistilled base ERNIE-Image checkpoint Turbo was distilled from."
+  }
+]

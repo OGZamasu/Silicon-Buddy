@@ -1,0 +1,65 @@
+{
+  "capabilities" : [
+    {
+      "detail" : "No model loaded; load one from the Models tab.",
+      "id" : "llm",
+      "kind" : "llm",
+      "ready" : false
+    },
+    {
+      "detail" : "MFLUX ready (FLUX family)",
+      "id" : "image-flux",
+      "kind" : "image",
+      "ready" : true
+    },
+    {
+      "detail" : "Ready to go.",
+      "id" : "trellis2-4b",
+      "kind" : "mesh",
+      "peak_gb" : 19.327352832,
+      "ready" : true
+    },
+    {
+      "detail" : "Ready to go — runs natively on Apple Silicon.",
+      "id" : "hunyuan3d-2-mini",
+      "kind" : "mesh",
+      "peak_gb" : 5.5836672,
+      "ready" : true
+    },
+    {
+      "detail" : "Ready to go — runs natively on Apple Silicon.",
+      "id" : "hunyuan3d-2-turbo",
+      "kind" : "mesh",
+      "peak_gb" : 7.8381056,
+      "ready" : true
+    },
+    {
+      "detail" : "Not available yet — no one has made a version of this one that runs on a Mac. It's listed so you can see what's coming.",
+      "id" : "triposr",
+      "kind" : "mesh",
+      "peak_gb" : 4.294967296,
+      "ready" : false
+    },
+    {
+      "detail" : "Not available yet — no one has made a version of this one that runs on a Mac. It's listed so you can see what's coming.",
+      "id" : "stable-fast-3d",
+      "kind" : "mesh",
+      "peak_gb" : 5.36870912,
+      "ready" : false
+    }
+  ],
+  "metrics" : {
+    "gpu_util_pct" : 37,
+    "headroom_gb" : 28.604482191,
+    "memory_used_pct" : 77,
+    "queue_depth" : 0
+  },
+  "name" : "Christopher’s MacBook Pro",
+  "platform" : "macos-apple-silicon",
+  "profile" : {
+    "bandwidth_gbps" : 300,
+    "chip" : "Apple M3 Max",
+    "gpu_cores" : 30,
+    "memory_gb" : 38.654705664
+  }
+}
