@@ -16,11 +16,27 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // ML Kit's barcode scanner — the QR reader on the pairing screen — bundles
+            // `libbarhopper_v3.so`, and it arrives for four ABIs: 19 MB, of which 11.6 MB
+            // is x86 and x86_64. Every machine this project targets is ARM: the S24
+            // Ultra, the iPad mini, and the Apple Silicon Mac whose emulators are
+            // arm64 too. Revert this line if an Intel emulator or an Intel CI runner is
+            // ever wanted — nothing else depends on it.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Most of this APK is code nothing calls: `material-icons-extended` alone
+            // puts about ten thousand icon classes in the dex for the two dozen this app
+            // draws. Unshrunk, release came out at 75 MB. See `proguard-rules.pro` for
+            // the handful of things that have to survive R8 — the wire types especially,
+            // which are reached only by name through kotlinx.serialization.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
