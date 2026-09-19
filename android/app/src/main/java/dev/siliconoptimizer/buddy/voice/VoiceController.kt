@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import dev.siliconoptimizer.buddy.reach.RecognitionRoute
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.reach.VoiceEffect
 import dev.siliconoptimizer.buddy.reach.VoiceEvent
@@ -43,26 +44,23 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
         private set
 
     /**
-     * True when this phone recognises speech without sending the audio anywhere.
+     * Where the audio is going, decided by which recogniser was actually created.
      *
-     * Set from which recogniser was actually created, not from the SDK version. Below
-     * API 33 there is no on-device recogniser to create, and `EXTRA_PREFER_OFFLINE` is
-     * a preference the engine is free to ignore — so "offline" cannot be claimed, only
-     * asked for, and this stays false.
+     * Below API 33 there is no on-device recogniser to create, and `EXTRA_PREFER_OFFLINE`
+     * is a preference the engine is free to ignore — so "offline" cannot be claimed,
+     * only asked for. See [RecognitionRoute].
      */
-    var isOnDevice by mutableStateOf(false)
+    var route by mutableStateOf(RecognitionRoute.Network)
         private set
+
+    /** True when this phone recognises speech without sending the audio anywhere. */
+    val isOnDevice: Boolean get() = route.keepsAudioOnDevice
 
     /**
      * What the caption says about where the audio is going, for whoever is holding the
      * button down.
      */
-    val recognitionNote: String
-        get() = if (isOnDevice) {
-            "Listening — recognised on this phone"
-        } else {
-            "Listening — sent to Google for recognition"
-        }
+    val recognitionNote: String get() = route.note
 
     /** Called with the finished question. The chat screen sends it. */
     var onAsk: ((String) -> Unit)? = null
@@ -140,16 +138,22 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
         // would undo the point of the app. `createOnDeviceSpeechRecognizer` is the only
         // way to be sure, because `EXTRA_PREFER_OFFLINE` is a hint the engine may
         // ignore without saying so.
-        val onDevice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
-            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
-                .getOrDefault(false)
-        val recogniser = if (onDevice) {
+        val offersOnDevice =
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
+                    .getOrDefault(false)
+        // Which recogniser we ended up with, not which one we hoped for: a phone that
+        // advertises the feature can still fail to build one, and the caption below the
+        // button is a promise about where a recording of the owner's voice goes.
+        var builtOnDevice = false
+        val recogniser = if (offersOnDevice) {
             runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }
+                .onSuccess { builtOnDevice = true }
                 .getOrElse { SpeechRecognizer.createSpeechRecognizer(context) }
         } else {
             SpeechRecognizer.createSpeechRecognizer(context)
         }
-        isOnDevice = onDevice
+        route = RecognitionRoute.of(builtOnDevice)
         this.recogniser = recogniser
         recogniser.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = Unit
@@ -196,7 +200,6 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
         }
-        isOnDevice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
         recogniser.startListening(intent)
     }
 
