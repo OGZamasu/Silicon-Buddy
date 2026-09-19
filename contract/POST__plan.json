@@ -1,0 +1,47 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/plan",
+  "request" : {
+    "contextLength" : 16384,
+    "modelID" : "qwen3-coder-30b",
+    "quantization" : "Q4_K_M"
+  },
+  "response" : {
+    "budgetBytes" : 29200000000,
+    "computeBytes" : 325000000,
+    "expertsBytes" : 0,
+    "kvCacheBytes" : 1073741824,
+    "notes" : [
+      "Measured on this Mac's own disk speed."
+    ],
+    "residentBytes" : 21800000000,
+    "streamedFromDiskBytes" : 0,
+    "suggestions" : [
+      {
+        "cost" : "Shorter memory in long chats",
+        "detail" : "8K instead of 16K frees half a gigabyte.",
+        "savingBytes" : 536870912,
+        "title" : "Halve the context"
+      }
+    ],
+    "verdict" : "fits",
+    "weightsBytes" : 20401094656
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "Will this fit at this context, and what would you change?"
+}

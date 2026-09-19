@@ -53,6 +53,7 @@ import dev.siliconoptimizer.buddy.dashboard.DashboardScreen
 import dev.siliconoptimizer.buddy.dashboard.DashboardViewModel
 import dev.siliconoptimizer.buddy.modelsui.ModelsScreen
 import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
+import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
 import dev.siliconoptimizer.buddy.ui.SiliconBuddyTheme
@@ -84,6 +85,7 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
     val dashboard: DashboardViewModel = viewModel()
     val models: ModelsViewModel = viewModel()
     val chat: ChatViewModel = viewModel()
+    val events: EventFeed = viewModel()
 
     var destination by remember { mutableStateOf(Destination.Dashboard) }
     var pairing by remember { mutableStateOf(false) }
@@ -92,18 +94,30 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
 
     LaunchedEffect(Unit) {
         app.refreshReachability()
-        initialInvite?.let {
-            runCatching { app.pair(it) }.onFailure { pairing = true }
-        }
+        // A link is a request, not an instruction: anything on the device can open a
+        // URL in this app. It only ever gets as far as asking.
+        initialInvite?.let { app.pendingInvite = it }
     }
 
     // Pairing happens over the dashboard, so the first reading has to be triggered by
-    // the Mac arriving, not only by the screen appearing.
-    LaunchedEffect(app.config) {
+    // the Mac arriving — and a different Mac means everything on screen belongs to the
+    // wrong machine.
+    LaunchedEffect(app.connectionGeneration) {
+        dashboard.reset()
+        models.reset()
         dashboard.refresh(app.transport, app)
         dashboard.startLiveUpdates(app.transport)
         models.refresh(app.transport)
         chat.loadConversations(app.transport)
+        events.start(app.transport)
+    }
+
+    // What the Mac pushes, when it can push.
+    LaunchedEffect(events.status) {
+        events.status?.let { dashboard.apply(it) }
+    }
+    LaunchedEffect(events.mustPoll) {
+        dashboard.pollsStatus = events.mustPoll
     }
 
     val windowWidth = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
@@ -183,10 +197,11 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
                 Destination.Dashboard -> DashboardScreen(
                     app = app,
                     model = dashboard,
+                    events = events,
                     onPair = { pairing = true },
                     modifier = Modifier.fillMaxSize(),
                 )
-                Destination.Models -> ModelsScreen(app, models, Modifier.fillMaxSize())
+                Destination.Models -> ModelsScreen(app, models, events, Modifier.fillMaxSize())
                 Destination.Chat -> {
                     if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
                         ConversationList(chat, app) { openConversation = it }
@@ -197,7 +212,7 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
                         ChatScreen(app, chat, Modifier.fillMaxSize())
                     }
                 }
-                Destination.Settings -> SettingsScreen(app, chat) { pairing = true }
+                Destination.Settings -> SettingsScreen(app, chat, events) { pairing = true }
             }
         }
     }
@@ -206,6 +221,20 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
         ModalBottomSheet(onDismissRequest = { pairing = false }, sheetState = sheetState) {
             PairingScreen(app = app, onDone = { pairing = false })
         }
+    }
+
+    // A code that arrived from a QR or a link: named, and agreed to, before anything
+    // is dialled — and twice over when it would replace the Mac already paired.
+    app.pendingInvite?.let { invite ->
+        PairingConfirmation(
+            app = app,
+            invite = invite,
+            onDismiss = { app.pendingInvite = null },
+            onNeedsAdvanced = {
+                app.pendingInvite = null
+                pairing = true
+            },
+        )
     }
 }
 
@@ -254,7 +283,12 @@ private fun ConversationList(
 }
 
 @Composable
-private fun SettingsScreen(app: AppState, chat: ChatViewModel, onPair: () -> Unit) {
+private fun SettingsScreen(
+    app: AppState,
+    chat: ChatViewModel,
+    events: EventFeed,
+    onPair: () -> Unit,
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -275,6 +309,19 @@ private fun SettingsScreen(app: AppState, chat: ChatViewModel, onPair: () -> Uni
                 it.deviceID?.let { id -> SettingRow("Device id", id) }
             }
             SettingRow("Status", app.reachability.headline)
+            SettingRow(
+                "This device may",
+                if (app.canControl) "Control the Mac" else "Chat and read only",
+            )
+            if (!app.canStoreTokenSecurely) {
+                Text(
+                    "This device can't store the token securely — its keystore is " +
+                        "unavailable — so pairing lasts only until the app closes. " +
+                        "Pair again when you reopen it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onPair) {
                     Text(if (app.isPaired) "Pair with another Mac" else "Pair with a Mac")
@@ -295,9 +342,21 @@ private fun SettingsScreen(app: AppState, chat: ChatViewModel, onPair: () -> Uni
                 "Conversations",
                 if (chat.usesRemoteConversations) "On the Mac" else "On this device",
             )
+            SettingRow(
+                "Live events",
+                when {
+                    events.isLive -> "Streaming from /events"
+                    events.mustPoll -> "Polling — this Mac has no /events"
+                    else -> "Not started"
+                },
+            )
             Text(
-                "Silicon Buddy asks for the newer routes and falls back quietly when a Mac " +
-                    "doesn't have them yet. Nothing here needs configuring.",
+                if (app.canControl) {
+                    "Silicon Buddy asks for the newer routes and falls back quietly when a " +
+                        "Mac doesn't have them yet. Nothing here needs configuring."
+                } else {
+                    app.scope.explanation
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

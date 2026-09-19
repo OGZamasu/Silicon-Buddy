@@ -23,7 +23,12 @@ data class ServerConfig(
     val macName: String? = null,
     /** The id the Mac minted for this device at pairing, when it did. */
     val deviceID: String? = null,
+    /** What the owner granted this device. An early Mac says nothing, which means full. */
+    val scope: DeviceScope = DeviceScope.Full,
 ) {
+    /** Whether this device may change what the Mac is running. */
+    val canControl: Boolean get() = scope.canControl
+
     val displayAddress: String get() = "$host:$port"
 
     fun url(path: String, query: Map<String, String> = emptyMap()): URL {
@@ -66,7 +71,11 @@ interface ControlTransport {
     suspend fun conversations(): List<ConversationSummary>
     suspend fun createConversation(title: String?): ConversationSummary
     suspend fun conversation(id: String): ConversationDetail
-    fun sendMessage(conversationID: String, message: ChatMessageWire): Flow<ChatStreamEvent>
+    fun sendMessage(
+        conversationID: String,
+        message: ChatMessageWire,
+        maxTokens: Int? = null,
+    ): Flow<ChatStreamEvent>
 }
 
 /** The real thing: HttpURLConnection against the Mac's tiny HTTP server. */
@@ -89,6 +98,11 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         accept: String = "application/json",
         readTimeoutMs: Int = 30_000,
     ): HttpURLConnection {
+        // The one place every request passes through. A host that got into a
+        // ServerConfig some other way still never gets dialled.
+        if (!TailnetHost.isAllowed(config.host)) {
+            throw TransportError.Forbidden(TailnetHost.EXPLANATION)
+        }
         if (authorized && config.token.isEmpty()) throw TransportError.NotConfigured
         val connection = config.url(path, query).openConnection() as HttpURLConnection
         connection.requestMethod = method
@@ -194,10 +208,18 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
 
     override suspend fun pair(code: String, deviceName: String, platform: String): PairResponse {
         val body = json.encodeToString(PairRequest(code, deviceName, platform))
-        return decode(
-            send("POST", "/buddy/pair", body = body, authorized = false, readTimeoutMs = 20_000),
-            "/buddy/pair",
-        )
+        return try {
+            decode(
+                send("POST", "/buddy/pair", body = body, authorized = false, readTimeoutMs = 20_000),
+                "/buddy/pair",
+            )
+        } catch (error: TransportError.Unauthorized) {
+            // A Mac without this route rejects the unauthenticated request before it
+            // ever looks at the path: unknown routes answer 401 to a caller with no
+            // token, and 404 only to one with a good one. A Mac that *has* /buddy/pair
+            // can never answer 401 to it, so this is "that Mac is too old".
+            throw TransportError.RouteUnavailable("/buddy/pair")
+        }
     }
 
     override fun chatStream(request: ChatRequest): Flow<ChatStreamEvent> =
@@ -206,9 +228,14 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
     override fun sendMessage(
         conversationID: String,
         message: ChatMessageWire,
+        maxTokens: Int?,
     ): Flow<ChatStreamEvent> = chatEvents(
         "/conversations/$conversationID/messages",
-        json.encodeToString(ChatRequest(listOf(message))),
+        json.encodeToString(
+            NewMessageRequest(
+                content = message.content, images = message.images, maxTokens = maxTokens,
+            ),
+        ),
     )
 
     private fun chatEvents(path: String, body: String): Flow<ChatStreamEvent> =
@@ -231,18 +258,47 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             }
         }
 
+    /**
+     * `GET /events`, kept open.
+     *
+     * A long-lived stream is a stream that will drop: a sleeping phone, a tailnet blip,
+     * a Mac that restarts. So this reconnects with a growing delay rather than ending,
+     * and carries `Last-Event-ID` back so a Mac that numbers its events can resume. It
+     * ends for one reason only — the route is not there — which is what tells the caller
+     * to go back to polling.
+     */
     override fun events(): Flow<ServerEvent> = kotlinx.coroutines.flow.flow {
-        stream("GET", "/events", null, readTimeoutMs = 0).collect { event ->
-            when (event.name) {
-                "status" -> runCatching { json.decodeFromString<Status>(event.data) }
-                    .getOrNull()?.let { emit(ServerEvent.StatusChanged(it)) }
-                "download" -> runCatching { json.decodeFromString<DownloadProgress>(event.data) }
-                    .getOrNull()?.let { emit(ServerEvent.Download(it)) }
-                "job" -> runCatching { json.decodeFromString<JobProgress>(event.data) }
-                    .getOrNull()?.let { emit(ServerEvent.Job(it)) }
-                "heartbeat", "ping" -> emit(ServerEvent.Heartbeat)
-                else -> Unit
+        var lastEventID: String? = null
+        var attempt = 0
+        while (true) {
+            try {
+                stream(
+                    "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
+                ).collect { event ->
+                    attempt = 0
+                    event.id?.let { lastEventID = it }
+                    when (event.name) {
+                        "status" -> runCatching { json.decodeFromString<Status>(event.data) }
+                            .getOrNull()?.let { emit(ServerEvent.StatusChanged(it)) }
+                        "download" -> runCatching {
+                            json.decodeFromString<DownloadProgress>(event.data)
+                        }.getOrNull()?.let { emit(ServerEvent.Download(it)) }
+                        "job" -> runCatching { json.decodeFromString<JobProgress>(event.data) }
+                            .getOrNull()?.let { emit(ServerEvent.Job(it)) }
+                        "heartbeat", "ping" -> emit(
+                            ServerEvent.Beat(
+                                runCatching { json.decodeFromString<Heartbeat>(event.data) }
+                                    .getOrNull()?.at,
+                            ),
+                        )
+                        else -> Unit
+                    }
+                }
+            } catch (error: TransportError) {
+                if (error.isMissingRoute || error is TransportError.Unauthorized) throw error
             }
+            attempt = minOf(attempt + 1, 6)
+            kotlinx.coroutines.delay(minOf(30_000L, 1000L shl (attempt - 1)))
         }
     }
 
@@ -256,6 +312,7 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         path: String,
         body: String?,
         readTimeoutMs: Int = 900_000,
+        lastEventID: String? = null,
     ): Flow<SseEvent> = kotlinx.coroutines.flow.flow {
         var connection: HttpURLConnection? = null
         try {
@@ -263,6 +320,7 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                 method, path, body = body,
                 accept = "text/event-stream", readTimeoutMs = readTimeoutMs,
             )
+            lastEventID?.let { connection.setRequestProperty("Last-Event-ID", it) }
             val status = connection.responseCode
             if (status !in 200..299) {
                 val text = connection.errorStream?.bufferedReader()

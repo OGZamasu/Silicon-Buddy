@@ -28,6 +28,12 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     private(set) var streamCallCount = 0
     private(set) var lastChatRequest: ControlAPI.ChatRequest?
     private(set) var lastSentMessage: ControlAPI.ChatRequest.Message?
+    private(set) var lastSentMaxTokens: Int?
+    /// What the conversation route throws, when it should throw.
+    var conversationError: Error?
+    /// What `GET /events` sends before it ends.
+    var serverEvents: [BuddyAPI.ServerEvent]?
+    var conversationDetail: BuddyAPI.ConversationDetail?
 
     func health() async throws -> ControlAPI.Health { try healthResult.get() }
     func status() async throws -> ControlAPI.Status { try statusResult.get() }
@@ -64,10 +70,14 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     }
 
     func sendMessage(
-        conversationID: String, message: ControlAPI.ChatRequest.Message
+        conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         streamCallCount += 1
         lastSentMessage = message
+        lastSentMaxTokens = maxTokens
+        if let conversationError {
+            return AsyncThrowingStream { $0.finish(throwing: conversationError) }
+        }
         return makeStream()
     }
 
@@ -89,7 +99,15 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     }
 
     func events() -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
-        AsyncThrowingStream { $0.finish(throwing: TransportError.routeUnavailable("/events")) }
+        let events = serverEvents
+        return AsyncThrowingStream { continuation in
+            guard let events else {
+                continuation.finish(throwing: TransportError.routeUnavailable("/events"))
+                return
+            }
+            for event in events { continuation.yield(event) }
+            continuation.finish()
+        }
     }
 
     func conversations() async throws -> [BuddyAPI.ConversationSummary] {
@@ -101,6 +119,7 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     }
 
     func conversation(id: String) async throws -> BuddyAPI.ConversationDetail {
+        if let conversationDetail { return conversationDetail }
         throw TransportError.routeUnavailable("/conversations/\(id)")
     }
 }

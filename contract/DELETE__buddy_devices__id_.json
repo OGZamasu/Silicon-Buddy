@@ -1,0 +1,30 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can list paired devices."
+    },
+    "404" : {
+      "error" : "No paired device with id 7A1E0C6E-2C6A-4F4E-9F1E-0B2D3C4A5B6C."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "DELETE",
+  "path" : "\/buddy\/devices\/{id}",
+  "request" : null,
+  "response" : {
+    "status" : "revoked"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Revoke one device. Its token stops working at once, streams included."
+}

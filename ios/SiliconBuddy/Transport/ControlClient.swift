@@ -29,7 +29,7 @@ public protocol ControlTransport: Sendable {
     func createConversation(title: String?) async throws -> BuddyAPI.ConversationSummary
     func conversation(id: String) async throws -> BuddyAPI.ConversationDetail
     func sendMessage(
-        conversationID: String, message: ControlAPI.ChatRequest.Message
+        conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error>
 }
 
@@ -51,6 +51,11 @@ public struct ControlClient: ControlTransport {
         authorized: Bool = true, accept: String = "application/json",
         timeout: TimeInterval = 30
     ) throws -> URLRequest {
+        guard TailnetHost.isAllowed(config.host) else {
+            // The one place every request passes through. A host that got into a
+            // ServerConfig some other way still never gets dialled.
+            throw TransportError.forbidden(TailnetHost.explanation)
+        }
         guard let url = config.url(path: path, query: query) else {
             throw TransportError.notConfigured
         }
@@ -187,14 +192,23 @@ public struct ControlClient: ControlTransport {
         let payload = try JSONEncoder.buddy.encode(
             BuddyAPI.PairRequest(code: code, deviceName: deviceName, platform: platform)
         )
-        // Pairing is the one call made before there is a token.
-        let body = try await send(
-            try makeRequest(
-                "POST", "/buddy/pair", body: payload, authorized: false, timeout: 20
-            ),
-            path: "/buddy/pair"
-        )
-        return try decode(BuddyAPI.PairResponse.self, from: body, path: "/buddy/pair")
+        do {
+            // Pairing is the one call made before there is a token.
+            let body = try await send(
+                try makeRequest(
+                    "POST", "/buddy/pair", body: payload, authorized: false, timeout: 20
+                ),
+                path: "/buddy/pair"
+            )
+            return try decode(BuddyAPI.PairResponse.self, from: body, path: "/buddy/pair")
+        } catch TransportError.unauthorized {
+            // A Mac without this route rejects the unauthenticated request before it
+            // ever looks at the path: unknown routes answer 401 to a caller with no
+            // token, and 404 only to one with a good one. A Mac that *has* /buddy/pair
+            // can never answer 401 to it — pairing is the one route that takes no
+            // token — so this is "that Mac is too old", not "your token is wrong".
+            throw TransportError.routeUnavailable("/buddy/pair")
+        }
     }
 
     public func chatStream(
@@ -204,11 +218,13 @@ public struct ControlClient: ControlTransport {
     }
 
     public func sendMessage(
-        conversationID: String, message: ControlAPI.ChatRequest.Message
+        conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         chatEventStream(
             path: "/conversations/\(conversationID)/messages",
-            body: ControlAPI.ChatRequest(messages: [message])
+            body: BuddyAPI.NewMessageRequest(
+                content: message.content, images: message.images, maxTokens: maxTokens
+            )
         )
     }
 
@@ -250,37 +266,71 @@ public struct ControlClient: ControlTransport {
         }
     }
 
+    /// `GET /events`, kept open.
+    ///
+    /// A long-lived stream is a stream that will drop: a sleeping phone, a tailnet
+    /// blip, a Mac that restarts. So this reconnects with a growing delay rather than
+    /// ending, and carries `Last-Event-ID` back so a Mac that numbers its events can
+    /// resume. It ends for one reason only — the route is not there — which is what
+    /// tells the caller to go back to polling.
     public func events() -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    let urlRequest = try makeRequest(
-                        "GET", "/events", accept: "text/event-stream", timeout: 86_400
-                    )
-                    for try await event in stream(urlRequest, path: "/events") {
-                        switch event.name {
-                        case "status":
-                            if let status = try? event.decode(ControlAPI.Status.self) {
-                                continuation.yield(.status(status))
+                var lastEventID: String?
+                var attempt = 0
+                while !Task.isCancelled {
+                    do {
+                        var urlRequest = try makeRequest(
+                            "GET", "/events", accept: "text/event-stream", timeout: 86_400
+                        )
+                        if let lastEventID {
+                            urlRequest.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+                        }
+                        for try await event in stream(urlRequest, path: "/events") {
+                            attempt = 0
+                            if let id = event.id { lastEventID = id }
+                            switch event.name {
+                            case "status":
+                                if let status = try? event.decode(ControlAPI.Status.self) {
+                                    continuation.yield(.status(status))
+                                }
+                            case "download":
+                                if let progress = try? event.decode(BuddyAPI.DownloadProgress.self) {
+                                    continuation.yield(.download(progress))
+                                }
+                            case "job":
+                                if let job = try? event.decode(BuddyAPI.JobProgress.self) {
+                                    continuation.yield(.job(job))
+                                }
+                            case "heartbeat", "ping":
+                                continuation.yield(
+                                    .heartbeat((try? event.decode(BuddyAPI.Heartbeat.self))?.at)
+                                )
+                            default:
+                                break
                             }
-                        case "download":
-                            if let progress = try? event.decode(BuddyAPI.DownloadProgress.self) {
-                                continuation.yield(.download(progress))
-                            }
-                        case "job":
-                            if let job = try? event.decode(BuddyAPI.JobProgress.self) {
-                                continuation.yield(.job(job))
-                            }
-                        case "heartbeat", "ping":
-                            continuation.yield(.heartbeat)
-                        default:
-                            break
+                        }
+                    } catch let error as TransportError where error.isMissingRoute {
+                        // This Mac has no /events. Say so once; the caller polls.
+                        continuation.finish(throwing: error)
+                        return
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        // Anything else is a stream that ended, not a feature that is
+                        // missing. Unauthorized is the exception worth surfacing.
+                        if case TransportError.unauthorized = error {
+                            continuation.finish(throwing: error)
+                            return
                         }
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+                    guard !Task.isCancelled else { break }
+                    attempt = min(attempt + 1, 6)
+                    let delay = min(30, pow(2, Double(attempt - 1)))
+                    try? await Task.sleep(for: .seconds(delay))
                 }
+                continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
@@ -306,9 +356,23 @@ public struct ControlClient: ControlTransport {
                         throw TransportError.from(status: status, body: body, path: path)
                             ?? TransportError.server(status: status, message: "")
                     }
+                    // Not `bytes.lines`: that sequence collapses runs of newlines, and
+                    // the blank line between blocks is the only thing that tells an SSE
+                    // parser an event has ended. Dropping it means a stream that never
+                    // delivers anything — which is exactly what it did.
                     var parser = SSEParser()
-                    for try await line in bytes.lines {
-                        if let event = parser.consume(line: line) { continuation.yield(event) }
+                    var line: [UInt8] = []
+                    for try await byte in bytes {
+                        guard byte == 0x0A else {
+                            line.append(byte)
+                            continue
+                        }
+                        let text = String(decoding: line, as: UTF8.self)
+                        line.removeAll(keepingCapacity: true)
+                        if let event = parser.consume(line: text) { continuation.yield(event) }
+                    }
+                    if !line.isEmpty {
+                        _ = parser.consume(line: String(decoding: line, as: UTF8.self))
                     }
                     if let event = parser.finish() { continuation.yield(event) }
                     continuation.finish()

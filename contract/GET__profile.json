@@ -1,0 +1,34 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/profile",
+  "request" : null,
+  "response" : {
+    "chip" : "Apple M3 Max",
+    "diskFreeBytes" : 890000000000,
+    "efficiencyCores" : 4,
+    "generation" : "M3",
+    "gpuCores" : 40,
+    "memoryBandwidthGBps" : 300,
+    "modelBudgetBytes" : 29200000000,
+    "neuralEngineCores" : 16,
+    "performanceCores" : 12,
+    "totalMemoryBytes" : 41553527603
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "What this Mac is, and how much of it a model may have."
+}

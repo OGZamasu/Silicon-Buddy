@@ -1,0 +1,33 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/mesh\/generate",
+  "request" : {
+    "imagePath" : "\/Users\/you\/Pictures\/kettle.png",
+    "modelID" : "hunyuan3d-2",
+    "textureSize" : 2048
+  },
+  "response" : {
+    "elapsedSeconds" : 323.69999999999999,
+    "glbPath" : "\/Users\/you\/Models\/kettle.glb",
+    "model" : "Hunyuan3D 2"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Turn an image into a mesh."
+}

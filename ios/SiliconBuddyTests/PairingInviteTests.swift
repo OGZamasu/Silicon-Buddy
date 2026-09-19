@@ -11,29 +11,29 @@ final class PairingInviteTests: XCTestCase {
     }
 
     func testAcceptsThePathSpelling() throws {
-        let invite = try PairingInvite.parse("siliconbuddy:///pair?host=mac.local&port=80&code=000000")
-        XCTAssertEqual(invite.host, "mac.local")
+        let invite = try PairingInvite.parse("siliconbuddy:///pair?host=127.0.0.1&port=80&code=000000")
+        XCTAssertEqual(invite.host, "127.0.0.1")
         XCTAssertEqual(invite.port, 80)
     }
 
     func testIsCaseInsensitiveAboutTheScheme() throws {
-        let invite = try PairingInvite.parse("SiliconBuddy://Pair?host=h&port=1&code=123456")
+        let invite = try PairingInvite.parse("SiliconBuddy://Pair?host=100.64.0.1&port=1&code=123456")
         XCTAssertEqual(invite.port, 1)
     }
 
     func testTrimsSurroundingWhitespace() throws {
-        let invite = try PairingInvite.parse("  siliconbuddy://pair?host=h&port=9&code=123456\n")
-        XCTAssertEqual(invite.host, "h")
+        let invite = try PairingInvite.parse("  siliconbuddy://pair?host=100.64.0.1&port=9&code=123456\n")
+        XCTAssertEqual(invite.host, "100.64.0.1")
     }
 
     func testRejectsAnotherScheme() {
-        XCTAssertThrowsError(try PairingInvite.parse("https://example.com/pair?host=h&port=1&code=123456")) {
+        XCTAssertThrowsError(try PairingInvite.parse("https://example.com/pair?host=100.64.0.1&port=1&code=123456")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .wrongScheme("https"))
         }
     }
 
     func testRejectsAnotherAction() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://open?host=h&port=1&code=123456")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://open?host=100.64.0.1&port=1&code=123456")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .wrongAction("open"))
         }
     }
@@ -45,31 +45,31 @@ final class PairingInviteTests: XCTestCase {
     }
 
     func testRejectsAMissingPort() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=h&code=123456")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=100.64.0.1&code=123456")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .missing("port"))
         }
     }
 
     func testRejectsAPortOutOfRange() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=h&port=99999&code=123456")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=100.64.0.1&port=99999&code=123456")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .badPort("99999"))
         }
     }
 
     func testRejectsAPortThatIsNotANumber() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=h&port=eight&code=123456")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=100.64.0.1&port=eight&code=123456")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .badPort("eight"))
         }
     }
 
     func testRejectsACodeOfTheWrongLength() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=h&port=1&code=12345")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=100.64.0.1&port=1&code=12345")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .badCode("12345"))
         }
     }
 
     func testRejectsANonNumericCode() {
-        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=h&port=1&code=abc123")) {
+        XCTAssertThrowsError(try PairingInvite.parse("siliconbuddy://pair?host=100.64.0.1&port=1&code=abc123")) {
             XCTAssertEqual($0 as? PairingInvite.ParseError, .badCode("abc123"))
         }
     }

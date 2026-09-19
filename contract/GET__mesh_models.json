@@ -1,0 +1,36 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/mesh\/models",
+  "request" : null,
+  "response" : [
+    {
+      "author" : "Tencent",
+      "id" : "hunyuan3d-2",
+      "installDetail" : "Installed",
+      "isInstalled" : true,
+      "name" : "Hunyuan3D 2",
+      "outputs" : "GLB, OBJ",
+      "peakBytes" : 13958643712,
+      "summary" : "Image to textured mesh.",
+      "typicalDuration" : "5 minutes",
+      "weightsBytes" : 6442450944
+    }
+  ],
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The 3D models here, and what they cost to run."
+}

@@ -42,6 +42,92 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(transport.chatCallCount, 0, "Streaming worked; /chat should not be called")
     }
 
+    func testAConversationTheMacIsStillAnsweringClosesTheComposer() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.conversationError = TransportError.conflict(
+            "That conversation is still being answered."
+        )
+        await model.loadConversations(using: transport)
+        model.draft = "Another one"
+        model.send(using: transport)
+        try await waitForIdle(model)
+
+        XCTAssertTrue(model.isConversationBusy, "The composer closes rather than being refused")
+        XCTAssertEqual(transport.chatCallCount, 0, "A 409 is an answer, not a missing route")
+        XCTAssertEqual(
+            model.current?.messages.last?.failure, "That conversation is still being answered."
+        )
+    }
+
+    func testOpeningAConversationTheMacIsAnsweringClosesTheComposer() async {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.conversationDetail = BuddyAPI.ConversationDetail(
+            id: "C1", title: "Busy one", updatedAt: Date(), isGenerating: true,
+            messages: [.init(role: "user", content: "hi", createdAt: Date())]
+        )
+        await model.loadConversations(using: transport)
+        await model.open(id: "C1", using: transport)
+        XCTAssertTrue(model.isConversationBusy)
+    }
+
+    func testTheConversationRouteIsGivenTheTokenCeiling() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.streamEvents = [.token("ok")]
+        await model.loadConversations(using: transport)
+        model.draft = "Hello"
+        model.send(using: transport)
+        try await waitForIdle(model)
+        XCTAssertEqual(transport.lastSentMaxTokens, model.maxTokens)
+    }
+
+    // MARK: - What a device may send
+
+    func testTooManyPicturesIsRefusedBeforeSending() {
+        let attachments = (0..<9).map { _ in ChatAttachment(jpeg: Data([0xFF, 0xD8, 0xFF])) }
+        let problem = ChatModel.attachmentProblem(for: attachments, message: "look")
+        XCTAssertNotNil(problem)
+        XCTAssertTrue(problem?.contains("8") == true)
+    }
+
+    func testAPictureOverTheMacsLimitIsRefusedBeforeSending() {
+        let big = ChatAttachment(jpeg: Data(repeating: 0, count: SendLimits.maximumImageBytes + 1))
+        XCTAssertNotNil(ChatModel.attachmentProblem(for: [big], message: ""))
+    }
+
+    func testABodyOverFourMegabytesIsRefusedBeforeSending() {
+        // Three pictures just under the per-image limit are over the body limit once
+        // base64 has added its third.
+        let attachments = (0..<3).map { _ in
+            ChatAttachment(jpeg: Data(repeating: 0, count: 1_400_000))
+        }
+        let problem = ChatModel.attachmentProblem(for: attachments, message: "")
+        XCTAssertNotNil(problem)
+        XCTAssertTrue(problem?.contains("4 MB") == true)
+    }
+
+    func testEightSmallPicturesAreFine() {
+        let attachments = (0..<8).map { _ in
+            ChatAttachment(jpeg: Data(repeating: 0, count: 100_000))
+        }
+        XCTAssertNil(ChatModel.attachmentProblem(for: attachments, message: "look"))
+    }
+
+    @MainActor
+    func testTheNinthPictureIsNotAdded() {
+        let (model, _) = makeModel()
+        for _ in 0..<9 {
+            model.attach(ChatAttachment(jpeg: Data([0xFF, 0xD8, 0xFF])))
+        }
+        XCTAssertEqual(model.attachments.count, SendLimits.maximumAttachments)
+        XCTAssertNotNil(model.error)
+    }
+
     func testAMacWithConversationsIsAskedToAppendRatherThanResendTheHistory() async throws {
         let (model, _) = makeModel()
         let transport = StubTransport()

@@ -1,0 +1,40 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/chat",
+  "request" : {
+    "maxTokens" : 1024,
+    "messages" : [
+      {
+        "content" : "Three days in Lisbon — what would you do?",
+        "images" : [
+
+        ],
+        "role" : "user"
+      }
+    ],
+    "temperature" : 0.69999999999999996
+  },
+  "response" : {
+    "content" : "Start in Alfama, early.",
+    "generatedTokens" : 96,
+    "promptTokens" : 412,
+    "tokensPerSecond" : 89.400000000000006
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "Ask the loaded model and wait for the whole answer."
+}

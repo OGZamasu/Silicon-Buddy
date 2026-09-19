@@ -25,6 +25,9 @@ public struct DashboardView: View {
                     )
                     .padding(.top, 40)
                 }
+                if !app.events.downloads.isEmpty || !app.events.jobs.isEmpty {
+                    activityCard
+                }
                 if let error = model.error, app.isPaired {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.footnote)
@@ -54,12 +57,21 @@ public struct DashboardView: View {
             model.startLiveUpdates(using: app.transport)
         }
         // Pairing happens in a sheet over this screen, so the first reading has to be
-        // triggered by the Mac arriving, not only by the screen appearing.
-        .onChange(of: app.config) { _, _ in
+        // triggered by the Mac arriving, not only by the screen appearing — and a
+        // different Mac means everything on screen belongs to the wrong machine.
+        .onChange(of: app.connectionGeneration) { _, _ in
+            model.reset()
             Task {
                 await reload()
                 model.startLiveUpdates(using: app.transport)
             }
+        }
+        // What the Mac pushes, when it can push.
+        .onChange(of: app.events.status) { _, status in
+            if let status { model.apply(streamed: status) }
+        }
+        .onChange(of: app.events.mustPoll) { _, mustPoll in
+            model.pollsStatus = mustPoll
         }
         .onDisappear { model.stopLiveUpdates() }
     }
@@ -70,6 +82,30 @@ public struct DashboardView: View {
     }
 
     // MARK: - Cards
+
+    /// What the Mac is busy with, straight off `GET /events`.
+    private var activityCard: some View {
+        Card("Happening now", systemImage: "arrow.down.circle") {
+            VStack(alignment: .leading, spacing: Theme.gap) {
+                ForEach(Array(app.events.downloads.values).sorted { $0.id < $1.id }) { download in
+                    MeterRow(
+                        label: download.name,
+                        detail: download.progress.map { Format.percent($0) }
+                            ?? Format.bytes(download.bytesReceived),
+                        fraction: download.progress ?? 0
+                    )
+                }
+                ForEach(Array(app.events.jobs.values).sorted { $0.id < $1.id }) { job in
+                    MeterRow(
+                        label: job.title ?? job.kind,
+                        detail: job.status,
+                        fraction: job.fraction ?? 0,
+                        tint: .purple
+                    )
+                }
+            }
+        }
+    }
 
     private var loadedModelCard: some View {
         Card(

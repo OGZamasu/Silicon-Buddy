@@ -15,6 +15,7 @@ public struct PairingView: View {
     @State private var port = "8788"
     @State private var token = ""
     @State private var status: Status = .idle
+    @State private var confirmingReplacement = false
 
     enum Mode: String, CaseIterable, Identifiable {
         case scan = "Scan"
@@ -53,6 +54,19 @@ public struct PairingView: View {
                 }
             }
             .overlay(alignment: .bottom) { statusBar }
+            .confirmationDialog(
+                "Replace \(app.macDisplayName)?",
+                isPresented: $confirmingReplacement,
+                titleVisibility: .visible
+            ) {
+                Button("Replace with \(host)", role: .destructive) { connect() }
+                Button("Keep \(app.macDisplayName)", role: .cancel) {}
+            } message: {
+                Text(
+                    "This device will stop talking to \(app.macDisplayName) and its token "
+                        + "will be deleted from this device."
+                )
+            }
         }
     }
 
@@ -91,30 +105,19 @@ public struct PairingView: View {
         }
     }
 
+    /// A scanned code is a claim about which machine to trust, made by whoever printed
+    /// the QR. It goes to the confirmation sheet, which names the host and — when a Mac
+    /// is already paired — asks a second time before replacing it.
     private func handleScan(_ code: String) {
         do {
             let invite = try PairingInvite.parse(code)
             host = invite.host
             port = String(invite.port)
-            status = .working
-            Task {
-                do {
-                    try await app.pair(with: invite)
-                    status = .paired(app.macDisplayName)
-                    try? await Task.sleep(for: .milliseconds(700))
-                    dismiss()
-                } catch let error as TransportError where error.isMissingRoute {
-                    mode = .advanced
-                    status = .failed(
-                        "This Mac doesn't support pairing yet. Enter its control token instead."
-                    )
-                } catch {
-                    status = .failed(error.localizedDescription)
-                    cameraState = .scanning
-                }
-            }
+            app.pendingInvite = invite
+            dismiss()
         } catch {
             status = .failed(error.localizedDescription)
+            cameraState = .scanning
         }
     }
 
@@ -147,16 +150,21 @@ public struct PairingView: View {
                 Text(
                     "The Mac writes these to ~/Library/Application Support/SiliconOptimizer/"
                         + "control.json when it starts. On the iOS Simulator the Mac is 127.0.0.1; "
-                        + "on a device it is the Mac's tailnet address."
+                        + "on a device it is the Mac's tailnet address (100.x.y.z). "
+                        + "Nothing else is accepted."
                 )
             }
 
             Section {
                 Button {
-                    connect()
+                    if app.isPaired {
+                        confirmingReplacement = true
+                    } else {
+                        connect()
+                    }
                 } label: {
                     HStack {
-                        Text("Connect")
+                        Text(app.isPaired ? "Replace this Mac…" : "Connect")
                         Spacer()
                         if status == .working { ProgressView().controlSize(.small) }
                     }
@@ -180,10 +188,15 @@ public struct PairingView: View {
             status = .failed("That port isn't a number between 1 and 65535.")
             return
         }
+        let trimmedHost = host.trimmingCharacters(in: .whitespaces)
+        guard TailnetHost.isAllowed(trimmedHost) else {
+            status = .failed(TailnetHost.explanation)
+            return
+        }
         status = .working
         Task {
             let candidate = ServerConfig(
-                host: host.trimmingCharacters(in: .whitespaces),
+                host: trimmedHost,
                 port: portNumber,
                 token: token.trimmingCharacters(in: .whitespaces)
             )

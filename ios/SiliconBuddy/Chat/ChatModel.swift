@@ -2,6 +2,15 @@ import Foundation
 import Observation
 import UIKit
 
+/// What a device may send, from the Mac's own contract: 4 MiB a body, about 1.5 MB an
+/// image, eight images a message. Checked before sending rather than discovered as a 413
+/// after a slow upload over a tailnet.
+public enum SendLimits {
+    public static let maximumAttachments = 8
+    public static let maximumImageBytes = 1_500_000
+    public static let maximumBodyBytes = 4 * 1024 * 1024
+}
+
 /// A picture on its way to a vision model.
 public struct ChatAttachment: Identifiable, Sendable, Equatable {
     public let id = UUID()
@@ -31,6 +40,10 @@ public final class ChatModel {
     /// asked would be a promise the app cannot keep.
     public private(set) var usesStreaming = true
     public private(set) var usesRemoteConversations = false
+    /// True while the Mac is answering in the open conversation — including an answer
+    /// this device did not ask for, which is what `isGenerating` on the transcript
+    /// means. The composer is closed rather than letting a send be refused.
+    public private(set) var isConversationBusy = false
     private var askedAboutConversations = false
 
     public var draft = ""
@@ -114,6 +127,7 @@ public final class ChatModel {
                         )
                     }
                 )
+                isConversationBusy = detail.isGenerating
                 return
             }
             usesRemoteConversations = false
@@ -136,6 +150,10 @@ public final class ChatModel {
             error = TransportError.notConfigured.localizedDescription
             return
         }
+        if let problem = Self.attachmentProblem(for: attachments, message: text) {
+            error = problem
+            return
+        }
         let images = attachments.map(\.dataURL)
         draft = ""
         attachments = []
@@ -150,6 +168,7 @@ public final class ChatModel {
         current = conversation
         isSending = true
         sendingSince = Date()
+        isConversationBusy = false
         error = nil
 
         sendTask?.cancel()
@@ -158,6 +177,19 @@ public final class ChatModel {
             self?.isSending = false
             self?.sendingSince = nil
         }
+    }
+
+    /// Adds a picture, or says why it cannot be added. The cap is the Mac's.
+    public func attach(_ attachment: ChatAttachment) {
+        guard attachments.count < SendLimits.maximumAttachments else {
+            error = "The Mac takes at most \(SendLimits.maximumAttachments) pictures a message."
+            return
+        }
+        if attachment.jpeg.count > SendLimits.maximumImageBytes {
+            error = "That picture is still too large after shrinking. Try a smaller one."
+            return
+        }
+        attachments.append(attachment)
     }
 
     public func cancel() {
@@ -173,6 +205,8 @@ public final class ChatModel {
     private enum StreamOutcome {
         case answered
         case missingRoute
+        /// The Mac is already answering in this conversation (409).
+        case busy(String)
         case failed(String)
         case stopped
     }
@@ -190,7 +224,10 @@ public final class ChatModel {
             // First choice: the conversation route, so the Mac keeps the transcript.
             if usesRemoteConversations, let id = current?.id, let last = history.last {
                 switch await consume(
-                    transport.sendMessage(conversationID: id, message: last), into: messageID
+                    transport.sendMessage(
+                        conversationID: id, message: last, maxTokens: maxTokens
+                    ),
+                    into: messageID
                 ) {
                 case .answered:
                     finishStreamingMessage(failure: nil)
@@ -199,6 +236,13 @@ public final class ChatModel {
                 case .missingRoute:
                     // Only this route is missing. Plain streaming may still be there.
                     usesRemoteConversations = false
+                case .busy(let message):
+                    // The Mac is still answering the previous message in this
+                    // conversation. Sending it again would only be refused again.
+                    isConversationBusy = true
+                    finishStreamingMessage(failure: message)
+                    error = message
+                    return
                 case .stopped:
                     finishStreamingMessage(failure: "Stopped.")
                     return
@@ -218,6 +262,10 @@ public final class ChatModel {
                 return
             case .missingRoute:
                 usesStreaming = false
+            case .busy(let message):
+                finishStreamingMessage(failure: message)
+                error = message
+                return
             case .stopped:
                 finishStreamingMessage(failure: "Stopped.")
                 return
@@ -268,6 +316,9 @@ public final class ChatModel {
             return .missingRoute
         } catch let error as TransportError where error == .cancelled {
             return .stopped
+        } catch let error as TransportError {
+            if case .conflict(let message) = error { return .busy(message) }
+            return .failed(error.localizedDescription)
         } catch is CancellationError {
             return .stopped
         } catch {
@@ -296,6 +347,32 @@ public final class ChatModel {
             }
             error = message
         }
+    }
+
+    /// Why this message cannot be sent as it stands, if it cannot.
+    ///
+    /// The numbers are the Mac's, and it answers 413 to anything over them. Saying so
+    /// here costs nothing; finding out afterwards costs the upload.
+    public static func attachmentProblem(
+        for attachments: [ChatAttachment], message: String
+    ) -> String? {
+        guard !attachments.isEmpty else { return nil }
+        if attachments.count > SendLimits.maximumAttachments {
+            return "The Mac takes at most \(SendLimits.maximumAttachments) pictures a message. "
+                + "Remove \(attachments.count - SendLimits.maximumAttachments) and send again."
+        }
+        if let oversized = attachments.first(where: { $0.jpeg.count > SendLimits.maximumImageBytes }) {
+            let megabytes = Double(oversized.jpeg.count) / 1_000_000
+            return String(
+                format: "One picture is %.1f MB; the Mac takes about 1.5 MB each.", megabytes
+            )
+        }
+        // Base64 costs a third on top, and the text and JSON ride along with it.
+        let encoded = attachments.reduce(0) { $0 + ($1.jpeg.count * 4 / 3) + 64 }
+        if encoded + message.utf8.count + 512 > SendLimits.maximumBodyBytes {
+            return "That message is larger than the 4 MB the Mac accepts. Send fewer pictures."
+        }
+        return nil
     }
 
     /// A reasoning model can spend its whole budget thinking and answer nothing. An
@@ -358,10 +435,25 @@ public enum ImagePreparation {
     /// A 12-megapixel photo as a base64 data URL is about 15 MB of JSON, which is both
     /// slower to send than the model is to answer and larger than most vision encoders
     /// can use. 1024 on the long edge is what they actually look at.
-    public static func attachment(from image: UIImage, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8) -> ChatAttachment? {
-        let scaled = resize(image, maxEdge: maxEdge)
-        guard let data = scaled.jpegData(compressionQuality: quality) else { return nil }
-        return ChatAttachment(jpeg: data)
+    public static func attachment(
+        from image: UIImage, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8
+    ) -> ChatAttachment? {
+        var edge = maxEdge
+        var compression = quality
+        // Four tries at most: a 12-megapixel photo of a page of text can still beat the
+        // Mac's per-image limit at 1024px, and a picture that is refused on arrival is
+        // worse than one that was made smaller before it left.
+        for _ in 0..<4 {
+            let scaled = resize(image, maxEdge: edge)
+            guard let data = scaled.jpegData(compressionQuality: compression) else { return nil }
+            if data.count <= SendLimits.maximumImageBytes {
+                return ChatAttachment(jpeg: data)
+            }
+            edge *= 0.75
+            compression = max(0.4, compression - 0.15)
+        }
+        return resize(image, maxEdge: edge).jpegData(compressionQuality: 0.4)
+            .map(ChatAttachment.init(jpeg:))
     }
 
     static func resize(_ image: UIImage, maxEdge: CGFloat) -> UIImage {

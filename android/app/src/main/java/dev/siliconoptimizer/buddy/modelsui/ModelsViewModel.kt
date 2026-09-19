@@ -192,4 +192,16 @@ class ModelsViewModel : ViewModel() {
     fun clearError() {
         error = null
     }
+
+    /** Throws away the last Mac's lists, so a re-pair never shows another machine's disk. */
+    fun reset() {
+        poller?.cancel()
+        poller = null
+        job = null
+        installed = emptyList()
+        catalog = emptyList()
+        status = null
+        error = null
+        search = ""
+    }
 }

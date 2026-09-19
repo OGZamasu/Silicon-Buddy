@@ -20,6 +20,7 @@ public struct PairingInvite: Sendable, Equatable {
         case missing(String)
         case badPort(String)
         case badCode(String)
+        case hostNotOnTailnet(String)
 
         public var errorDescription: String? {
             switch self {
@@ -31,6 +32,8 @@ public struct PairingInvite: Sendable, Equatable {
             case .badPort(let value): "\"\(value)\" isn't a port number."
             case .badCode(let value):
                 "\"\(value)\" isn't a six-digit pairing code."
+            case .hostNotOnTailnet(let host):
+                "\(host) isn't a tailnet address. " + TailnetHost.explanation
             }
         }
     }
@@ -62,6 +65,9 @@ public struct PairingInvite: Sendable, Equatable {
         }
 
         guard let host = value("host"), !host.isEmpty else { throw ParseError.missing("host") }
+        // A code is only text until something dials the host inside it. This is where
+        // `siliconbuddy://pair?host=evil.example.com&…` stops.
+        guard TailnetHost.isAllowed(host) else { throw ParseError.hostNotOnTailnet(host) }
         guard let portText = value("port"), !portText.isEmpty else {
             throw ParseError.missing("port")
         }

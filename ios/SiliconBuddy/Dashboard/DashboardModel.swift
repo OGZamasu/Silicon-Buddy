@@ -19,6 +19,9 @@ public final class DashboardModel {
 
     private var ticker: Task<Void, Never>?
 
+    /// Set when this Mac has no `/events`, in which case `/status` has to be asked for.
+    public var pollsStatus = true
+
     public init() {}
 
     /// One pass over every dashboard endpoint, in parallel.
@@ -59,8 +62,28 @@ public final class DashboardModel {
         }
     }
 
-    /// Live metrics while the dashboard is on screen. Polling, because `GET /events`
-    /// arrives with M0; when it does this becomes the fallback rather than the plan.
+    /// Throws away the last Mac's readings. Called when the paired Mac changes: a
+    /// dashboard still showing the previous machine's memory is not stale, it is wrong.
+    public func reset() {
+        stopLiveUpdates()
+        status = nil
+        profile = nil
+        metrics = nil
+        swarm = nil
+        node = nil
+        error = nil
+        lastUpdated = nil
+    }
+
+    /// Takes the status the event stream pushed, so the card is current without asking.
+    public func apply(streamed status: ControlAPI.Status) {
+        self.status = status
+        lastUpdated = Date()
+    }
+
+    /// Metrics while the dashboard is on screen. `/metrics` is a reading, not an event —
+    /// the Mac never pushes it — so this polls regardless; the status card is fed by the
+    /// stream when there is one, and by this when there is not.
     public func startLiveUpdates(using transport: (any ControlTransport)?, every seconds: Double = 4) {
         ticker?.cancel()
         guard let transport else { return }
@@ -69,10 +92,12 @@ public final class DashboardModel {
                 try? await Task.sleep(for: .seconds(seconds))
                 guard !Task.isCancelled else { return }
                 let reading = try? await transport.metrics()
-                let state = try? await transport.status()
                 guard let self, !Task.isCancelled else { return }
                 if let reading { self.metrics = reading }
-                if let state { self.status = state }
+                // The status card comes from the event stream when the Mac has one.
+                if self.pollsStatus, let state = try? await transport.status() {
+                    self.status = state
+                }
                 if reading != nil { self.lastUpdated = Date() }
             }
         }

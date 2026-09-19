@@ -1,0 +1,56 @@
+{
+  "auth" : "device",
+  "contentType" : "text\/event-stream",
+  "errors" : {
+    "400" : {
+      "error" : "No model is loaded."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "events" : {
+    "error" : {
+      "error" : "The device stopped reading."
+    },
+    "finished" : {
+      "generatedTokens" : 96,
+      "promptTokens" : 412,
+      "timeToFirstToken" : 0.31,
+      "tokensPerSecond" : 89.400000000000006
+    },
+    "reasoning" : {
+      "text" : "The user asked about "
+    },
+    "token" : {
+      "text" : "Because "
+    }
+  },
+  "method" : "POST",
+  "path" : "\/chat\/stream",
+  "request" : {
+    "maxTokens" : 1024,
+    "messages" : [
+      {
+        "content" : "Three days in Lisbon — what would you do?",
+        "images" : [
+
+        ],
+        "role" : "user"
+      }
+    ],
+    "temperature" : 0.69999999999999996
+  },
+  "response" : null,
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The same body as \/chat, answered token by token."
+}

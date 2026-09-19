@@ -12,17 +12,26 @@ public struct ServerConfig: Sendable, Equatable {
     public var macName: String?
     /// The id the Mac minted for this device at pairing, when it did.
     public var deviceID: String?
+    /// What the owner granted this device. A Mac that predates scopes says nothing,
+    /// and that means full — which is what it was.
+    public var scope: BuddyAPI.DeviceScope
 
     public init(
         host: String, port: Int, token: String,
-        macName: String? = nil, deviceID: String? = nil
+        macName: String? = nil, deviceID: String? = nil,
+        scope: BuddyAPI.DeviceScope = .full
     ) {
         self.host = host
         self.port = port
         self.token = token
         self.macName = macName
         self.deviceID = deviceID
+        self.scope = scope
     }
+
+    /// Whether this device may change what the Mac is running, as opposed to asking it
+    /// questions. Checked before an action is offered, not after it is refused.
+    public var canControl: Bool { scope.canControl }
 
     public var baseURL: URL? {
         var components = URLComponents()

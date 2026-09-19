@@ -34,10 +34,6 @@ public struct SSEParser: Sendable {
     private var data: [String] = []
     private var id: String?
     private var retry: Int?
-    /// Comment lines (`: heartbeat`) seen since the last event. The Mac's keep-alive is
-    /// a comment, and a caller that wants to notice a dead stream needs to see them.
-    public private(set) var sawComment = false
-
     public init() {}
 
     /// Feeds one line, without its terminator. Returns an event when the line was the
@@ -58,10 +54,8 @@ public struct SSEParser: Sendable {
             )
         }
 
-        if line.hasPrefix(":") {
-            sawComment = true
-            return nil
-        }
+        // A comment — the Mac's keep-alive is one. Nothing to dispatch.
+        if line.hasPrefix(":") { return nil }
 
         let field: String
         var value: String
@@ -151,9 +145,11 @@ extension JSONDecoder {
 extension JSONEncoder {
     public static var buddy: JSONEncoder {
         let encoder = JSONEncoder()
+        // Seconds, no milliseconds: this is the spelling the Mac uses, and a contract
+        // test compares what this app writes with what the Mac wrote.
         encoder.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
-            try container.encode(ISO8601DateFormatter.buddyWithFractionalSeconds.string(from: date))
+            try container.encode(ISO8601DateFormatter.buddyPlain.string(from: date))
         }
         return encoder
     }

@@ -1,0 +1,55 @@
+{
+  "auth" : "device",
+  "contentType" : "text\/event-stream",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "429" : {
+      "error" : "Too many open streams. Close one before opening another."
+    }
+  },
+  "events" : {
+    "download" : {
+      "bytesExpected" : 20401094656,
+      "bytesPerSecond" : 41943040,
+      "bytesReceived" : 8589934592,
+      "fraction" : 0.41999999999999998,
+      "id" : "qwen3-coder-30b",
+      "name" : "Qwen3-Coder 30B A3B"
+    },
+    "heartbeat" : {
+      "at" : "2026-09-18T09:41:00Z"
+    },
+    "job" : {
+      "fraction" : 0.33000000000000002,
+      "id" : "9C2F-0001",
+      "kind" : "video",
+      "status" : "running",
+      "title" : "Opening shot"
+    },
+    "status" : {
+      "contextLength" : 16384,
+      "expertStreaming" : false,
+      "lastGenerationTokensPerSecond" : 89.400000000000006,
+      "loadedModelID" : "qwen3-coder-30b",
+      "loadedModelName" : "Qwen3-Coder 30B A3B",
+      "state" : "running"
+    }
+  },
+  "method" : "GET",
+  "path" : "\/events",
+  "request" : null,
+  "response" : null,
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "What the Mac is doing: loaded model, downloads, render jobs."
+}

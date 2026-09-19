@@ -26,10 +26,6 @@ class SseParser {
     private var retry: Int? = null
     private val pending = StringBuilder()
 
-    /** Comment lines (`: heartbeat`) seen so far: proof a quiet stream is alive. */
-    var sawComment: Boolean = false
-        private set
-
     /** Feeds one line without its terminator; returns an event on the blank line. */
     fun consume(rawLine: String): SseEvent? {
         val line = rawLine.removeSuffix("\r")
@@ -45,10 +41,8 @@ class SseParser {
             return event
         }
 
-        if (line.startsWith(":")) {
-            sawComment = true
-            return null
-        }
+        // A comment — the Mac's keep-alive is one. Nothing to dispatch.
+        if (line.startsWith(":")) return null
 
         val colon = line.indexOf(':')
         val field: String

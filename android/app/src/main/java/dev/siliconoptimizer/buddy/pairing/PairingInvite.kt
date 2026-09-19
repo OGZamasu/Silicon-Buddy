@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy.pairing
 
 import android.net.Uri
+import dev.siliconoptimizer.buddy.transport.TailnetHost
 
 /**
  * What the QR on the Mac's screen encodes:
@@ -25,6 +26,8 @@ data class PairingInvite(
         data class BadPort(val value: String) : ParseError("\"$value\" isn't a port number.")
         data class BadCode(val value: String) :
             ParseError("\"$value\" isn't a six-digit pairing code.")
+        data class HostNotOnTailnet(val host: String) :
+            ParseError("$host isn't a tailnet address. " + TailnetHost.EXPLANATION)
     }
 
     companion object {
@@ -61,6 +64,9 @@ data class PairingInvite(
             }.toMap()
 
             val host = fields["host"]?.takeIf { it.isNotEmpty() } ?: throw ParseError.Missing("host")
+            // A code is only text until something dials the host inside it. This is
+            // where `siliconbuddy://pair?host=evil.example.com&…` stops.
+            if (!TailnetHost.isAllowed(host)) throw ParseError.HostNotOnTailnet(host)
             val portText = fields["port"]?.takeIf { it.isNotEmpty() }
                 ?: throw ParseError.Missing("port")
             val port = portText.toIntOrNull()?.takeIf { it in 1..65535 }

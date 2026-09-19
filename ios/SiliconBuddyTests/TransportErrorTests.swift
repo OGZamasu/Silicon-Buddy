@@ -57,8 +57,38 @@ final class TransportErrorTests: XCTestCase {
         )
     }
 
-    func testForbiddenIsAlsoUnauthorized() {
-        XCTAssertEqual(TransportError.from(status: 403, body: Data(), path: "/status"), .unauthorized)
+    /// 403 and 401 mean different things and ask for different things: one is "pair
+    /// again", the other is "this device was paired for chat only".
+    func testForbiddenIsNotUnauthorized() {
+        let refusal = TransportError.from(
+            status: 403,
+            body: Data(#"{"error":"This device is paired for chat only."}"#.utf8),
+            path: "/load"
+        )
+        XCTAssertEqual(refusal, .forbidden("This device is paired for chat only."))
+        XCTAssertNotEqual(refusal, .unauthorized)
+        XCTAssertEqual(refusal?.errorDescription, "This device is paired for chat only.")
+        XCTAssertNotEqual(refusal?.recoverySuggestion, TransportError.unauthorized.recoverySuggestion)
+    }
+
+    func testAConversationConflictIsItsOwnCase() {
+        let conflict = TransportError.from(
+            status: 409,
+            body: Data(#"{"error":"That conversation is still being answered."}"#.utf8),
+            path: "/conversations/1/messages"
+        )
+        XCTAssertEqual(conflict, .conflict("That conversation is still being answered."))
+    }
+
+    func testTooLargeIsItsOwnCase() {
+        let tooLarge = TransportError.from(
+            status: 413,
+            body: Data(#"{"error":"That request body is larger than this device may send."}"#.utf8),
+            path: "/chat"
+        )
+        guard case .tooLarge? = tooLarge else {
+            return XCTFail("413 should be its own case")
+        }
     }
 
     func testNotFoundNamesTheRouteSoTheCallerCanFallBack() {
@@ -106,6 +136,7 @@ final class TransportErrorTests: XCTestCase {
     func testEveryErrorHasADescription() {
         let errors: [TransportError] = [
             .unreachable("mac"), .appNotRunning, .timedOut, .unauthorized,
+            .forbidden(""), .conflict(""), .tooLarge(""),
             .routeUnavailable("/events"), .badRequest("x"), .busy("y"),
             .server(status: 500, message: ""), .decoding("z"), .notConfigured, .cancelled,
         ]

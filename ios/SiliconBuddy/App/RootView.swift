@@ -3,15 +3,24 @@ import SwiftUI
 /// iPhone gets a tab bar, iPad gets a sidebar. Same screens either way.
 public struct RootView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
 
     public init(chat: ChatModel) { self.chat = chat }
 
     public var body: some View {
-        if sizeClass == .compact {
-            PhoneTabs(chat: chat)
-        } else {
-            PadSplit(chat: chat)
+        Group {
+            if sizeClass == .compact {
+                PhoneTabs(chat: chat)
+            } else {
+                PadSplit(chat: chat)
+            }
+        }
+        // One `GET /events` for the whole app, opened when there is a Mac to open it
+        // against and reopened when that Mac changes.
+        .task { app.events.start(using: app.transport) }
+        .onChange(of: app.connectionGeneration) { _, _ in
+            app.events.start(using: app.transport)
         }
     }
 }
@@ -43,7 +52,7 @@ struct PhoneTabs: View {
             .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
 
             NavigationStack {
-                SettingsView()
+                SettingsView(chat: chat)
             }
             .tabItem { Label("Settings", systemImage: "gearshape") }
         }
@@ -114,7 +123,7 @@ struct PadSplit: View {
                 case .models:
                     ModelsView()
                 case .settings:
-                    SettingsView()
+                    SettingsView(chat: chat)
                 case .conversation(let id):
                     ChatView(model: chat)
                         .task(id: id) { await chat.open(id: id, using: app.transport) }

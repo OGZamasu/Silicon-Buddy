@@ -75,9 +75,44 @@ class TransportErrorTest {
         )
     }
 
+    /**
+     * 403 and 401 mean different things and ask for different things: one is "pair
+     * again", the other is "this device was paired for chat only".
+     */
     @Test
-    fun `forbidden is also unauthorized`() {
-        assertEquals(TransportError.Unauthorized, TransportError.from(403, "", "/status"))
+    fun `forbidden is not unauthorized`() {
+        val refusal = TransportError.from(
+            403, body("This device is paired for chat only."), "/load",
+        )
+        assertEquals(TransportError.Forbidden("This device is paired for chat only."), refusal)
+        assertTrue(refusal!!.isForbidden)
+        assertNotEquals(TransportError.Unauthorized.recovery, refusal.recovery)
+    }
+
+    @Test
+    fun `a conversation conflict is its own case`() {
+        assertEquals(
+            TransportError.Conflict("That conversation is still being answered."),
+            TransportError.from(
+                409, body("That conversation is still being answered."), "/conversations/1/messages",
+            ),
+        )
+    }
+
+    @Test
+    fun `too large is its own case`() {
+        assertTrue(
+            TransportError.from(413, body("Too big."), "/chat") is TransportError.TooLarge,
+        )
+    }
+
+    @Test
+    fun `a cleartext refusal is not the Mac being away`() {
+        val error = TransportError.from(
+            java.io.IOException("Cleartext HTTP traffic to 100.64.0.1 not permitted"),
+            "100.64.0.1",
+        )
+        assertTrue(error is TransportError.Forbidden)
     }
 
     @Test
@@ -143,6 +178,9 @@ class TransportErrorTest {
             TransportError.AppNotRunning,
             TransportError.TimedOut,
             TransportError.Unauthorized,
+            TransportError.Forbidden("x"),
+            TransportError.Conflict("y"),
+            TransportError.TooLarge("z"),
             TransportError.RouteUnavailable("/events"),
             TransportError.BadRequest("x"),
             TransportError.Busy("y"),

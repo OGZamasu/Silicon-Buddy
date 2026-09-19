@@ -42,6 +42,7 @@ import dev.siliconoptimizer.buddy.ui.StatusDot
 fun DashboardScreen(
     app: AppState,
     model: DashboardViewModel,
+    events: dev.siliconoptimizer.buddy.EventFeed,
     onPair: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -72,6 +73,9 @@ fun DashboardScreen(
             return@LazyColumn
         }
 
+        if (events.downloads.isNotEmpty() || events.jobs.isNotEmpty()) {
+            item { ActivityCard(events) }
+        }
         item { LoadedModelCard(model) }
         item { MetricsCard(model) }
         item { MachineCard(model) }
@@ -114,6 +118,29 @@ private fun ConnectionCard(app: AppState, onPair: () -> Unit) {
             if (!app.isPaired) {
                 Button(onClick = onPair) { Text("Pair") }
             }
+        }
+    }
+}
+
+/** What the Mac is busy with, straight off `GET /events`. */
+@Composable
+private fun ActivityCard(events: dev.siliconoptimizer.buddy.EventFeed) {
+    SectionCard("Happening now", Icons.Filled.Speed) {
+        events.downloads.values.sortedBy { it.id }.forEach { download ->
+            MeterRow(
+                label = download.name,
+                detail = download.progress?.let { Format.percent(it) }
+                    ?: Format.bytes(download.bytesReceived),
+                fraction = download.progress ?: 0.0,
+            )
+        }
+        events.jobs.values.sortedBy { it.id }.forEach { job ->
+            MeterRow(
+                label = job.title ?: job.kind,
+                detail = job.status,
+                fraction = job.fraction ?: 0.0,
+                tint = MaterialTheme.colorScheme.tertiary,
+            )
         }
     }
 }

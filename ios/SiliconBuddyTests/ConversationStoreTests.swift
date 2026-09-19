@@ -91,11 +91,12 @@ final class ConversationStoreTests: XCTestCase {
         )
         let data = try JSONEncoder.buddy.encode(message)
         var decoded = try JSONDecoder.buddy.decode(ChatMessage.self, from: data)
-        // ISO-8601 on the wire keeps milliseconds, not the Date's full precision.
+        // ISO-8601 on the wire keeps whole seconds — the spelling the Mac uses — so a
+        // round trip loses the fraction and nothing else.
         XCTAssertEqual(
             decoded.createdAt.timeIntervalSince1970,
             message.createdAt.timeIntervalSince1970,
-            accuracy: 0.001
+            accuracy: 1.0
         )
         decoded.createdAt = message.createdAt
         XCTAssertEqual(decoded, message)

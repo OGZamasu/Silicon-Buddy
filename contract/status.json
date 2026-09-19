@@ -1,8 +1,0 @@
-{
-  "contextLength" : 32768,
-  "expertStreaming" : false,
-  "lastGenerationTokensPerSecond" : 21.087349138701907,
-  "loadedModelID" : "bonsai-2-27b@PTQ1_0",
-  "loadedModelName" : "Bonsai 2 27B",
-  "state" : "Ready"
-}

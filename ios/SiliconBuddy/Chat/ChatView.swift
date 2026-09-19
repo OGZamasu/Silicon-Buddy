@@ -56,7 +56,7 @@ public struct ChatView: View {
                 if let data = try? await item.loadTransferable(type: Data.self),
                    let image = UIImage(data: data),
                    let attachment = ImagePreparation.attachment(from: image) {
-                    model.attachments.append(attachment)
+                    model.attach(attachment)
                 }
                 photoItem = nil
             }
@@ -64,7 +64,7 @@ public struct ChatView: View {
         .sheet(isPresented: $showingCamera) {
             CameraPicker { image in
                 if let attachment = ImagePreparation.attachment(from: image) {
-                    model.attachments.append(attachment)
+                    model.attach(attachment)
                 }
             }
             .ignoresSafeArea()
@@ -147,10 +147,15 @@ public struct ChatView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    PhotosPicker(selection: $photoItem, matching: .images) {
-                        Label("Photo Library", systemImage: "photo.on.rectangle")
+                    if model.attachments.count < SendLimits.maximumAttachments {
+                        PhotosPicker(selection: $photoItem, matching: .images) {
+                            Label("Photo Library", systemImage: "photo.on.rectangle")
+                        }
+                    } else {
+                        Text("\(SendLimits.maximumAttachments) pictures is the most the Mac takes")
                     }
-                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    if UIImagePickerController.isSourceTypeAvailable(.camera),
+                       model.attachments.count < SendLimits.maximumAttachments {
                         Button {
                             showingCamera = true
                         } label: {
@@ -174,7 +179,14 @@ public struct ChatView: View {
                     .submitLabel(.send)
                     .accessibilityLabel("Message")
 
-                if model.isSending {
+                if model.isConversationBusy, !model.isSending {
+                    // The Mac is answering this conversation for someone else — the
+                    // Mac's own window, or another device. A send would be answered 409.
+                    Label("Busy", systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("The Mac is still answering this conversation")
+                } else if model.isSending {
                     Button {
                         model.cancel()
                     } label: {
@@ -193,8 +205,8 @@ public struct ChatView: View {
                             .symbolRenderingMode(.hierarchical)
                     }
                     .disabled(
-                        model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            && model.attachments.isEmpty
+                        (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && model.attachments.isEmpty) || model.isConversationBusy
                     )
                     .accessibilityLabel("Send")
                 }

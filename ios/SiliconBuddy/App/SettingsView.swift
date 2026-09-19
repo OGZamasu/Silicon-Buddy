@@ -3,10 +3,15 @@ import SwiftUI
 /// The connection, what this Mac can do, and the honest list of what is still stubbed.
 public struct SettingsView: View {
     @Environment(AppModel.self) private var app
+    /// The chat model itself, because "does this Mac stream?" is something only the
+    /// thing that has tried to stream can answer.
+    let chat: ChatModel
     @State private var showingPairing = false
     @State private var showingForget = false
 
-    public init() {}
+    public init(chat: ChatModel) {
+        self.chat = chat
+    }
 
     public var body: some View {
         List {
@@ -22,6 +27,10 @@ public struct SettingsView: View {
                     }
                 }
                 LabeledContent("Status", value: app.reachability.headline)
+                LabeledContent(
+                    "This device may",
+                    value: app.scope == .full ? "Control the Mac" : "Chat and read only"
+                )
                 Button(app.isPaired ? "Pair with another Mac" : "Pair with a Mac") {
                     showingPairing = true
                 }
@@ -33,18 +42,26 @@ public struct SettingsView: View {
             Section {
                 LabeledContent(
                     "Streaming replies",
-                    value: app.supportsStreaming ? "Using /chat/stream" : "Falling back to /chat"
+                    value: chat.usesStreaming ? "Using /chat/stream" : "Falling back to /chat"
                 )
                 LabeledContent(
                     "Conversations",
-                    value: app.supportsRemoteConversations ? "On the Mac" : "On this device"
+                    value: chat.usesRemoteConversations ? "On the Mac" : "On this device"
+                )
+                LabeledContent(
+                    "Live events",
+                    value: app.events.isLive
+                        ? "Streaming from /events"
+                        : (app.events.mustPoll ? "Polling — this Mac has no /events" : "Not started")
                 )
             } header: {
                 Text("What this Mac supports")
             } footer: {
                 Text(
-                    "Silicon Buddy asks for the newer routes and falls back quietly when a Mac "
-                        + "doesn't have them yet. Nothing here needs configuring."
+                    app.scope == .full
+                        ? "Silicon Buddy asks for the newer routes and falls back quietly when a "
+                            + "Mac doesn't have them yet. Nothing here needs configuring."
+                        : app.scope.explanation
                 )
             }
 

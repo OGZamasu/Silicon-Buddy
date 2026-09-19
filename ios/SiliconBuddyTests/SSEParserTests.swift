@@ -29,10 +29,9 @@ final class SSEParserTests: XCTestCase {
         XCTAssertEqual(found.first?.data, "first\nsecond")
     }
 
-    func testCommentsAreIgnoredButNoticed() {
+    func testCommentsAreIgnored() {
         var parser = SSEParser()
         XCTAssertNil(parser.consume(line: ": heartbeat"))
-        XCTAssertTrue(parser.sawComment)
         XCTAssertNil(parser.consume(line: "data: after"))
         XCTAssertEqual(parser.consume(line: "")?.data, "after")
     }

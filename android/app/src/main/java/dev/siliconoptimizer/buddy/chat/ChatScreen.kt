@@ -51,6 +51,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -88,7 +90,7 @@ fun ChatScreen(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
-            attachmentFrom(context, uri)?.let { model.attachments.add(it) }
+            attachmentFrom(context, uri)?.let { model.attach(it) }
         }
     }
 
@@ -152,6 +154,15 @@ fun ChatScreen(
 
         HorizontalDivider()
 
+        if (model.isConversationBusy && !model.isSending) {
+            Text(
+                "The Mac is still answering this conversation.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
         if (model.attachments.isNotEmpty()) {
             Row(
                 modifier = Modifier
@@ -170,13 +181,16 @@ fun ChatScreen(
             modifier = Modifier.fillMaxWidth().padding(8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            IconButton(onClick = {
-                photoPicker.launch(
-                    androidx.activity.result.PickVisualMediaRequest(
-                        ActivityResultContracts.PickVisualMedia.ImageOnly,
-                    ),
-                )
-            }) {
+            IconButton(
+                onClick = {
+                    photoPicker.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly,
+                        ),
+                    )
+                },
+                enabled = model.attachments.size < SendLimits.MAX_ATTACHMENTS,
+            ) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "Attach a picture")
             }
             OutlinedTextField(
@@ -193,9 +207,17 @@ fun ChatScreen(
             } else {
                 IconButton(
                     onClick = { model.send(app.transport) },
-                    enabled = model.draft.isNotBlank() || model.attachments.isNotEmpty(),
+                    enabled = (model.draft.isNotBlank() || model.attachments.isNotEmpty()) &&
+                        !model.isConversationBusy,
                 ) {
-                    Icon(Icons.Filled.ArrowUpward, contentDescription = "Send")
+                    Icon(
+                        Icons.Filled.ArrowUpward,
+                        contentDescription = if (model.isConversationBusy) {
+                            "The Mac is still answering this conversation"
+                        } else {
+                            "Send"
+                        },
+                    )
                 }
             }
         }
@@ -216,7 +238,12 @@ private fun AttachmentThumb(dataUrl: String, onRemove: () -> Unit) {
                 ),
             )
         }
-        TextButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd)) { Text("×") }
+        TextButton(
+            onClick = onRemove,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .semantics { contentDescription = "Remove this picture" },
+        ) { Text("×") }
     }
 }
 
@@ -232,7 +259,11 @@ private fun MessageBubble(
 ) {
     val isUser = message.role == ChatMessage.ROLE_USER
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = if (isUser) "You said" else "The model replied"
+            },
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
         if (message.images.isNotEmpty()) {
@@ -272,7 +303,16 @@ private fun MessageBubble(
                         },
                         modifier = Modifier.size(18.dp),
                     )
-                    TextButton(onClick = onToggleReasoning) { Text("Thinking") }
+                    TextButton(
+                        onClick = onToggleReasoning,
+                        modifier = Modifier.semantics {
+                            contentDescription = if (isReasoningExpanded) {
+                                "Hide the model's thinking"
+                            } else {
+                                "Show the model's thinking"
+                            }
+                        },
+                    ) { Text("Thinking") }
                 }
                 if (isReasoningExpanded) {
                     Text(
@@ -467,22 +507,57 @@ private fun bitmapFrom(dataUrl: String): Bitmap? {
  */
 fun attachmentFrom(context: Context, uri: android.net.Uri, maxEdge: Int = 1024): String? =
     runCatching {
+        // Two passes: measure first, then decode with an inSampleSize, so a
+        // 50-megapixel photo never becomes a 200 MB Bitmap on the way to being made
+        // small. The first pass allocates nothing.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri).use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        while (
+            bounds.outWidth / (sample * 2) >= maxEdge || bounds.outHeight / (sample * 2) >= maxEdge
+        ) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
         val bitmap = context.contentResolver.openInputStream(uri).use {
-            BitmapFactory.decodeStream(it)
+            BitmapFactory.decodeStream(it, null, options)
         } ?: return null
+
         val longest = maxOf(bitmap.width, bitmap.height)
-        val scaled = if (longest > maxEdge) {
+        var scaled = if (longest > maxEdge) {
             val scale = maxEdge.toFloat() / longest
             Bitmap.createScaledBitmap(
                 bitmap,
-                (bitmap.width * scale).toInt(),
-                (bitmap.height * scale).toInt(),
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
                 true,
             )
         } else {
             bitmap
         }
-        val stream = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-        "data:image/jpeg;base64," + Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+
+        // And then keep shrinking until it is inside the Mac's per-image limit: a
+        // picture refused on arrival is worse than one made smaller before it left.
+        var quality = 80
+        var data: ByteArray
+        var attempts = 0
+        while (true) {
+            val stream = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            data = stream.toByteArray()
+            attempts++
+            if (data.size <= SendLimits.MAX_IMAGE_BYTES || attempts >= 4) break
+            quality = maxOf(40, quality - 15)
+            scaled = Bitmap.createScaledBitmap(
+                scaled,
+                (scaled.width * 0.75f).toInt().coerceAtLeast(1),
+                (scaled.height * 0.75f).toInt().coerceAtLeast(1),
+                true,
+            )
+        }
+        "data:image/jpeg;base64," + Base64.encodeToString(data, Base64.NO_WRAP)
     }.getOrNull()

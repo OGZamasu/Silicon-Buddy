@@ -1,0 +1,32 @@
+{
+  "auth" : "none",
+  "errors" : {
+    "400" : {
+      "error" : "The request does not name a device."
+    },
+    "403" : {
+      "error" : "That pairing code is not the one on screen."
+    },
+    "429" : {
+      "error" : "Too many pairing attempts. Wait a minute."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/buddy\/pair",
+  "request" : {
+    "code" : "417082",
+    "deviceName" : "Galaxy S24 Ultra",
+    "platform" : "android"
+  },
+  "response" : {
+    "deviceID" : "7A1E0C6E-2C6A-4F4E-9F1E-0B2D3C4A5B6C",
+    "macName" : "Mac Studio",
+    "port" : 8788,
+    "scope" : "full",
+    "token" : "V0hBVC1BLVRPS0VOLVdPVUxELUxPT0stTElLRS1IRVJF"
+  },
+  "scopes" : [
+
+  ],
+  "summary" : "Spend the six-digit code on screen for a device token of your own."
+}

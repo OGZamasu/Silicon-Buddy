@@ -1,0 +1,58 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/image\/models",
+  "request" : null,
+  "response" : [
+    {
+      "author" : "Black Forest Labs",
+      "blocks" : 19,
+      "defaultSteps" : 8,
+      "id" : "flux2-klein",
+      "isGated" : false,
+      "license" : "Apache-2.0",
+      "name" : "FLUX.2 klein",
+      "parameters" : "4B",
+      "recommendation" : {
+        "budgetBytes" : 29200000000,
+        "height" : 1024,
+        "notes" : [
+          "The last phase is the one that decides."
+        ],
+        "peakBytes" : 13958643712,
+        "peakPhase" : "Decode",
+        "phases" : [
+          {
+            "detail" : "VAE",
+            "name" : "Decode",
+            "residentBytes" : 13958643712
+          }
+        ],
+        "quantization" : "8-bit",
+        "steps" : 8,
+        "suggestions" : [
+
+        ],
+        "verdict" : "fits",
+        "width" : 1024
+      },
+      "summary" : "Fast local text-to-image."
+    }
+  ],
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The image models here, and what each would peak at."
+}

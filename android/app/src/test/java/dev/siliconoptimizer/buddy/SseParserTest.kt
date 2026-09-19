@@ -35,10 +35,9 @@ class SseParserTest {
     }
 
     @Test
-    fun `comments are ignored but noticed`() {
+    fun `comments are ignored`() {
         val parser = SseParser()
         assertNull(parser.consume(": heartbeat"))
-        assertTrue(parser.sawComment)
         assertNull(parser.consume("data: after"))
         assertEquals("after", parser.consume("")?.data)
     }

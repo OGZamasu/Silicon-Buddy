@@ -37,9 +37,13 @@ public struct ModelsView: View {
             .background(.bar)
         }
         .task { await model.refresh(using: app.transport) }
+        .onChange(of: app.connectionGeneration) { _, _ in
+            model.reset()
+            Task { await model.refresh(using: app.transport) }
+        }
         .sheet(item: $detail) { entry in
             NavigationStack {
-                CatalogDetailView(entry: entry) { quantization in
+                CatalogDetailView(entry: entry, canControl: app.canControl) { quantization in
                     detail = nil
                     Task { await model.install(model: entry, quantization: quantization, using: app.transport) }
                 }
@@ -81,12 +85,14 @@ public struct ModelsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Unload", role: .destructive) {
-                        Task { await model.unload(using: app.transport) }
+                    if app.canControl {
+                        Button("Unload", role: .destructive) {
+                            Task { await model.unload(using: app.transport) }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(model.job != nil)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(model.job != nil)
                 }
             }
         }
@@ -95,7 +101,9 @@ public struct ModelsView: View {
                 InstalledRow(
                     entry: entry,
                     isLoaded: model.isLoaded(entry.id),
-                    isBusy: model.job?.modelID == entry.id
+                    isBusy: model.job?.modelID == entry.id,
+                    canControl: app.canControl,
+                    download: app.events.download(forModel: entry.id)
                 ) {
                     Task { await model.load(modelID: entry.id, using: app.transport) }
                 }
@@ -103,7 +111,12 @@ public struct ModelsView: View {
         } header: {
             Text("\(model.filteredInstalled.count) on disk")
         } footer: {
-            Text("Loading a model takes over the Mac's memory budget; the Mac unloads the previous one first.")
+            Text(
+                app.canControl
+                    ? "Loading a model takes over the Mac's memory budget; the Mac unloads "
+                        + "the previous one first."
+                    : app.scope.explanation
+            )
         }
     }
 
@@ -149,6 +162,11 @@ struct InstalledRow: View {
     let entry: ControlAPI.InstalledModel
     let isLoaded: Bool
     let isBusy: Bool
+    /// False for a chat-scope device: the Mac would answer 403, so the button is not
+    /// offered in the first place.
+    var canControl = true
+    /// A download the Mac is pushing for this model, when there is one.
+    var download: BuddyAPI.DownloadProgress?
     let load: () -> Void
 
     var body: some View {
@@ -168,9 +186,23 @@ struct InstalledRow: View {
                 }
             }
             Spacer(minLength: 0)
-            if isBusy {
+            if let download {
+                VStack(alignment: .trailing, spacing: 2) {
+                    ProgressView(value: download.progress ?? 0)
+                        .frame(width: 90)
+                    Text(Format.bytes(download.bytesReceived))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Downloading \(entry.name)")
+                .accessibilityValue(
+                    download.progress.map { Format.percent($0) } ?? "in progress"
+                )
+            } else if isBusy {
                 ProgressView().controlSize(.small)
-            } else if !isLoaded {
+            } else if !isLoaded, canControl {
                 Button("Load", action: load)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -268,6 +300,7 @@ struct JobRow: View {
 /// that starts the download.
 struct CatalogDetailView: View {
     let entry: ControlAPI.CatalogModel
+    var canControl = true
     let install: (String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -350,8 +383,10 @@ struct CatalogDetailView: View {
                 Button("Close") { dismiss() }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Install") { install(quantization) }
-                    .buttonStyle(.borderedProminent)
+                if canControl {
+                    Button("Install") { install(quantization) }
+                        .buttonStyle(.borderedProminent)
+                }
             }
         }
         .onAppear {

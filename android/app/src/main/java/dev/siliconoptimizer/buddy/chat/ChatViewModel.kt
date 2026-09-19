@@ -108,6 +108,7 @@ class ChatViewModel(
             if (usesRemoteConversations && transport != null) {
                 val detail = runCatching { transport.conversation(id) }.getOrNull()
                 if (detail != null) {
+                    isConversationBusy = detail.isGenerating
                     current = Conversation(
                         id = detail.id,
                         title = detail.title,
@@ -146,6 +147,10 @@ class ChatViewModel(
             error = TransportError.NotConfigured.message
             return
         }
+        SendLimits.problem(attachments, text)?.let {
+            error = it
+            return
+        }
         val images = attachments.toList()
         draft = ""
         attachments.clear()
@@ -165,6 +170,7 @@ class ChatViewModel(
         current = conversation
         isSending = true
         sendingSince = System.currentTimeMillis()
+        isConversationBusy = false
         error = null
 
         sendJob?.cancel()
@@ -183,7 +189,11 @@ class ChatViewModel(
         finishStreaming("Stopped.")
     }
 
-    private enum class Outcome { Answered, MissingRoute, Failed, Stopped }
+    private enum class Outcome { Answered, MissingRoute, Busy, Failed, Stopped }
+
+    /** True while the Mac is answering the open conversation, ours or anyone's. */
+    var isConversationBusy by mutableStateOf(false)
+        private set
 
     private suspend fun run(messageID: String, transport: ControlTransport) {
         val history = (current?.messages ?: emptyList())
@@ -197,12 +207,18 @@ class ChatViewModel(
             val id = current?.id
             val last = history.lastOrNull()
             if (usesRemoteConversations && id != null && last != null) {
-                when (consume(transport.sendMessage(id, last), messageID)) {
+                when (consume(transport.sendMessage(id, last, maxTokens), messageID)) {
                     Outcome.Answered -> {
                         finishStreaming(null); persist(); return
                     }
                     // Only this route is missing; plain streaming may still be there.
                     Outcome.MissingRoute -> usesRemoteConversations = false
+                    Outcome.Busy -> {
+                        // The Mac is still answering the previous message here. Sending
+                        // it again would only be refused again.
+                        isConversationBusy = true
+                        persist(); return
+                    }
                     Outcome.Stopped -> {
                         finishStreaming("Stopped."); return
                     }
@@ -218,6 +234,10 @@ class ChatViewModel(
                     finishStreaming(null); persist(); return
                 }
                 Outcome.MissingRoute -> usesStreaming = false
+                Outcome.Busy -> {
+                    isConversationBusy = true
+                    persist(); return
+                }
                 Outcome.Stopped -> {
                     finishStreaming("Stopped."); return
                 }
@@ -282,6 +302,11 @@ class ChatViewModel(
         } catch (failure: TransportError) {
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
+            if (failure is TransportError.Conflict) {
+                finishStreaming(failure.message)
+                error = failure.message
+                return Outcome.Busy
+            }
             finishStreaming(failure.message)
             error = failure.message
             return Outcome.Failed
@@ -337,6 +362,19 @@ class ChatViewModel(
         } else {
             "Kept on this device — the Mac doesn't store conversations yet."
         }
+
+    /** Adds a picture, or says why it cannot be added. The cap is the Mac's. */
+    fun attach(dataUrl: String) {
+        if (attachments.size >= SendLimits.MAX_ATTACHMENTS) {
+            error = "The Mac takes at most ${SendLimits.MAX_ATTACHMENTS} pictures a message."
+            return
+        }
+        if (SendLimits.encodedBytes(dataUrl) > SendLimits.MAX_IMAGE_BYTES) {
+            error = "That picture is still too large after shrinking. Try a smaller one."
+            return
+        }
+        attachments.add(dataUrl)
+    }
 
     companion object {
         /**

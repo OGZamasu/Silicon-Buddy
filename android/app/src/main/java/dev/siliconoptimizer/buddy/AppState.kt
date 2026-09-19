@@ -10,6 +10,9 @@ import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.transport.ConnectivityProbe
+import dev.siliconoptimizer.buddy.transport.DeviceScope
+import dev.siliconoptimizer.buddy.transport.TailnetHost
+import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.Reachability
@@ -32,13 +35,32 @@ class AppState(application: Application) : AndroidViewModel(application) {
     var status by mutableStateOf<Status?>(null)
         private set
 
-    /** Which M0 routes this Mac turned out to have. Discovered by using them. */
-    var supportsStreaming by mutableStateOf(true)
-        internal set
-    var supportsRemoteConversations by mutableStateOf(false)
-        internal set
+    /**
+     * Bumped whenever the Mac changes. Screens watch it and throw away what they were
+     * showing: a dashboard still displaying the last Mac's memory after a re-pair is
+     * not a stale reading, it is the wrong machine.
+     */
+    var connectionGeneration by mutableStateOf(0)
+        private set
+
+    /**
+     * An invite from a QR or a link that has not been agreed to yet. Nothing is dialled
+     * and nothing is stored until the person says yes.
+     */
+    var pendingInvite by mutableStateOf<PairingInvite?>(null)
 
     val isPaired: Boolean get() = config != null
+
+    /** Whether this device may change what the Mac is running. */
+    val canControl: Boolean get() = config?.canControl ?: false
+
+    val scope: DeviceScope get() = config?.scope ?: DeviceScope.Full
+
+    /**
+     * False when the keystore is unavailable, in which case the token lives only as
+     * long as the process and the person has to be told.
+     */
+    val canStoreTokenSecurely: Boolean get() = tokens.isSecure
 
     /** The client for the paired Mac, or null when there is none. */
     val transport: ControlTransport?
@@ -47,7 +69,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
     val macDisplayName: String
         get() = config?.macName ?: config?.host ?: "No Mac"
 
-    val tokenIsEncrypted: Boolean get() = tokens.isEncrypted
+    val tokenIsEncrypted: Boolean get() = tokens.isSecure
 
     // MARK: - Pairing
 
@@ -57,6 +79,9 @@ class AppState(application: Application) : AndroidViewModel(application) {
      * the caller can offer the advanced form instead.
      */
     suspend fun pair(invite: PairingInvite) {
+        if (!TailnetHost.isAllowed(invite.host)) {
+            throw TransportError.Forbidden(TailnetHost.EXPLANATION)
+        }
         val probe = ControlClient(ServerConfig(invite.host, invite.port, token = ""))
         val paired = probe.pair(invite.code, deviceName, platform)
         connect(
@@ -66,6 +91,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
                 token = paired.token,
                 macName = paired.macName,
                 deviceID = paired.deviceID,
+                scope = DeviceScope.from(paired.scope),
             ),
         )
         refreshReachability()
@@ -73,9 +99,15 @@ class AppState(application: Application) : AndroidViewModel(application) {
 
     /** The advanced form: host, port and the token from the Mac's control.json. */
     fun connect(newConfig: ServerConfig) {
+        if (!TailnetHost.isAllowed(newConfig.host)) {
+            throw TransportError.Forbidden(TailnetHost.EXPLANATION)
+        }
         tokens.save(newConfig)
         config = newConfig
+        status = null
         reachability = Reachability.Unknown
+        pendingInvite = null
+        connectionGeneration++
     }
 
     fun forget() {
@@ -83,6 +115,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
         config = null
         status = null
         reachability = Reachability.Unknown
+        connectionGeneration++
     }
 
     fun noteMacName(name: String) {

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,6 +45,7 @@ import dev.siliconoptimizer.buddy.ui.verdictTint
 fun ModelsScreen(
     app: AppState,
     model: ModelsViewModel,
+    events: dev.siliconoptimizer.buddy.EventFeed,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -114,13 +116,15 @@ fun ModelsScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                OutlinedButton(
-                                    onClick = { model.unload(app.transport) },
-                                    enabled = model.job == null,
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        contentColor = MaterialTheme.colorScheme.error,
-                                    ),
-                                ) { Text("Unload") }
+                                if (app.canControl) {
+                                    OutlinedButton(
+                                        onClick = { model.unload(app.transport) },
+                                        enabled = model.job == null,
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.error,
+                                        ),
+                                    ) { Text("Unload") }
+                                }
                             }
                             HorizontalDivider()
                         }
@@ -131,6 +135,8 @@ fun ModelsScreen(
                             entry = entry,
                             isLoaded = model.isLoaded(entry.id),
                             isBusy = model.job?.modelID == entry.id,
+                            canControl = app.canControl,
+                            download = events.download(modelID = entry.id),
                             onLoad = { model.load(entry.id, transport = app.transport) },
                         )
                         HorizontalDivider()
@@ -140,7 +146,9 @@ fun ModelsScreen(
                 ModelsViewModel.Section.Catalog -> {
                     item { SectionHeader("${model.filteredCatalog.size} in the catalog") }
                     items(model.filteredCatalog, key = { it.id }) { entry ->
-                        CatalogRow(entry) { model.install(entry, transport = app.transport) }
+                        CatalogRow(entry, app.canControl) {
+                            model.install(entry, transport = app.transport)
+                        }
                         HorizontalDivider()
                     }
                 }
@@ -161,7 +169,9 @@ fun ModelsScreen(
                         }
                     } else {
                         items(model.filteredCloud, key = { it.id }) { entry ->
-                            CatalogRow(entry) { model.install(entry, transport = app.transport) }
+                            CatalogRow(entry, app.canControl) {
+                                model.install(entry, transport = app.transport)
+                            }
                             HorizontalDivider()
                         }
                     }
@@ -187,6 +197,8 @@ private fun InstalledRow(
     entry: InstalledModel,
     isLoaded: Boolean,
     isBusy: Boolean,
+    canControl: Boolean,
+    download: dev.siliconoptimizer.buddy.transport.DownloadProgress?,
     onLoad: () -> Unit,
 ) {
     Row(
@@ -209,14 +221,25 @@ private fun InstalledRow(
             }
         }
         when {
+            download != null -> Column {
+                LinearProgressIndicator(
+                    progress = { (download.progress ?: 0.0).toFloat() },
+                    modifier = Modifier.width(90.dp),
+                )
+                Text(
+                    Format.bytes(download.bytesReceived),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             isBusy -> CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-            !isLoaded -> OutlinedButton(onClick = onLoad) { Text("Load") }
+            !isLoaded && canControl -> OutlinedButton(onClick = onLoad) { Text("Load") }
         }
     }
 }
 
 @Composable
-private fun CatalogRow(entry: CatalogModel, onInstall: () -> Unit) {
+private fun CatalogRow(entry: CatalogModel, canControl: Boolean, onInstall: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -251,7 +274,9 @@ private fun CatalogRow(entry: CatalogModel, onInstall: () -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
             }
-            TextButton(onClick = onInstall) { Text("Install") }
+            if (canControl) {
+                TextButton(onClick = onInstall) { Text("Install") }
+            }
         }
     }
 }

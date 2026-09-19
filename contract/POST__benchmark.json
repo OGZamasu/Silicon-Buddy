@@ -1,0 +1,42 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/benchmark",
+  "request" : null,
+  "response" : {
+    "calibration" : 0.97999999999999998,
+    "findings" : [
+      {
+        "detail" : "The planner's estimate needed no correction.",
+        "severity" : "info",
+        "title" : "Within 2% of prediction"
+      }
+    ],
+    "generationTokensPerSecond" : 89.400000000000006,
+    "grade" : "Fast",
+    "longContextFalloff" : 0.85999999999999999,
+    "modelName" : "Qwen3-Coder 30B A3B",
+    "predictedGenerationTokensPerSecond" : 91,
+    "promptTokensPerSecond" : 1120,
+    "score" : 82,
+    "timeToFirstToken" : 0.31
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Measure the loaded model here, and recalibrate its estimates."
+}

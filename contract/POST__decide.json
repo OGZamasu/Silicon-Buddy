@@ -1,0 +1,44 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/decide",
+  "request" : {
+    "questions" : {
+      "refund" : {
+        "instructions" : "Asks for money back",
+        "type" : "noul"
+      }
+    },
+    "state" : "Customer was charged twice and wants it fixed."
+  },
+  "response" : {
+    "answers" : {
+      "refund" : {
+        "noul" : 0.93999999999999995,
+        "type" : "noul"
+      }
+    },
+    "model" : "Qwen3-Coder 30B A3B",
+    "provider" : "local",
+    "usage" : {
+      "input_tokens" : 120,
+      "output_tokens" : 1
+    }
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "Typed probabilistic decisions, in the TypeSafe\/Jev shape."
+}

@@ -43,6 +43,25 @@ class DashboardViewModel : ViewModel() {
 
     private var ticker: Job? = null
 
+    /** Set when this Mac has no `/events`, in which case `/status` has to be asked for. */
+    var pollsStatus by mutableStateOf(true)
+
+    /** Throws away the last Mac's readings, so a re-pair never shows another machine. */
+    fun reset() {
+        stopLiveUpdates()
+        status = null
+        profile = null
+        metrics = null
+        swarm = null
+        node = null
+        error = null
+    }
+
+    /** Takes the status the event stream pushed, so the card is current without asking. */
+    fun apply(streamed: Status) {
+        status = streamed
+    }
+
     /** One pass over every dashboard endpoint, in parallel. */
     fun refresh(transport: ControlTransport?, app: AppState? = null) {
         if (transport == null) {
@@ -91,7 +110,10 @@ class DashboardViewModel : ViewModel() {
             while (isActive) {
                 delay(seconds * 1000)
                 runCatching { transport.metrics() }.getOrNull()?.let { metrics = it }
-                runCatching { transport.status() }.getOrNull()?.let { status = it }
+                // The status card comes from the event stream when the Mac has one.
+                if (pollsStatus) {
+                    runCatching { transport.status() }.getOrNull()?.let { status = it }
+                }
             }
         }
     }

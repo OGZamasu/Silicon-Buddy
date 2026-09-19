@@ -1,7 +1,0 @@
-{
-  "content" : "Hello from the Mac.",
-  "generatedTokens" : 44,
-  "promptTokens" : 19,
-  "reasoning" : "We need to respond exactly: Hello from the Mac. User says \"Reply with exactly: Hello from the Mac.\" So final must be that exact string. Need final only.\n",
-  "tokensPerSecond" : 20.067042589264506
-}

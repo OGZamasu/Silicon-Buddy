@@ -16,6 +16,14 @@ public enum TransportError: Error, Equatable, Sendable {
     case timedOut
     /// 401. The token is wrong, or the Mac revoked this device.
     case unauthorized
+    /// 403. The token is good but this device may not do that — a chat-scope device
+    /// asking to load a model, or a wrong pairing code. The Mac's own words matter
+    /// here, because "not allowed" and "no longer paired" call for different actions.
+    case forbidden(String)
+    /// 409. The Mac is already answering in that conversation.
+    case conflict(String)
+    /// 413. More than a device may send: 4 MiB a body, about 1.5 MB an image.
+    case tooLarge(String)
     /// 404 on a route this app knows about — which for the M0 routes means "that Mac
     /// has not shipped them yet", and the caller should fall back rather than fail.
     case routeUnavailable(String)
@@ -44,6 +52,13 @@ extension TransportError: LocalizedError {
             "The Mac took too long to answer."
         case .unauthorized:
             "This device isn't paired any more. Pair it again from the Mac."
+        case .forbidden(let message):
+            message.isEmpty ? "The Mac wouldn't allow that." : message
+        case .conflict(let message):
+            message.isEmpty
+                ? "That conversation is still being answered." : message
+        case .tooLarge(let message):
+            message.isEmpty ? "That was too large to send." : message
         case .routeUnavailable(let path):
             "This Mac doesn't have \(path) yet."
         case .badRequest(let message):
@@ -67,6 +82,9 @@ extension TransportError: LocalizedError {
         case .unreachable: "Open Tailscale, then pull to refresh."
         case .appNotRunning: "Open Silicon Optimizer on the Mac."
         case .unauthorized: "Settings → Silicon Buddy → Pair a device."
+        case .forbidden: "Pair again from the Mac with full control."
+        case .conflict: "Wait for the answer, or start another conversation."
+        case .tooLarge: "Send fewer or smaller pictures."
         case .badRequest: "Load a model from the Models tab."
         default: nil
         }
@@ -75,6 +93,13 @@ extension TransportError: LocalizedError {
     /// True when a caller should quietly use its fallback instead of showing this.
     public var isMissingRoute: Bool {
         if case .routeUnavailable = self { return true }
+        return false
+    }
+
+    /// True when the Mac refused because of what this device is allowed to do, rather
+    /// than because it does not know this device.
+    public var isForbidden: Bool {
+        if case .forbidden = self { return true }
         return false
     }
 }
@@ -93,6 +118,13 @@ extension TransportError {
             return .timedOut
         case .cannotConnectToHost:
             return .appNotRunning
+        case .appTransportSecurityRequiresSecureConnection:
+            // Only reachable if the app's ATS exception is ever narrowed: it means the
+            // system refused plain HTTP to that address, not that the Mac is away.
+            return .forbidden(
+                "iOS refused a plain HTTP connection to that address. "
+                    + "Use the Mac's Tailscale name or address."
+            )
         case .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
              .networkConnectionLost, .internationalRoamingOff, .dataNotAllowed,
              .secureConnectionFailed, .resourceUnavailable:
@@ -111,8 +143,11 @@ extension TransportError {
             ?? String(data: body, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? ""
         switch status {
-        case 401, 403: return .unauthorized
+        case 401: return .unauthorized
+        case 403: return .forbidden(message)
         case 404: return .routeUnavailable(path)
+        case 409: return .conflict(message)
+        case 413: return .tooLarge(message)
         case 400: return .badRequest(message.isEmpty ? "The Mac rejected the request." : message)
         case 429: return .busy(message.isEmpty ? "The Mac is busy." : message)
         default: return .server(status: status, message: message)

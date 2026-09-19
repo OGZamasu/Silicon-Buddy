@@ -135,6 +135,16 @@ data class CatalogModel(
 }
 
 @Serializable
+data class PlanRequest(
+    val modelID: String,
+    val quantization: String? = null,
+    val contextLength: Int? = null,
+    val kvCachePrecision: String? = null,
+    val flashAttention: Boolean? = null,
+    val expertSlots: Int? = null,
+)
+
+@Serializable
 data class LoadRequest(
     val modelID: String,
     val quantization: String? = null,
@@ -243,7 +253,9 @@ data class VideoQueueItem(
     val seconds: Int,
     val resolution: String,
     val h3Turbo: Boolean? = null,
-    @SerialName("h3_steps") val h3Steps: Int? = null,
+    // The queue view spells these in camelCase; only VideoGenerateRequest uses the
+    // snake_case form, and this is not that type.
+    val h3Steps: Int? = null,
     val status: String,
     val nodeJobID: String? = null,
     val file: String? = null,

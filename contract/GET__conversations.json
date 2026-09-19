@@ -1,0 +1,30 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/conversations",
+  "request" : null,
+  "response" : [
+    {
+      "id" : "3F5C1A88-9C1D-4E2B-8A70-1D2E3F405162",
+      "messageCount" : 2,
+      "title" : "Weekend in Lisbon",
+      "updatedAt" : "2026-09-18T09:41:12Z"
+    }
+  ],
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "Every conversation on the Mac, newest first."
+}

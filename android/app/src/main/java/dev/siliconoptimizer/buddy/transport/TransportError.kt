@@ -30,6 +30,19 @@ sealed class TransportError(message: String) : Exception(message) {
     data object Unauthorized :
         TransportError("This device isn't paired any more. Pair it again from the Mac.")
 
+    /**
+     * 403: the token is good but this device may not do that — a chat-scope device
+     * asking to load a model, or a wrong pairing code. The Mac's own words matter here,
+     * because "not allowed" and "no longer paired" call for different actions.
+     */
+    data class Forbidden(val detail: String) : TransportError(detail)
+
+    /** 409: the Mac is already answering in that conversation. */
+    data class Conflict(val detail: String) : TransportError(detail)
+
+    /** 413: more than a device may send — 4 MiB a body, about 1.5 MB an image. */
+    data class TooLarge(val detail: String) : TransportError(detail)
+
     /** 404 on a route this app knows about: that Mac has not shipped it yet. */
     data class RouteUnavailable(val path: String) :
         TransportError("This Mac doesn't have $path yet.")
@@ -52,12 +65,21 @@ sealed class TransportError(message: String) : Exception(message) {
 
     val isMissingRoute: Boolean get() = this is RouteUnavailable
 
+    /**
+     * True when the Mac refused because of what this device may do, rather than
+     * because it does not know this device.
+     */
+    val isForbidden: Boolean get() = this is Forbidden
+
     /** What to offer the person, when there is something to offer. */
     val recovery: String?
         get() = when (this) {
             is Unreachable -> "Open Tailscale, then pull to refresh."
             is AppNotRunning -> "Open Silicon Optimizer on the Mac."
             is Unauthorized -> "Settings, Silicon Buddy, Pair a device."
+            is Forbidden -> "Pair again from the Mac with full control."
+            is Conflict -> "Wait for the answer, or start another conversation."
+            is TooLarge -> "Send fewer or smaller pictures."
             is BadRequest -> "Load a model from the Models tab."
             else -> null
         }
@@ -79,6 +101,12 @@ sealed class TransportError(message: String) : Exception(message) {
             else -> {
                 val text = error.message.orEmpty()
                 when {
+                    // The platform refusing plain HTTP is not the Mac being away, and
+                    // the fix is different: use the address it was paired with.
+                    text.contains("Cleartext", true) -> Forbidden(
+                        "Android refused a plain HTTP connection to " + host + ". " +
+                            TailnetHost.EXPLANATION,
+                    )
                     text.contains("ECONNREFUSED", true) ||
                         text.contains("refused", true) -> AppNotRunning
                     text.contains("timed out", true) -> TimedOut
@@ -94,8 +122,11 @@ sealed class TransportError(message: String) : Exception(message) {
                 lenient.decodeFromString(ErrorResponse.serializer(), body).error
             }.getOrElse { body.trim() }
             return when (status) {
-                401, 403 -> Unauthorized
+                401 -> Unauthorized
+                403 -> Forbidden(detail.ifBlank { "The Mac wouldn't allow that." })
                 404 -> RouteUnavailable(path)
+                409 -> Conflict(detail.ifBlank { "That conversation is still being answered." })
+                413 -> TooLarge(detail.ifBlank { "That was too large to send." })
                 400 -> BadRequest(detail.ifBlank { "The Mac rejected the request." })
                 429 -> Busy(detail.ifBlank { "The Mac is busy." })
                 else -> Server(status, detail)

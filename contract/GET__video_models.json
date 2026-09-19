@@ -1,0 +1,37 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/video\/models",
+  "request" : null,
+  "response" : [
+    {
+      "available" : true,
+      "id" : "hailuo-h3",
+      "name" : "Hailuo H3",
+      "node" : "silicon-node",
+      "summary" : "Text and image to video.",
+      "supportedSeconds" : [
+        5,
+        10
+      ],
+      "supportsImageInput" : true,
+      "typicalDuration" : "4 minutes"
+    }
+  ],
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The video models, and which machine can run each."
+}

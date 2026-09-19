@@ -202,6 +202,16 @@ public final class ModelsModel {
     }
 
     public func clearError() { error = nil }
+
+    /// Throws away the last Mac's lists, so a re-pair never shows another machine's disk.
+    public func reset() {
+        cancelPolling()
+        installed = []
+        catalog = []
+        status = nil
+        error = nil
+        search = ""
+    }
 }
 
 extension ControlAPI.InstalledModel {
