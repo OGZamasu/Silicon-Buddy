@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
+import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.transport.ConnectivityProbe
 import dev.siliconoptimizer.buddy.transport.DeviceScope
 import dev.siliconoptimizer.buddy.transport.TailnetHost
@@ -27,6 +28,7 @@ import kotlinx.coroutines.launch
 class AppState(application: Application) : AndroidViewModel(application) {
 
     private val tokens = TokenStore(application)
+    private val snapshots = SnapshotStore(application)
 
     var config by mutableStateOf<ServerConfig?>(tokens.load())
         private set
@@ -104,6 +106,9 @@ class AppState(application: Application) : AndroidViewModel(application) {
         }
         tokens.save(newConfig)
         config = newConfig
+        // A widget showing the last Mac's model after a re-pair would be showing the
+        // wrong machine, so the snapshot goes with the pairing.
+        snapshots.clear()
         status = null
         reachability = Reachability.Unknown
         pendingInvite = null
@@ -112,6 +117,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
 
     fun forget() {
         tokens.forget()
+        snapshots.clear()
         config = null
         status = null
         reachability = Reachability.Unknown
@@ -138,6 +144,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
             reachability = result
             if (result.isReady) {
                 status = runCatching { client.status() }.getOrNull()
+                status?.let { snapshots.note(it, config?.macName) }
             }
         }
     }
