@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -42,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -133,7 +135,20 @@ sealed interface LinkArrival {
 }
 
 private enum class Destination(val label: String) {
-    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings")
+    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings"),
+    ;
+
+    companion object {
+        /**
+         * Saved by name, so a tab added or reordered later cannot restore somebody onto
+         * a different screen than the one they left.
+         */
+        val Saver: androidx.compose.runtime.saveable.Saver<Destination, String> =
+            androidx.compose.runtime.saveable.Saver(
+                save = { it.name },
+                restore = { name -> entries.firstOrNull { it.name == name } ?: Dashboard },
+            )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -145,10 +160,17 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     val chat: ChatViewModel = viewModel()
     val events: EventFeed = viewModel()
 
-    var destination by remember { mutableStateOf(Destination.Dashboard) }
+    // Saved rather than merely remembered. Two things take this activity away and bring
+    // it back: a configuration change the manifest does not absorb — font scale is the
+    // common one — and One UI deciding a backgrounded app has had long enough. Either
+    // way `remember` alone puts the person back on the dashboard, having lost the
+    // conversation they were reading.
+    var destination by rememberSaveable(stateSaver = Destination.Saver) {
+        mutableStateOf(Destination.Dashboard)
+    }
     var pairing by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
-    var openConversation by remember { mutableStateOf<String?>(null) }
+    var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { app.refreshReachability() }
@@ -268,7 +290,19 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             }
         },
     ) { padding ->
-        Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+        // `consumeWindowInsets` is the half that is easy to leave out, and leaving it
+        // out is visible: Scaffold hands down padding for the navigation bar and the
+        // bottom bar, and then `ChatScreen`'s `imePadding()` measures the keyboard from
+        // the bottom of the *window* and adds all of it again. The composer ends up
+        // floating a navigation bar's height above the keyboard with dead space under
+        // it. Consuming the padding here tells the descendants that much is already
+        // dealt with, so `imePadding()` only adds the rest.
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding),
+        ) {
             if (wide) {
                 // A tablet has room for the conversation list beside the transcript.
                 NavigationRail {
@@ -302,7 +336,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
                         ConversationList(chat, app) { openConversation = it }
                     } else {
-                        LaunchedEffect(openConversation) {
+                        // Keyed on readiness as well as on the id: a restored id
+                        // arrives before the Mac has said whether it keeps conversations
+                        // at all, and opening then yields an empty transcript with the
+                        // right title. Re-runs once the answer is in.
+                        LaunchedEffect(openConversation, chat.askedAboutConversations) {
                             openConversation?.let { chat.open(it, app.transport) }
                         }
                         ChatScreen(app, chat, Modifier.fillMaxSize())
@@ -396,6 +434,17 @@ private fun SettingsScreen(
     events: EventFeed,
     onPair: () -> Unit,
 ) {
+    // A clock that runs only while the stream is down, so the "next try in Ns" line
+    // counts down instead of freezing on the number it was given. It stops the moment
+    // the stream is back, which is why it is keyed on `retryAt` rather than left ticking.
+    var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(events.retryAt) {
+        while (events.retryAt != null) {
+            tick = System.currentTimeMillis()
+            kotlinx.coroutines.delay(500)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -454,6 +503,11 @@ private fun SettingsScreen(
                 when {
                     events.isLive -> "Streaming from /events"
                     events.mustPoll -> "Polling — this Mac has no /events"
+                    events.retryAt != null ->
+                        // `tick` is read here so this line recomposes once a second and
+                        // the countdown actually counts down rather than freezing on
+                        // whatever it said when the stream dropped.
+                        "Reconnecting — next try in ${events.secondsUntilRetry(tick)}s"
                     else -> "Not started"
                 },
             )

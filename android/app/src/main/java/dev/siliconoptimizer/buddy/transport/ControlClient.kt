@@ -83,6 +83,9 @@ interface ControlTransport {
 class ControlClient(private val config: ServerConfig) : ControlTransport {
 
     companion object {
+        /** One tag for everything this client says, so `logcat -s SiliconBuddy` is enough. */
+        const val LOG = "SiliconBuddy"
+
         /** A connection that lasted this long counts as having worked. */
         const val STEADY_CONNECTION_MS = 30_000L
 
@@ -122,6 +125,16 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         // The one place every request passes through. A host that got into a
         // ServerConfig some other way still never gets dialled.
         if (!TailnetHost.isAllowed(config.host)) {
+            // Worth a line: this is the gate that makes a scanned QR safe, and "the app
+            // refused to dial that host" and "the host did not answer" look identical
+            // from the outside. The route only, though — not the address that was
+            // refused, and not the rest of the path, because `/conversations/<id>` is
+            // the owner's data and a host is the owner's tailnet.
+            android.util.Log.w(
+                LOG,
+                "refusing $method /${path.trimStart('/').substringBefore('/')}: " +
+                    "host is not on the tailnet",
+            )
             throw TransportError.Forbidden(TailnetHost.EXPLANATION)
         }
         if (authorized && config.token.isEmpty()) throw TransportError.NotConfigured
@@ -300,6 +313,19 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             // heartbeat and drops would pin the delay at a second and this client would
             // knock twenty times a minute, forever.
             val openedAt = System.currentTimeMillis()
+            var summary: String? = null
+            // The open is logged as well as the drop. A stream that is up says nothing
+            // on its own, so without this line "connected and quiet" and "never dialled"
+            // look identical in logcat — and those are the two answers anyone reading it
+            // is trying to tell apart.
+            //
+            // Whether it is resuming, not from where: the id is the Mac's own text and
+            // nothing server-supplied goes in a log line.
+            android.util.Log.i(
+                LOG,
+                "/events opening (attempt $attempt" +
+                    (if (lastEventID != null) ", resuming" else "") + ")",
+            )
             try {
                 stream(
                     "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
@@ -326,9 +352,24 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                 }
             } catch (error: TransportError) {
                 if (error.isMissingRoute || error is TransportError.Unauthorized) throw error
+                // `logSummary`, never `message`: `Unreachable` puts the Mac's tailnet
+                // address in its message by construction, and this value is on its way
+                // to logcat and to a field called `summary` for the same reason.
+                summary = error.logSummary
             }
             attempt = nextAttempt(attempt, System.currentTimeMillis() - openedAt)
-            kotlinx.coroutines.delay(reconnectDelayMillis(attempt))
+            val retryIn = reconnectDelayMillis(attempt)
+            // Logged as well as emitted: when the question is "did the stream come back
+            // after the tunnel flapped", the answer has to be findable in logcat
+            // afterwards, not only on a screen nobody was watching at the time.
+            android.util.Log.i(
+                LOG,
+                "/events dropped after ${System.currentTimeMillis() - openedAt}ms " +
+                    "(attempt $attempt, retrying in ${retryIn}ms)" +
+                    (summary?.let { ": $it" } ?: ""),
+            )
+            emit(ServerEvent.Disconnected(attempt, retryIn, summary))
+            kotlinx.coroutines.delay(retryIn)
         }
     }
 

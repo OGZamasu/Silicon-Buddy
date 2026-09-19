@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import dev.siliconoptimizer.buddy.reach.RecognitionRoute
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.reach.VoiceEffect
 import dev.siliconoptimizer.buddy.reach.VoiceEvent
@@ -43,26 +44,23 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
         private set
 
     /**
-     * True when this phone recognises speech without sending the audio anywhere.
+     * Where the audio is going, decided by which recogniser was actually created.
      *
-     * Set from which recogniser was actually created, not from the SDK version. Below
-     * API 33 there is no on-device recogniser to create, and `EXTRA_PREFER_OFFLINE` is
-     * a preference the engine is free to ignore — so "offline" cannot be claimed, only
-     * asked for, and this stays false.
+     * Below API 33 there is no on-device recogniser to create, and `EXTRA_PREFER_OFFLINE`
+     * is a preference the engine is free to ignore — so "offline" cannot be claimed,
+     * only asked for. See [RecognitionRoute].
      */
-    var isOnDevice by mutableStateOf(false)
+    var route by mutableStateOf(RecognitionRoute.Network)
         private set
+
+    /** True when this phone recognises speech without sending the audio anywhere. */
+    val isOnDevice: Boolean get() = route.keepsAudioOnDevice
 
     /**
      * What the caption says about where the audio is going, for whoever is holding the
      * button down.
      */
-    val recognitionNote: String
-        get() = if (isOnDevice) {
-            "Listening — recognised on this phone"
-        } else {
-            "Listening — sent to Google for recognition"
-        }
+    val recognitionNote: String get() = route.note
 
     /** Called with the finished question. The chat screen sends it. */
     var onAsk: ((String) -> Unit)? = null
@@ -128,9 +126,25 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
         partial = session.partial
     }
 
-    private fun startListening() {
+    private fun startListening() = startListening(allowOnDevice = true)
+
+    /**
+     * Opens the microphone.
+     *
+     * [allowOnDevice] is false only on the one retry below: an on-device recogniser that
+     * has no model for this language fails immediately and would otherwise fail forever,
+     * so the second attempt goes to the network one — and says so.
+     */
+    private fun startListening(allowOnDevice: Boolean) {
         val context = getApplication<Application>()
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+        val sdk = android.os.Build.VERSION.SDK_INT
+        // `isRecognitionAvailable` answers for the *network* recogniser. A phone with
+        // only the on-device one — no Google app, or it disabled — would be told speech
+        // was unavailable while a working recogniser sat right there, so either counts.
+        val offersOnDevice = sdk >= RecognitionRoute.MINIMUM_SDK &&
+            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
+                .getOrDefault(false)
+        if (!SpeechRecognizer.isRecognitionAvailable(context) && !offersOnDevice) {
             perform(session.apply(VoiceEvent.Failed("Speech recognition isn't available on this phone.")))
             return
         }
@@ -140,16 +154,20 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
         // would undo the point of the app. `createOnDeviceSpeechRecognizer` is the only
         // way to be sure, because `EXTRA_PREFER_OFFLINE` is a hint the engine may
         // ignore without saying so.
-        val onDevice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
-            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
-                .getOrDefault(false)
-        val recogniser = if (onDevice) {
+        //
+        // Which recogniser we ended up with, not which one we hoped for: a phone that
+        // advertises the feature can still fail to build one, and the caption below the
+        // button is a promise about where a recording of the owner's voice goes.
+        var builtOnDevice = false
+        val recogniser = if (allowOnDevice && offersOnDevice) {
             runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }
+                .onSuccess { builtOnDevice = true }
                 .getOrElse { SpeechRecognizer.createSpeechRecognizer(context) }
         } else {
             SpeechRecognizer.createSpeechRecognizer(context)
         }
-        isOnDevice = onDevice
+        val onDevice = RecognitionRoute.of(sdk, offersOnDevice, builtOnDevice)
+        route = onDevice
         this.recogniser = recogniser
         recogniser.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = Unit
@@ -168,9 +186,20 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
             }
 
             override fun onError(error: Int) {
-                // A recogniser that gives up mid-phrase is common and not worth a red
-                // banner: the button simply stops listening and whatever was heard is
-                // sent, exactly as if the person had let go.
+                // The on-device recogniser saying it has no model for this language is
+                // not a transient stumble — it will say the same thing every time — so
+                // it is worth one retry on the network recogniser rather than a button
+                // that never works. The route is re-derived by that call, so the caption
+                // stops claiming the audio stays here the moment it stops being true.
+                if (onDevice.keepsAudioOnDevice && error in RETRY_ON_NETWORK &&
+                    session.isListening
+                ) {
+                    startListening(allowOnDevice = false)
+                    return
+                }
+                // Otherwise: a recogniser that gives up mid-phrase is common and not
+                // worth a red banner. The button simply stops listening and whatever was
+                // heard is sent, exactly as if the person had let go.
                 if (session.isListening) perform(session.apply(VoiceEvent.Released))
             }
 
@@ -188,15 +217,11 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
             )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            // On-device where the phone can. The question is going to the owner's own
-            // Mac, and routing the audio through Google's servers on the way would undo
-            // the point of the whole app. Ignored by older recognisers, which is why it
-            // is a preference and not a requirement.
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            }
+            // Only where it is already true. Asking the *network* recogniser to prefer
+            // offline is how you get a recogniser that fails for no visible reason on a
+            // phone with no downloaded model, having promised nothing either way.
+            if (builtOnDevice) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
-        isOnDevice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
         recogniser.startListening(intent)
     }
 
@@ -222,6 +247,15 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
                         }
                     })
                     say(text)
+                } else {
+                    // No engine. Without this the session sits in `Speaking` for ever:
+                    // the button reads "Press to interrupt" a silence, and the next
+                    // answer is never spoken because the state machine thinks the last
+                    // one still is. Let it go, and drop the dead engine so a later reply
+                    // tries again rather than inheriting the failure.
+                    runCatching { speech?.shutdown() }
+                    speech = null
+                    perform(session.apply(VoiceEvent.FinishedSpeaking))
                 }
             }
             return
@@ -244,5 +278,16 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
 
     companion object {
         private const val UTTERANCE = "buddy-reply"
+
+        /**
+         * On-device failures that are about the engine rather than the speaker, and so
+         * will happen again identically. Worth one fall back to the network recogniser;
+         * everything else (no speech, a timeout, a busy microphone) is a stumble and is
+         * treated as the button having been let go.
+         */
+        private val RETRY_ON_NETWORK = setOf(
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+            SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT,
+        )
     }
 }

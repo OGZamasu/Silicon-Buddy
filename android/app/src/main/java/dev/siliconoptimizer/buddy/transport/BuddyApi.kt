@@ -234,4 +234,23 @@ sealed interface ServerEvent {
     /** An answer the Mac has since checked. */
     data class Checked(val verdict: Verdict) : ServerEvent
     data class Beat(val at: String?) : ServerEvent
+
+    /**
+     * The stream dropped, and will be opened again in [retryInMillis].
+     *
+     * Emitted rather than swallowed: without it a screen says "Streaming from /events"
+     * while the phone is in aeroplane mode, which is the one moment the line is worth
+     * reading. [attempt] is the backoff step, so a blip can be told from a Mac that has
+     * gone away.
+     */
+    data class Disconnected(
+        val attempt: Int,
+        val retryInMillis: Long,
+        /**
+         * `TransportError.logSummary`: a fixed tag such as "unreachable", never the
+         * error's own message. The message names the Mac's tailnet address, and the
+         * whole point of this field is that it gets logged.
+         */
+        val summary: String?,
+    ) : ServerEvent
 }

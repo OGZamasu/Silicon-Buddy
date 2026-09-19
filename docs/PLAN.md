@@ -57,6 +57,95 @@ Decided 2026-09-18 with the owner.
   `contract/` but are not mirrored by either app yet; they belong to M3's node and
   recommend pages.
 
+### M2.1 — Android device pass — **done**
+
+An afternoon with the S24 Ultra (SM-S928U) itself rather than an emulator. The phone
+turned out to be on **Android 16 (SDK 36)**, not 14/15, with **three-button navigation** —
+both of which matter, because the inset bug below only shows on an opaque navigation bar.
+
+Verified on the phone: cold start (~0.95–1.1s, debug build); pairing restored from
+EncryptedSharedPreferences after `am force-stop`; `GET /events` opened over the tailnet
+and stayed open; `TailnetHost` gating every request; the Glance widget already on the
+One UI home screen taking an update from the app; the Quick Settings tile, the share
+target and both launcher shortcuts — one static, one dynamic — resolving.
+
+Verified on an Android 16 emulator against `demo_mac.py`, because they need a screen and
+the phone's is locked: pairing by link, live dashboard, conversation sync, streaming and
+markdown, the composer against the keyboard, dark theme, font scale 1.3, and the
+`/events` backoff across a real network drop (0 → 1s → 2s → 4s → 8s, reset after a
+stream that had stayed up).
+
+Fixed here:
+
+- **The push-to-talk caption lied.** `VoiceController` decided correctly whether it had
+  built an on-device recogniser and then overwrote the answer with `SDK_INT >= 33`, so
+  every phone on Android 13 or later was told its voice was recognised locally — the S24
+  Ultra included — whether or not the audio was going to Google. The decision moved to
+  `RecognitionRoute`, which has tests.
+- **The camera kept running after its sheet closed**, bound to the activity rather than
+  to the preview, so the privacy indicator stayed lit. Fixing it exposed a race — close
+  the sheet while the camera service is still starting and the listener bound afterwards,
+  with no dispose left to undo it — so the wait is now a cancellable `awaitInstance`
+  rather than a blocking `get()` on the main thread. The bind itself still runs on the
+  main thread, which is where CameraX wants it; it is the *waiting* that moved. Unbinds
+  the two use cases rather than everything, because the QR scanner shares the provider,
+  and closes the `ImageProxy` in a `finally`.
+- **The event stream healed silently.** Nothing downstream could tell a live stream from
+  one that had been flapping for ten minutes, and Settings said "Streaming from /events"
+  during an outage. It now emits `ServerEvent.Disconnected` and logs both ends of every
+  reconnect under one `SiliconBuddy` tag — but only `TransportError.logSummary`, a fixed
+  tag per case, never the error's message. The first version of that logging wrote
+  `error.message`, and `Unreachable` names the Mac's tailnet address in its message by
+  construction, so every flap printed the owner's 100.x address into a log that outlives
+  the moment and travels in bug reports.
+- **The composer floated above the keyboard.** Scaffold's padding and `imePadding()`
+  each counted the navigation bar, leaving ~128dp of dead space under the composer on a
+  three-button phone. Fixed with `consumeWindowInsets`.
+- **The open tab and conversation were lost** to any restart One UI felt like doing.
+  Saving the id then exposed a second bug: it comes back before the Mac has been asked
+  whether it stores conversations, and `open` used to answer that with a fabricated empty
+  transcript wearing the right title. It now waits for the answer — but only when there
+  is a Mac to wait for, since unpaired that flag is never set and a blunter guard made
+  every local conversation permanently unopenable.
+- **Release was built unminified at 75 MB.** R8 and resource shrinking take it to
+  28.9 MB; restricting to `arm64-v8a` takes it to **12.7 MB** (debug 94 → 74.6 MB). The
+  keep rules are the substance: a Glance `ActionCallback` is reached by class *name*, so
+  without one the widget's button becomes a no-op on release and nothing reports it.
+  CI asserts both callbacks and all 48 serializers appear in R8's own `seeds.txt`, and
+  an instrumented test (`testBuildType = "release"`) resolves them through the real
+  classloader on the minified APK — three tests, green on an Android 16 emulator.
+  Minifying the *test* APK against an already-shrunk app is awkward in both directions:
+  classes the app dropped are not copied back into it, so the runner needs a couple of
+  app-side keeps to exist at all, and two tests that referenced app classes directly had
+  to go, because R8 renames them and that is R8 working correctly.
+
+  Two things to know about that `abiFilters` line. It sits in `defaultConfig`, so it
+  applies to **every variant including debug**: an x86_64 emulator or an Intel CI runner
+  cannot install this build at all. `-Pbuddy.abis=x86_64` is the way back, and CI uses
+  it. And `assembleRelease` signs with the local **debug keystore** when there is one,
+  purely so the build can be installed and instrumented — that is not a distribution key
+  and must not become one, since every debug keystore shares a password. A real key, in
+  the owner's keychain and in CI secrets, is still outstanding; on a machine without
+  `~/.android/debug.keystore` the release APK comes out unsigned.
+
+Not done, and why:
+
+- **The phone's screen is locked** behind a secure keyguard, so nothing that needs eyes
+  or taps on the real hardware was checked there: camera capture, the voice state
+  machine on a real recogniser, TTS, the widget's own button, One UI's widget picker
+  preview, and frame timing while streaming. The emulator stands in for the layout and
+  the state machines; it cannot stand in for Samsung's recogniser or its battery policy.
+- **The phone's network was not flapped.** Wireless debugging on Android is tied to
+  Wi-Fi, so aeroplane mode would have severed the only channel to a locked phone with no
+  way back short of physical access. The backoff was exercised on the emulator instead.
+- **The widget has no `previewLayout`**, so One UI's picker shows Glance's placeholder.
+- **The share target now has its own task** (`taskAffinity=""`). Joining MainActivity's
+  meant `excludeFromRecents` applied to the whole task, so using the share sheet took
+  Silicon Buddy out of recents, and backing out of a share dropped into the app instead
+  of returning to whatever was being shared from.
+- **`material-icons-extended` is still the largest single cost**, ~45,000 icon classes
+  for the 24 this app draws. R8 removes them from release; debug still carries them.
+
 ### M3 — Media jobs and machines
 - Image, video, 3D from the phone on the Mac or the node; queue view; progress (Live Activity on iOS, ongoing notification on Android); results saved to the phone.
 - Node page: GPU, loaded GGUF, adapters, restart lanes. Swarm page.
