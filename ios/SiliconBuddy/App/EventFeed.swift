@@ -17,6 +17,9 @@ public final class EventFeed {
     public private(set) var downloads: [String: BuddyAPI.DownloadProgress] = [:]
     /// Renders in flight, by job id.
     public private(set) var jobs: [String: BuddyAPI.JobProgress] = [:]
+    /// The last answer check the Mac published, and the one before it, by conversation.
+    /// Kept rather than consumed: the chat screen may not be on screen when it arrives.
+    public private(set) var verdicts: [String: BuddyAPI.Verdict] = [:]
     /// When the Mac last said anything, heartbeat included.
     public private(set) var lastEvent: Date?
 
@@ -45,6 +48,9 @@ public final class EventFeed {
                     switch event {
                     case .status(let status):
                         self.status = status
+                        // What the Mac is running is the one fact a widget shows
+                        // without asking, so it is written down every time it changes.
+                        SnapshotStore.note(status: status, macName: nil)
                     case .download(let progress):
                         self.downloads[progress.id] = progress
                         // A download that has arrived stops being news.
@@ -57,6 +63,13 @@ public final class EventFeed {
                         } else {
                             self.jobs[job.id] = job
                         }
+                    case .verdict(let verdict):
+                        // Keyed by conversation, because that is the only key the
+                        // transcript shares with the Mac today: `StoredMessage` carries
+                        // no id, so a per-message match is not possible until the Mac
+                        // exports one. Until then the newest verdict decorates the
+                        // newest reply in that conversation.
+                        self.verdicts[verdict.conversationID ?? ""] = verdict
                     case .heartbeat(let at):
                         self.lastEvent = at ?? Date()
                     }
@@ -84,6 +97,7 @@ public final class EventFeed {
         status = nil
         downloads = [:]
         jobs = [:]
+        verdicts = [:]
         lastEvent = nil
         mustPoll = false
     }

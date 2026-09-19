@@ -2,6 +2,13 @@ import Foundation
 import SwiftUI
 import UIKit
 
+/// A composer opened from outside the app, with text already in it.
+public struct ComposeRequest: Identifiable, Sendable, Equatable {
+    public let id = UUID()
+    public var text: String?
+    public init(text: String?) { self.text = text }
+}
+
 /// The one piece of state every screen needs: which Mac we are talking to, whether it is
 /// answering, and what this device was allowed to do when it was paired.
 @MainActor
@@ -24,13 +31,31 @@ public final class AppModel {
     /// Nothing is dialled and nothing is stored until the person says yes.
     public var pendingInvite: PairingInvite?
 
+    /// Something a widget, a link or a Shortcut asked the composer to be opened with.
+    ///
+    /// Filled in, never sent: a URL can be opened by anything on the phone, so the most
+    /// a link may do is type into the box. The person presses send.
+    public var pendingCompose: ComposeRequest?
+
+    /// Whether an answer is read out loud after a spoken question.
+    public var speaksReplies: Bool {
+        didSet { defaults.set(speaksReplies, forKey: SharedConfiguration.Keys.speaksReplies) }
+    }
+
     private let defaults: UserDefaults
     private let tokens: TokenStore
 
-    public init(defaults: UserDefaults = .standard, tokens: TokenStore = TokenStore()) {
+    /// The shared container by default, not this process's own: a widget, a share
+    /// sheet and a Shortcuts action all have to find the same Mac, and they cannot read
+    /// the app's private preferences. Tests pass their own suite.
+    public init(defaults: UserDefaults = BuddyShared.defaults, tokens: TokenStore = TokenStore()) {
         self.defaults = defaults
         self.tokens = tokens
         self.config = Self.loadConfig(defaults: defaults, tokens: tokens)
+        // On by default: a spoken question that answers silently is a worse experience
+        // than one that answers out loud, and the toggle is one tap away in Settings.
+        self.speaksReplies = defaults.object(forKey: SharedConfiguration.Keys.speaksReplies)
+            as? Bool ?? true
     }
 
     /// The client for the paired Mac, or nil when there is none.
@@ -90,6 +115,13 @@ public final class AppModel {
         defaults.set(newConfig.deviceID, forKey: Keys.deviceID)
         defaults.set(newConfig.scope.rawValue, forKey: Keys.scope)
         config = newConfig
+        // A widget showing the last Mac's model after a re-pair would be showing the
+        // wrong machine, so the snapshot goes with the pairing.
+        SnapshotStore.clear(from: defaults)
+        SnapshotStore.note(
+            status: ControlAPI.Status(state: "Paired"),
+            macName: newConfig.macName, to: defaults
+        )
         status = nil
         reachability = .unknown
         events.clear()
@@ -101,6 +133,7 @@ public final class AppModel {
         for key in [Keys.host, Keys.port, Keys.macName, Keys.deviceID, Keys.scope] {
             defaults.removeObject(forKey: key)
         }
+        SnapshotStore.clear(from: defaults)
         config = nil
         status = nil
         reachability = .unknown
@@ -120,8 +153,15 @@ public final class AppModel {
         reachability = result
         if result.isReady {
             status = try? await transport.status()
+            if let status {
+                SnapshotStore.note(status: status, macName: config?.macName, to: defaults)
+            }
         }
     }
+
+    /// The preferences this Mac's facts are filed under, so the screens that learn
+    /// something — the dashboard, the event feed — can leave it where a widget looks.
+    public var sharedDefaults: UserDefaults { defaults }
 
     /// Records the Mac's name once something has learned it.
     public func noteMacName(_ name: String) {
@@ -137,12 +177,14 @@ public final class AppModel {
 
     // MARK: - Storage
 
+    /// The same names `SharedConfiguration` reads out of the shared container. One
+    /// definition, because two would drift and a widget would go blank.
     private enum Keys {
-        static let host = "buddy.host"
-        static let port = "buddy.port"
-        static let macName = "buddy.macName"
-        static let deviceID = "buddy.deviceID"
-        static let scope = "buddy.scope"
+        static let host = SharedConfiguration.Keys.host
+        static let port = SharedConfiguration.Keys.port
+        static let macName = SharedConfiguration.Keys.macName
+        static let deviceID = SharedConfiguration.Keys.deviceID
+        static let scope = SharedConfiguration.Keys.scope
     }
 
     private static func loadConfig(defaults: UserDefaults, tokens: TokenStore) -> ServerConfig? {
