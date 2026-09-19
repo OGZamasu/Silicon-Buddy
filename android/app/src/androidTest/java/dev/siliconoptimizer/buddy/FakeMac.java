@@ -1,0 +1,290 @@
+package dev.siliconoptimizer.buddy;
+
+import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * A stand-in Mac inside the test process, on 127.0.0.1.
+ *
+ * Java rather than Kotlin, and only java.* and android.*, on purpose. These tests run
+ * against the minified release build, and the test APK is shrunk against the app's
+ * already-shrunk output: a Kotlin standard-library call the app itself never made has been
+ * removed from the app, so it exists in neither APK and the test dies with
+ * NoSuchMethodError before it tests anything. Nothing here can go missing that way.
+ *
+ * It speaks the little of the control API the Agents tab needs: pairing, health, status,
+ * the event stream with `agent` frames, the two sessions, and answering the one approval
+ * Codex is holding. Everything else is the Mac's 404, which the app already treats as a
+ * route this Mac does not have.
+ */
+final class FakeMac implements Closeable {
+
+    static final String TOKEN = "device-test-token";
+    static final String APPROVAL = "5D8B2F01-9A3C-4E67-8B21-0C4D5E6F7A81";
+    static final String CODEX_EPOCH = "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827";
+    static final String PI_EPOCH = "1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9";
+
+    private final ServerSocket socket;
+    private final List<BlockingQueue<String>> streams = new CopyOnWriteArrayList<>();
+    final List<String> received = new CopyOnWriteArrayList<>();
+    private volatile boolean running = true;
+
+    /** How the approval was answered, and from where; null while it is still waiting. */
+    volatile String decision;
+    private int seq = 41;
+
+    FakeMac() throws IOException {
+        socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
+        Thread accept = new Thread(this::acceptLoop, "fake-mac");
+        accept.setDaemon(true);
+        accept.start();
+    }
+
+    int port() {
+        return socket.getLocalPort();
+    }
+
+    /** True once something asked for {@code method path}. */
+    boolean saw(String method, String path) {
+        for (String line : received) {
+            if (line.startsWith(method + " " + path)) return true;
+        }
+        return false;
+    }
+
+    String bodyOf(String method, String path) {
+        for (String line : received) {
+            if (line.startsWith(method + " " + path + " ")) {
+                return line.substring((method + " " + path + " ").length());
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public void close() throws IOException {
+        running = false;
+        socket.close();
+    }
+
+    // MARK: - What it answers
+
+    private synchronized String summary(String engine) {
+        boolean codex = "codex".equals(engine);
+        boolean waiting = codex && decision == null;
+        return "{\"engine\":\"" + engine + "\",\"state\":\"" + (codex ? "running" : "stopped") + "\","
+            + (codex ? "\"threadID\":\"0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F\"," : "")
+            + "\"epoch\":\"" + (codex ? CODEX_EPOCH : PI_EPOCH) + "\","
+            + "\"model\":\"local/qwen3-coder-30b\","
+            + "\"modelChoices\":[{\"id\":\"local/qwen3-coder-30b\",\"label\":\"Qwen3-Coder 30B A3B\",\"where\":\"This Mac\"}],"
+            + "\"cwd\":\"~/Developer/lisbon\","
+            + "\"approvals\":\"" + (codex ? "screened" : "unattended") + "\","
+            + "\"sandbox\":\"" + (codex ? "workspace-write" : "none") + "\","
+            + "\"turnActive\":" + waiting + ","
+            + "\"pendingApprovals\":" + (waiting ? 1 : 0) + ","
+            + "\"itemCount\":" + (codex ? (decision == null ? 3 : 4) : 0) + ","
+            + "\"updatedAt\":\"2026-09-19T10:12:44Z\"}";
+    }
+
+    private static final String ITEMS =
+        "{\"id\":\"U1\",\"kind\":\"user\",\"text\":\"Run the tests and fix whatever the first failure is.\",\"model\":\"local/qwen3-coder-30b\",\"at\":\"2026-09-19T10:12:31Z\"},"
+            + "{\"id\":\"R1\",\"kind\":\"reasoning\",\"text\":\"Run the suite first, then read the first failure.\",\"at\":\"2026-09-19T10:12:33Z\"},"
+            + "{\"id\":\"M1\",\"kind\":\"assistant\",\"text\":\"Running the suite now.\",\"at\":\"2026-09-19T10:12:35Z\"}";
+
+    private static final String COMMAND =
+        "{\"id\":\"C1\",\"kind\":\"command\",\"text\":\"swift test --filter Lisbon\",\"status\":\"completed\","
+            + "\"output\":\"Executed 12 tests, with 0 failures.\",\"at\":\"2026-09-19T10:12:50Z\"}";
+
+    private static final String APPROVAL_JSON =
+        "{\"id\":\"" + APPROVAL + "\",\"kind\":\"command\",\"summary\":\"swift test --filter Lisbon\","
+            + "\"reason\":\"Codex asks before running a command in this folder.\","
+            + "\"screening\":{\"verdict\":\"confirm\",\"summary\":\"Jev: review\"},"
+            + "\"requestedAt\":\"2026-09-19T10:12:36Z\"}";
+
+    private synchronized String detail(String engine) {
+        boolean codex = "codex".equals(engine);
+        String items = codex ? (decision == null ? ITEMS : ITEMS + "," + COMMAND) : "";
+        String approvals = codex && decision == null ? APPROVAL_JSON : "";
+        return "{\"session\":" + summary(engine) + ",\"items\":[" + items + "],\"approvals\":["
+            + approvals + "],\"seq\":" + seq + ",\"epoch\":\"" + (codex ? CODEX_EPOCH : PI_EPOCH)
+            + "\",\"complete\":true,\"omitted\":0}";
+    }
+
+    private void publish(String frame) {
+        for (BlockingQueue<String> stream : streams) stream.add(frame);
+    }
+
+    /** The phone answered: the card comes down on every screen, the turn runs and ends. */
+    private synchronized void answer(String how) {
+        decision = how;
+        String state = "accept".equals(how) ? "accepted" : "declined";
+        String head = "{\"engine\":\"codex\",\"epoch\":\"" + CODEX_EPOCH + "\",";
+        publish(head + "\"kind\":\"approval\",\"seq\":" + (++seq) + ",\"approval\":"
+            + APPROVAL_JSON + ",\"state\":\"" + state + "\"}");
+        publish(head + "\"kind\":\"item\",\"seq\":" + (++seq) + ",\"item\":" + COMMAND + "}");
+        publish(head + "\"kind\":\"turn\",\"seq\":" + (++seq) + ",\"turnActive\":false}");
+    }
+
+    // MARK: - The little of HTTP it speaks
+
+    private void acceptLoop() {
+        while (running) {
+            try {
+                Socket connection = socket.accept();
+                Thread serve = new Thread(() -> serve(connection));
+                serve.setDaemon(true);
+                serve.start();
+            } catch (IOException closed) {
+                return;
+            }
+        }
+    }
+
+    private void serve(Socket connection) {
+        try (Socket open = connection) {
+            InputStream input = open.getInputStream();
+            ByteArrayOutputStream head = new ByteArrayOutputStream();
+            int previous = -1;
+            int current;
+            int newlines = 0;
+            while ((current = input.read()) >= 0) {
+                head.write(current);
+                if (current == '\n') {
+                    newlines = previous == '\r' || previous == '\n' ? newlines + 1 : 1;
+                    if (newlines >= 2) break;
+                } else if (current != '\r') {
+                    newlines = 0;
+                }
+                previous = current;
+            }
+            String[] lines = head.toString("UTF-8").split("\r\n");
+            String[] request = lines[0].split(" ");
+            String method = request[0];
+            String target = request.length > 1 ? request[1] : "/";
+            String path = target.contains("?") ? target.substring(0, target.indexOf('?')) : target;
+            int length = 0;
+            String authorization = "";
+            for (String line : lines) {
+                String lower = line.toLowerCase();
+                if (lower.startsWith("content-length:")) length = Integer.parseInt(line.substring(15).trim());
+                if (lower.startsWith("authorization:")) authorization = line.substring(14).trim();
+            }
+            byte[] body = new byte[length];
+            int read = 0;
+            while (read < length) {
+                int count = input.read(body, read, length - read);
+                if (count < 0) break;
+                read += count;
+            }
+            String text = new String(body, StandardCharsets.UTF_8);
+            received.add(method + " " + path + " " + text);
+            OutputStream output = open.getOutputStream();
+
+            if (path.equals("/health")) {
+                reply(output, 200, "{\"status\":\"ok\",\"version\":\"0.1.0\"}");
+                return;
+            }
+            if (method.equals("POST") && path.equals("/buddy/pair")) {
+                reply(output, 200, "{\"deviceID\":\"D-TEST\",\"token\":\"" + TOKEN + "\",\"macName\":\"Test Mac\",\"port\":"
+                    + port() + ",\"scope\":\"full\"}");
+                return;
+            }
+            if (!authorization.equals("Bearer " + TOKEN)) {
+                reply(output, 401, "{\"error\":\"Invalid or missing control token.\"}");
+                return;
+            }
+            if (path.equals("/status")) {
+                reply(output, 200, "{\"state\":\"Ready\",\"expertStreaming\":false}");
+            } else if (path.equals("/events")) {
+                stream(output);
+            } else if (path.equals("/agent/sessions")) {
+                reply(output, 200, "{\"sessions\":[" + summary("codex") + "," + summary("pi") + "]}");
+            } else if (path.equals("/agent/sessions/codex") || path.equals("/agent/sessions/pi")) {
+                reply(output, 200, detail(path.substring("/agent/sessions/".length())));
+            } else if (method.equals("POST") && path.equals("/agent/sessions/codex/approvals/" + APPROVAL)) {
+                if (decision != null) {
+                    reply(output, 404, "{\"error\":\"No approval with id " + APPROVAL + " is waiting. It was answered already, or never existed.\"}");
+                    return;
+                }
+                String how = text.contains("\"accept\"") ? "accept" : "decline";
+                answer(how);
+                reply(output, 200, "{\"id\":\"" + APPROVAL + "\",\"decision\":\""
+                    + ("accept".equals(how) ? "accepted" : "declined") + "\",\"session\":" + summary("codex") + "}");
+            } else {
+                reply(output, 404, "{\"error\":\"Unknown endpoint " + method + " " + path + "\"}");
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // A phone that hung up.
+        }
+    }
+
+    private static void reply(OutputStream output, int status, String json) throws IOException {
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        String head = "HTTP/1.1 " + status + (status == 200 ? " OK" : " Error") + "\r\n"
+            + "Content-Type: application/json\r\n"
+            + "Content-Length: " + bytes.length + "\r\n"
+            + "Connection: close\r\n\r\n";
+        output.write(head.getBytes(StandardCharsets.UTF_8));
+        output.write(bytes);
+        output.flush();
+    }
+
+    /**
+     * What a phone is sent first on connecting, as the Mac does: each engine's state and
+     * turn, and every pending approval, all at the current sequence — and no rows.
+     */
+    private synchronized void opening(BlockingQueue<String> queue) {
+        boolean waiting = decision == null;
+        String codex = "{\"engine\":\"codex\",\"epoch\":\"" + CODEX_EPOCH + "\",\"seq\":" + seq + ",";
+        String pi = "{\"engine\":\"pi\",\"epoch\":\"" + PI_EPOCH + "\",\"seq\":" + seq + ",";
+        queue.add(codex + "\"kind\":\"state\",\"state\":\"running\"}");
+        queue.add(codex + "\"kind\":\"turn\",\"turnActive\":" + waiting + "}");
+        if (waiting) {
+            queue.add(codex + "\"kind\":\"approval\",\"approval\":" + APPROVAL_JSON + ",\"state\":\"pending\"}");
+        }
+        queue.add(pi + "\"kind\":\"state\",\"state\":\"stopped\"}");
+        queue.add(pi + "\"kind\":\"turn\",\"turnActive\":false}");
+    }
+
+    /** `/events`: a heartbeat at once and every few seconds, and whatever is published. */
+    private void stream(OutputStream output) throws IOException {
+        BlockingQueue<String> queue = new LinkedBlockingQueue<>();
+        opening(queue);
+        streams.add(queue);
+        try {
+            output.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                + "Cache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            output.write("event: heartbeat\ndata: {\"at\":\"2026-09-19T10:12:30Z\"}\n\n".getBytes(StandardCharsets.UTF_8));
+            output.flush();
+            long lastBeat = System.currentTimeMillis();
+            while (running) {
+                String frame = queue.poll(500, TimeUnit.MILLISECONDS);
+                if (frame != null) {
+                    output.write(("event: agent\ndata: " + frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    output.flush();
+                }
+                if (System.currentTimeMillis() - lastBeat > 5000) {
+                    output.write("event: heartbeat\ndata: {}\n\n".getBytes(StandardCharsets.UTF_8));
+                    output.flush();
+                    lastBeat = System.currentTimeMillis();
+                }
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } finally {
+            streams.remove(queue);
+        }
+    }
+}

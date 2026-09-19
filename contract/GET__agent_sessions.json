@@ -1,0 +1,86 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not drive this Mac's agent sessions. These routes run commands here, so they are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    }
+  },
+  "method" : "GET",
+  "path" : "\/agent\/sessions",
+  "request" : null,
+  "response" : {
+    "sessions" : [
+      {
+        "approvals" : "screened",
+        "cwd" : "~\/Developer\/lisbon",
+        "engine" : "codex",
+        "epoch" : "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827",
+        "itemCount" : 5,
+        "model" : "local\/qwen3-coder-30b",
+        "modelChoices" : [
+          {
+            "id" : "local\/qwen3-coder-30b",
+            "label" : "Qwen3-Coder 30B A3B — Q4_K_M — serving now",
+            "where" : "This Mac"
+          },
+          {
+            "id" : "node\/studio\/qwen3.8-27b",
+            "label" : "Qwen3.8 27B",
+            "where" : "studio"
+          }
+        ],
+        "pendingApprovals" : 1,
+        "sandbox" : "workspace-write",
+        "state" : "running",
+        "threadID" : "0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F",
+        "turnActive" : true,
+        "updatedAt" : "2026-09-19T10:12:44Z"
+      },
+      {
+        "approvals" : "unattended",
+        "cwd" : "~\/Library\/Application Support\/SiliconOptimizer\/pi\/workspace",
+        "engine" : "pi",
+        "epoch" : "1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9",
+        "itemCount" : 0,
+        "model" : "local\/qwen3-coder-30b",
+        "modelChoices" : [
+          {
+            "id" : "local\/qwen3-coder-30b",
+            "label" : "Qwen3-Coder 30B A3B — Q4_K_M — serving now",
+            "where" : "This Mac"
+          },
+          {
+            "id" : "node\/studio\/qwen3.8-27b",
+            "label" : "Qwen3.8 27B",
+            "where" : "studio"
+          }
+        ],
+        "pendingApprovals" : 0,
+        "sandbox" : "none",
+        "state" : "stopped",
+        "turnActive" : false,
+        "updatedAt" : "2026-09-19T09:58:10Z"
+      }
+    ]
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Every agent engine, running or not, as the Mac has it right now."
+}

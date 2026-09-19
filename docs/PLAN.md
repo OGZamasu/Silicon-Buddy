@@ -195,8 +195,9 @@ What is still outstanding, and why:
 
 1. **No push.** A render that finishes while the app is not running is learned about at
    the next open and treated as history rather than fired as a notification — otherwise
-   opening the app would ring once per clip in the queue's memory. APNs and FCM are
-   M4's, and need a paid Apple account.
+   opening the app would ring once per clip in the queue's memory. Push is still
+   outstanding after M4 (see there): FCM sent by the Mac, and APNs once there is a paid
+   Apple account.
 2. **No mesh viewer a device may open.** `POST /ui/open3d` is on the Mac's loopback
    gateway, so "show me this on the Mac" is still not offerable; the mesh is saved to
    the phone instead.
@@ -204,9 +205,97 @@ What is still outstanding, and why:
    synchronous route. The queue is where long work belongs, so a still to animate
    cannot be queued.
 
-### M4 — Agent sessions (Mac API + apps)
+### M4 — Agent sessions — **Android done, iOS to follow**
 - Mac: sessions API over harness/Codex/Pi engines: list, create, send, event stream, tool-call approvals, cancel.
 - Apps: session list and transcript, approve/deny from the phone (local notifications; APNs deferred until a paid developer account exists), handoff from Mac to iPad.
+
+The Mac side is silicon-optimizer PR #46, merged as 3944ba2 (`/agent/sessions`, and
+`agent` and `resync` frames on `/events`); `contract/` is the export of that main. Android has an **Agents**
+tab — Codex and Pi, one card each — and a session screen, built on a pure reducer
+(`AgentSession`) over the reads and the frames. iOS mirrors every new type and route in
+its contract tests and has no screen yet.
+
+What the phone does:
+
+- **The Agents tab**: state, the session's model and where it runs, the folder, turn
+  activity, the newest line, pending approvals, and a "Runs without asking" line when the
+  Mac says nothing asks. Start is one tap; Stop and New thread ask first. Hidden for a
+  device paired for chat, with one line in Settings saying why. On a phone, Settings
+  moved from the bottom bar to the top bar to make room: seven destinations do not fit
+  a bar at a readable size, and a tablet's rail still lists all seven.
+- **The session**: the transcript in the Mac's eight kinds, reasoning folded, output
+  scrolling inside its row with the Mac's "truncated" said, "N earlier rows are on the
+  Mac" when a read was capped by `limit`; the composer with a model picker that offers
+  the session's `modelChoices` and nothing else (and is labelled as the session's model,
+  because a pick sticks on the Mac); Interrupt while a turn runs; Codex's send waits for
+  its turn to end, as the Mac's own button does, while Pi takes a message mid-turn.
+- **Approvals**: a card per call with the guardrail's verdict and sentence; Accept and
+  Decline; a 409 leaves the Mac's sentence on the card and asks what is true now (answered
+  at the Mac first, still screening, engine stopped), a 404 takes the card down quietly,
+  and an `approval` frame answered on the Mac takes it down saying which way it went. The
+  tab carries a badge that TalkBack reads, and the Quick Settings tile's second line says
+  "2 approvals waiting" — while that is fresh — and opens the Agents tab.
+- **In the background**: leaving the app while a turn runs in a session this phone
+  opened starts `AgentWatchService`, a foreground service of type `remoteMessaging`
+  (Android 14+; the type for carrying on a conversation that lives on another device —
+  not `dataSync`, which is for moving files and is budgeted on Android 15). It opens its
+  own `/events`, reads the watched sessions whole, and posts one high-priority
+  notification per approval, private on the lock screen with a generic public version;
+  text is one line of the command, the paths or the tool, credential-shaped strings
+  masked, never a file's contents. Accept and Decline carry `setAuthenticationRequired(true)`
+  on Android 12+ and go to a non-exported receiver; before 12 they open the session
+  instead. It stops when the turn ends, when the stream is silent past the 45-second
+  heartbeat grace and the next attempt fails too (saying so once), when its notification
+  is dismissed, or when the app returns. While it runs, the phone holds two streams —
+  the app's and its own — which the Mac's limit of sixteen allows; the service's has to
+  survive the activity being destroyed.
+
+**Keeping in step**, which is most of the reducer: rows keyed by id and known at a
+sequence, so a frame older than a held row is dropped and the same frame twice is
+harmless; an answer is a snapshot at its `seq`, `complete` replaces and a slice merges;
+an approval id is settled for good once it stops waiting, so no stale read resurrects a
+card; the transcript's epoch guards against merging rows from a thread or a launch that
+has gone (`reset` drops rows and cards; any other frame or read from a different epoch
+means reading it all again); and the catch-up cursor is how far the rows are *known* to be
+complete — the Mac's opening frames on connect carry no rows, so a read answered before
+the stream opened leaves a gap that only `?since=` can fill, and frames move the cursor
+only while the stream has been unbroken since it. Breaks — a dropped connection, a
+`resync`, a restart of the stream — reach the reducer in order with the frames, so no
+frame after a break is taken to follow on from the ones before it. Returning to the app
+after ten seconds or more opens the stream again at once: on the Android 16 emulator a
+backgrounded app's stream dropped within seconds and could not reconnect until the app
+came back, and waiting out the 45-second read timeout after that left sessions frozen on
+screen.
+
+Verified on the SiliconBuddyM3 emulator (Android 16) against a stand-in Mac with fake
+Codex and Pi sessions: pairing, both cards, a turn sent from the phone and streamed back,
+an approval accepted in the app, one answered on the stand-in's side coming down with
+"Accepted on the Mac", a new thread clearing both screens, Pi's unattended banner, the
+watcher starting on Home with its `remoteMessaging` type, the approval notification
+answered from the shade, and the stream reopening after a long absence. Two instrumented
+tests on the minified release build drive the tab from the outside and read the posted
+notification's actions (`isAuthenticationRequired` on both).
+
+Tests: Android 443 unit (107 new — the reducer, every agent route over a socket with the
+Mac's own error bodies, notifications, the picker, the tile, strict `errorVariants`) and
+5 instrumented; iOS 270, with a round trip for every new fixture part and the same strict
+read of `errorVariants`. CI's floor on kept serializers rises from 48 to 75, and it checks
+the agent frame types by name. Release APK 13.9 MB.
+
+Not done, and why:
+
+1. **No push.** The watcher only exists if a turn the phone is following is running when
+   the app leaves the screen. A turn started on the Mac while the app is closed, or an
+   approval after the watcher let go, rings nothing until the app is opened. That needs
+   FCM (and APNs for the iPad), sent by the Mac.
+2. **The locked-phone path was not walked end to end.** The flag is on the posted
+   notification's actions (asserted on the device) and the answer from the shade reaches
+   the Mac on an unlocked emulator; the keyguard prompt in between needs a PIN set on
+   the device, which is a security setting and was not changed, and the owner's phone was
+   not touched.
+3. **The harness is not here**, on the Mac's side: it holds no transcript to mirror.
+4. **iPad**: types and contract tests only. The Agents tab comes when iOS catches up.
+5. **Handoff from the Mac to the iPad** is iOS work and waits with it.
 
 ### M5 — On-device fallback
 - A 1–4B model running natively on the S24 Ultra and iPad mini when the Mac is unreachable, same chat UI, clearly labelled.

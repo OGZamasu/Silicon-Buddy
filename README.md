@@ -11,7 +11,8 @@ over your own tailnet. Nothing public, no relay, no account.
   App Intents for Siri and Shortcuts.
 - `android/` — Kotlin and Jetpack Compose, phone and tablet. The same, with a Glance
   widget, a Quick Settings tile, a share target and launcher shortcuts, plus the
-  Create tab (video, image and 3D, and the Mac's render queue) and the Machines page.
+  Create tab (video, image and 3D, and the Mac's render queue), the Machines page, and
+  the Agents tab: the Mac's Codex and Pi sessions, driven and approved from the phone.
 - `contract/` — the control API as JSON fixtures exported by the Mac app's own
   `ContractExportTests`, plus `routes.md`. Both apps round-trip every type against these,
   so a change on the Mac fails a build here before it fails a user. Re-export with
@@ -79,6 +80,61 @@ chip and cores, what is loaded, memory and pressure, GPU and CPU, the lanes each
 advertises. A peer's card is what the Mac's last poll saw, and "Ask it now" replaces it
 with what the node says this second — including the adapter riding on its loaded GGUF,
 which a poll cannot carry.
+
+## Agent sessions
+
+The Agents tab is the Mac's Chat tab seen from the phone — Codex and Pi, one card each —
+and it is a second screen on the session that is already there, not a second session.
+What the phone sends appears in the Mac's own transcript; an approval answered on either
+side is answered once, for both; a new thread started on the Mac clears the phone's
+transcript too. Every agent route runs commands on the Mac, so a device paired for chat
+does not get the tab at all, and Settings says why in one line.
+
+| | |
+|---|---|
+| ![The Agents tab](docs/screenshots/android-19-agents.png) | ![A Codex session waiting on an approval](docs/screenshots/android-20-agent-session.png) |
+| ![An approval, rung while the app was in the background](docs/screenshots/android-21-agent-approval-notification.png) | ![Pi, which the Mac lets run without asking](docs/screenshots/android-24-agent-runs-without-asking.png) |
+
+A card says what the engine is doing, which model its next turn will use, the folder
+it works in, and how many calls are waiting for a person; starting an engine is one tap,
+and stopping one or starting a new thread asks first, because both throw something away
+on the Mac. The session is the transcript in the one vocabulary the Mac maps both
+engines onto — prose, a command with what it printed, a file change, a tool, a notice,
+an error — with the engine's thinking folded away until asked for. Output scrolls inside
+its own row, and the Mac sends only the tail of a long log, which the row says.
+
+**Keeping in step.** The transcript is read once, whole, and then kept by the `agent`
+frames on the same `/events` stream the rest of the app uses. Every frame and every read
+carries the transcript's *epoch*, which changes with a new thread and with every launch
+of the Mac's app, so rows from a transcript that has gone are never merged into the one
+that replaced it. The phone resumes from how far its rows are known to be complete — not
+from the highest number it has seen — so a stream that dropped, a Mac that had to drop
+frames for a slow phone (`resync`), or a read answered before the stream opened are all
+caught up with `?since=&epoch=` rather than leaving a hole. Coming back to the app after
+a while opens the stream again at once instead of waiting out its 45-second grace.
+
+**Approvals.** The Mac's guardrail screens each call first and answers what it is sure
+about; what reaches the phone is what it left to a person, with its verdict — "Jev:
+review: destructive" — exactly as the Mac's card shows it. Accept and Decline are one
+tap. Answered at the Mac first, the card says so and comes down; gone for any other
+reason, it comes down quietly; and a card answered on the Mac while the phone was
+looking comes down by itself, saying which way it went. The tab's badge — which a screen
+reader says too — counts what is waiting, and so does the Quick Settings tile.
+
+**In your pocket.** Leave the app while a turn is running in a session you opened, and
+a foreground service keeps watching it (`remoteMessaging`, the type Android 14 has for
+carrying on a conversation that lives on another device). Each approval gets one
+notification, naming the engine and the command, the paths or the tool — one line of it,
+with anything shaped like a credential masked, never a file's contents. On Android 12 and
+later its Accept and Decline require the phone to be unlocked (`setAuthenticationRequired`)
+before anything reaches the Mac; on older Android they open the session instead. A locked
+screen shows only that an agent is waiting. The service lets go when the turn ends, when
+the Mac stops answering and the next attempt cannot reach it, when the notification is
+dismissed, or when the app comes back.
+
+**Runs without asking.** When the Mac says a session asks nobody — Pi with the guardrail
+off, Codex under "never ask" — the session carries a banner that cannot be dismissed,
+because it changes what the screen is for.
 
 ## Building
 

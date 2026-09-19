@@ -1,0 +1,51 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "gpt-5 is not one of this session's models. Pick one of the `modelChoices` in GET \/agent\/sessions."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No agent session called claude. This Mac runs codex and pi."
+    },
+    "409" : {
+      "error" : "Codex is not running. Start it with POST \/agent\/sessions\/codex\/start and try again."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not drive this Mac's agent sessions. These routes run commands here, so they are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    },
+    "409" : {
+      "turn in progress" : {
+        "error" : "Codex is still working on the last message. Wait for the turn to end, or stop it with POST \/agent\/sessions\/codex\/interrupt."
+      }
+    }
+  },
+  "method" : "POST",
+  "path" : "\/agent\/sessions\/{engine}\/messages",
+  "request" : {
+    "model" : "local\/qwen3-coder-30b",
+    "text" : "Run the tests and fix whatever the first failure is."
+  },
+  "response" : {
+    "itemID" : "7C3E1A50-6B2D-4F19-8E44-0A1B2C3D4E5F"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Send a turn. 202: it is on the Mac's screen, and the answer arrives on \/events. `model` is sticky: it becomes the engine's model, as picking it in the Mac's own menu does."
+}

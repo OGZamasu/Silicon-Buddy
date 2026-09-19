@@ -47,6 +47,24 @@ final class ContractTests: XCTestCase {
             piece = try XCTUnwrap(
                 fields["errors"]?[status], "\(name) has no \(part)", file: file, line: line
             )
+        } else if part.hasPrefix("errorVariants.") {
+            // `errorVariants.409.still screening`: one more refusal a status can carry.
+            let path = part.dropFirst("errorVariants.".count)
+            let status = String(path.prefix { $0 != "." })
+            let label = String(path.dropFirst(status.count + 1))
+            piece = try XCTUnwrap(
+                fields["errorVariants"]?[status]?[label], "\(name) has no \(part)",
+                file: file, line: line
+            )
+        } else if part.hasPrefix("eventVariants.") {
+            // `eventVariants.agent.approval answered`: one named variant of one event.
+            let path = part.dropFirst("eventVariants.".count)
+            let event = String(path.prefix { $0 != "." })
+            let variant = String(path.dropFirst(event.count + 1))
+            piece = try XCTUnwrap(
+                fields["eventVariants"]?[event]?[variant], "\(name) has no \(part)",
+                file: file, line: line
+            )
         } else {
             piece = try XCTUnwrap(fields[part], "\(name) has no \(part)", file: file, line: line)
         }
@@ -255,6 +273,166 @@ final class ContractTests: XCTestCase {
     }
 
 
+    // MARK: - The M4 routes: the Mac's agent sessions (types only on iOS for now)
+
+    func testAgentSessionList() throws {
+        let list = try roundTrip(AgentAPI.SessionList.self, "GET__agent_sessions")
+        XCTAssertEqual(list.sessions.map(\.engine), ["codex", "pi"])
+        XCTAssertEqual(list.sessions.first?.pendingApprovals, 1)
+        XCTAssertNotNil(list.sessions.first?.threadID, "Codex mints a thread id")
+        XCTAssertNil(list.sessions.last?.threadID, "Pi has none to give")
+        XCTAssertEqual(list.sessions.first?.approvals, "screened")
+        XCTAssertEqual(list.sessions.last?.approvals, "unattended")
+        XCTAssertEqual(list.sessions.last?.sandbox, "none")
+        XCTAssertTrue(list.sessions.first?.cwd?.hasPrefix("~/") ?? false, "never the absolute home path")
+    }
+
+    func testAgentSessionDetail() throws {
+        let detail = try roundTrip(AgentAPI.SessionDetail.self, "GET__agent_sessions__engine_")
+        XCTAssertTrue(detail.complete)
+        XCTAssertEqual(detail.seq, 41)
+        XCTAssertEqual(
+            detail.items.map(\.kind), ["user", "reasoning", "assistant", "command", "fileChange"]
+        )
+        XCTAssertNotNil(detail.items.first { $0.kind == "command" }?.output)
+        XCTAssertEqual(detail.items.first { $0.kind == "command" }?.truncated, true)
+        XCTAssertEqual(detail.approvals.first?.summary, "rm -rf .build")
+        XCTAssertEqual(detail.approvals.first?.screening.verdict, "confirm")
+        XCTAssertEqual(detail.epoch, detail.session.epoch, "the cursor's two halves agree")
+        XCTAssertEqual(detail.omitted, 0)
+    }
+
+    func testAgentVerbsAnswerTheSummary() throws {
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.SessionSummary.self, "POST__agent_sessions__engine__start").state,
+            "running"
+        )
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.SessionSummary.self, "POST__agent_sessions__engine__new").itemCount,
+            0
+        )
+        try roundTrip(AgentAPI.SessionSummary.self, "POST__agent_sessions__engine__interrupt")
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.SessionSummary.self, "DELETE__agent_sessions__engine_").state,
+            "stopped"
+        )
+    }
+
+    func testSendingAnAgentTurn() throws {
+        let request = try roundTrip(
+            AgentAPI.MessageRequest.self, "POST__agent_sessions__engine__messages", "request"
+        )
+        XCTAssertEqual(request.model, "local/qwen3-coder-30b")
+        XCTAssertFalse(
+            try roundTrip(AgentAPI.MessageAccepted.self, "POST__agent_sessions__engine__messages")
+                .itemID.isEmpty
+        )
+    }
+
+    func testAnsweringAnApproval() throws {
+        let request = try roundTrip(
+            AgentAPI.ApprovalDecision.self, "POST__agent_sessions__engine__approvals__id_", "request"
+        )
+        XCTAssertEqual(request.decision, "accept")
+        let result = try roundTrip(
+            AgentAPI.ApprovalResult.self, "POST__agent_sessions__engine__approvals__id_"
+        )
+        XCTAssertEqual(result.decision, "accepted")
+        XCTAssertEqual(result.session.pendingApprovals, 0)
+
+        let fields = try fixture("POST__agent_sessions__engine__approvals__id_")
+        let conflict = try JSONEncoder().encode(try XCTUnwrap(fields["errors"]?["409"]))
+        guard case .conflict(let message)? = TransportError.from(status: 409, body: conflict, path: "/x")
+        else { return XCTFail("answered at the Mac first should be its own case") }
+        XCTAssertTrue(message.contains("answered at the Mac"))
+    }
+
+    func testAgentFrames() throws {
+        let item = try roundTrip(AgentAPI.Event.self, "GET__events", "events.agent")
+        XCTAssertEqual(item.kind, "item")
+        XCTAssertNotNil(item.item)
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.Event.self, "GET__events", "eventVariants.agent.state").state,
+            "running"
+        )
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.Event.self, "GET__events", "eventVariants.agent.turn").turnActive,
+            true
+        )
+        let asked = try roundTrip(AgentAPI.Event.self, "GET__events", "eventVariants.agent.approval")
+        let answered = try roundTrip(
+            AgentAPI.Event.self, "GET__events", "eventVariants.agent.approval answered"
+        )
+        XCTAssertEqual(asked.state, "pending")
+        XCTAssertEqual(answered.state, "accepted")
+        XCTAssertEqual(asked.approval?.id, answered.approval?.id)
+        let reset = try roundTrip(AgentAPI.Event.self, "GET__events", "eventVariants.agent.reset")
+        XCTAssertEqual(reset.kind, "reset")
+        XCTAssertNotEqual(reset.epoch, item.epoch, "a reset names the transcript that replaced it")
+        XCTAssertEqual(
+            try roundTrip(AgentAPI.Resync.self, "GET__events", "events.resync").dropped, 7
+        )
+    }
+
+    /// Every `errorVariants` entry the export carries, pinned like the fixtures.
+    static let expectedErrorVariants: Set<String> = [
+        "DELETE__agent_sessions__engine_ 403 swarm",
+        "GET__agent_sessions 403 swarm",
+        "GET__agent_sessions__engine_ 403 swarm",
+        "POST__agent_sessions__engine__approvals__id_ 403 swarm",
+        "POST__agent_sessions__engine__approvals__id_ 409 engine stopped",
+        "POST__agent_sessions__engine__approvals__id_ 409 still screening",
+        "POST__agent_sessions__engine__interrupt 403 swarm",
+        "POST__agent_sessions__engine__messages 403 swarm",
+        "POST__agent_sessions__engine__messages 409 turn in progress",
+        "POST__agent_sessions__engine__new 403 swarm",
+        "POST__agent_sessions__engine__start 403 swarm",
+        "POST__agent_sessions__engine__start 409 stopping",
+    ]
+
+    /// The refusals a status can carry beyond the one in `errors`, read strictly: each is
+    /// `{status: {label: {error}}}`, decodes, maps to a case of its own rather than
+    /// `.server`, and the set is pinned so a new one fails here first.
+    func testEveryErrorVariantDecodesAndMaps() throws {
+        var seen: Set<String> = []
+        for name in Self.expectedFixtures.sorted() {
+            let fields = try fixture(name)
+            guard let variants = fields["errorVariants"] else { continue }
+            guard case .object(let statuses) = variants else {
+                return XCTFail("\(name): errorVariants is not an object")
+            }
+            for (status, labels) in statuses {
+                let code = try XCTUnwrap(Int(status), "\(name): \(status) is not a status")
+                guard case .object(let bodies) = labels else {
+                    return XCTFail("\(name) \(status): labels are not an object")
+                }
+                for (label, body) in bodies {
+                    guard case .object(let keys) = body, Set(keys.keys) == ["error"] else {
+                        return XCTFail("\(name) \(status) \(label): a body is {error}")
+                    }
+                    let data = try JSONEncoder().encode(body)
+                    let decoded = try JSONDecoder.buddy.decode(ControlAPI.ErrorResponse.self, from: data)
+                    XCTAssertFalse(decoded.error.isEmpty, "\(name) \(status) \(label) says nothing")
+                    let mapped = try XCTUnwrap(TransportError.from(status: code, body: data, path: "/x"))
+                    if case .server = mapped {
+                        XCTFail("\(name) \(status) \(label) falls through to .server")
+                    }
+                    seen.insert("\(name) \(status) \(label)")
+                }
+            }
+        }
+        XCTAssertEqual(
+            seen, Self.expectedErrorVariants,
+            "The Mac documents different refusals now — refresh, map them, then list them here"
+        )
+        let screening = try JSONEncoder().encode(
+            try XCTUnwrap(try fixture("POST__agent_sessions__engine__approvals__id_")["errorVariants"]?["409"]?["still screening"])
+        )
+        guard case .conflict? = TransportError.from(status: 409, body: screening, path: "/x") else {
+            return XCTFail("still screening is a conflict to explain, not an error to show")
+        }
+    }
+
     // MARK: - The export itself
 
     /// The contract is a copy of something generated elsewhere, and a copy goes stale
@@ -274,8 +452,11 @@ final class ContractTests: XCTestCase {
         // types — `POST /uploads` and `GET /swarm/peers/{name}/status` answer JSON,
         // and `GET /media/{id}` answers bytes, so it has none — ahead of the iOS
         // screens that will call them.
+        "DELETE__agent_sessions__engine_",
         "DELETE__buddy_devices__id_",
         "DELETE__buddy_invitations",
+        "GET__agent_sessions",
+        "GET__agent_sessions__engine_",
         "GET__buddy_devices",
         "GET__catalog",
         "GET__conversations",
@@ -298,6 +479,11 @@ final class ContractTests: XCTestCase {
         "GET__v1_node",
         "GET__video_models",
         "GET__video_queue",
+        "POST__agent_sessions__engine__approvals__id_",
+        "POST__agent_sessions__engine__interrupt",
+        "POST__agent_sessions__engine__messages",
+        "POST__agent_sessions__engine__new",
+        "POST__agent_sessions__engine__start",
         "POST__benchmark",
         "POST__buddy_invitations",
         "POST__buddy_pair",
@@ -389,9 +575,17 @@ final class ContractTests: XCTestCase {
     /// contract/ fails here rather than being discovered on a phone.
     func testTheExportIsTheCurrentOne() throws {
         for name in Self.expectedFixtures.sorted() where name.hasPrefix("POST__") {
-            // Every POST but the three that take no body at all documents a 400.
-            guard !["POST__benchmark", "POST__unload", "POST__jev_calibrate"].contains(name)
-            else { continue }
+            // Every POST but the ones that take no body at all documents a 400 — three
+            // from before, and the three agent verbs, whose fixtures say `"request": null`.
+            let bodiless = [
+                "POST__benchmark", "POST__unload", "POST__jev_calibrate",
+                "POST__agent_sessions__engine__start", "POST__agent_sessions__engine__new",
+                "POST__agent_sessions__engine__interrupt",
+            ]
+            if bodiless.contains(name) {
+                XCTAssertEqual(try fixture(name)["request"], JSONValue.null, "\(name) takes no body")
+                continue
+            }
             let fields = try fixture(name)
             guard case .object(let errors)? = fields["errors"] else {
                 return XCTFail("\(name) documents no errors at all")

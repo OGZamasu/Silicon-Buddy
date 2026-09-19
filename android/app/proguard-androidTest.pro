@@ -14,6 +14,9 @@
 -keep class org.hamcrest.** { *; }
 -keep class * extends android.app.Instrumentation { *; }
 -keep class dev.siliconoptimizer.buddy.MinifiedBuildTest { *; }
+-keep class dev.siliconoptimizer.buddy.AgentsScreenTest { *; }
+-keep class dev.siliconoptimizer.buddy.AgentsScreenTest$* { *; }
+-keep class dev.siliconoptimizer.buddy.FakeMac { *; }
 -keepclasseswithmembers class * { @org.junit.Test <methods>; }
 
 # Compile-only annotations the test libraries reference and that never exist at runtime.

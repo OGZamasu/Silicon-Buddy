@@ -3,8 +3,10 @@ package dev.siliconoptimizer.buddy
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,14 +18,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -49,9 +58,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.siliconoptimizer.buddy.agents.AgentNotices
+import dev.siliconoptimizer.buddy.agents.AgentNotifier
+import dev.siliconoptimizer.buddy.agents.AgentWatchService
+import dev.siliconoptimizer.buddy.agents.AgentsScreen
+import dev.siliconoptimizer.buddy.agents.AgentsViewModel
+import dev.siliconoptimizer.buddy.agents.Confirm
+import dev.siliconoptimizer.buddy.agents.ConfirmDialog
+import dev.siliconoptimizer.buddy.agents.SessionScreen
 import dev.siliconoptimizer.buddy.chat.ChatScreen
 import dev.siliconoptimizer.buddy.chat.ChatViewModel
 import dev.siliconoptimizer.buddy.dashboard.DashboardScreen
@@ -83,6 +102,14 @@ class MainActivity : ComponentActivity() {
      */
     private val arriving = mutableStateOf<LinkArrival?>(null)
 
+    /** The same instances the screens draw from: Compose's `viewModel()` asks this activity. */
+    private val agents: AgentsViewModel by viewModels()
+    private val events: EventFeed by viewModels()
+    private val appState: AppState by viewModels()
+
+    /** When the activity last left the screen, to tell a glance away from a long absence. */
+    private var stoppedAt: Long? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -94,6 +121,49 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Back in front: the Agents tab shows what the background service was watching, so the
+     * service lets go — and takes its notifications with it, since the cards are here now.
+     */
+    override fun onStart() {
+        super.onStart()
+        AgentWatchService.stop(this)
+        // Away for more than a moment, the stream is most likely a socket that is no
+        // longer there: on Android 16 a backgrounded app's connection dropped within
+        // seconds, and the stream would only notice after its 45-second grace. Open a
+        // fresh one now rather than show a session that has stopped moving.
+        val away = stoppedAt?.let { System.currentTimeMillis() - it }
+        stoppedAt = null
+        if (away != null && away > RECONNECT_AFTER_MS && appState.isPaired) {
+            events.start(appState.transport)
+        }
+    }
+
+    /**
+     * Leaving the foreground with a turn running in a session this phone opened. This is
+     * the one moment Android still lets an app start a foreground service from here, and
+     * the service is what keeps an approval from waiting unseen in a pocket.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (isChangingConfigurations) return
+        stoppedAt = System.currentTimeMillis()
+        val watched = agents.watchedTurns
+        if (watched.isNotEmpty() && AgentNotifier(this).isAllowed) {
+            AgentWatchService.start(this, watched)
+        }
+    }
+
+    /**
+     * Back from anywhere: a stream that died quietly while the app was frozen takes up to
+     * its 45-second grace to say so, and the sessions should not wait that long to be
+     * right. They ask for what changed since what they hold.
+     */
+    override fun onResume() {
+        super.onResume()
+        agents.catchUpAll()
     }
 
     /**
@@ -112,6 +182,11 @@ class MainActivity : ComponentActivity() {
         // A finished render's notification opens the queue. Not a link: nothing outside
         // this app can send it, and it asks for a screen rather than for an action.
         if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_QUEUE) return LinkArrival.OpenQueue
+        // An approval's notification opens its session. The same kind of request: a
+        // screen, never a decision.
+        if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_AGENTS) {
+            return LinkArrival.OpenAgents(intent.getStringExtra(EXTRA_ENGINE))
+        }
         val data = intent?.data ?: return null
         // `siliconbuddy://` means three things now: a pairing code, a composer to open,
         // and a conversation to show. All three are requests rather than instructions —
@@ -137,6 +212,11 @@ class MainActivity : ComponentActivity() {
         /** Which screen a notification wants open. */
         const val EXTRA_OPEN = "dev.siliconoptimizer.buddy.OPEN"
         const val OPEN_QUEUE = "queue"
+        const val OPEN_AGENTS = "agents"
+        const val EXTRA_ENGINE = "dev.siliconoptimizer.buddy.ENGINE"
+
+        /** Longer away than this, and the stream is opened again on return. */
+        const val RECONNECT_AFTER_MS = 10_000L
     }
 }
 
@@ -151,11 +231,14 @@ sealed interface LinkArrival {
 
     /** Show the render queue: where a job that just finished can be looked at. */
     data object OpenQueue : LinkArrival
+
+    /** Show the Agents tab, on one engine's session when it names one. */
+    data class OpenAgents(val engine: String?) : LinkArrival
 }
 
 private enum class Destination(val label: String) {
-    Dashboard("Mac"), Create("Create"), Machines("Machines"), Models("Models"),
-    Chat("Chat"), Settings("Settings"),
+    Dashboard("Mac"), Create("Create"), Agents("Agents"), Machines("Machines"),
+    Models("Models"), Chat("Chat"), Settings("Settings"),
     ;
 
     companion object {
@@ -181,6 +264,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     val events: EventFeed = viewModel()
     val media: MediaViewModel = viewModel()
     val machines: MachinesViewModel = viewModel()
+    val agents: AgentsViewModel = viewModel()
 
     // Saved rather than merely remembered. Two things take this activity away and bring
     // it back: a configuration change the manifest does not absorb — font scale is the
@@ -193,6 +277,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     var pairing by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
+    var openAgent by rememberSaveable { mutableStateOf<String?>(null) }
+    var agentMenu by remember { mutableStateOf(false) }
+    var confirmingAgent by remember { mutableStateOf<Confirm?>(null) }
+
+    // Every agent route runs commands on the Mac, so a device paired for chat does not get
+    // the tab at all — Settings says why in one line. A destination saved before the scope
+    // was known falls back rather than opening onto a refusal.
+    val destinations = Destination.entries.filter { it != Destination.Agents || app.canControl }
+    if (destination !in destinations) destination = Destination.Dashboard
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { app.refreshReachability() }
@@ -219,6 +312,13 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             LinkArrival.OpenQueue -> {
                 destination = Destination.Create
                 media.tab = MediaViewModel.Tab.Queue
+                arriving.value = null
+            }
+            is LinkArrival.OpenAgents -> {
+                if (app.canControl) {
+                    destination = Destination.Agents
+                    openAgent = arrival.engine
+                }
                 arriving.value = null
             }
             null -> Unit
@@ -258,7 +358,35 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         machines.reset()
         machines.refresh(app.transport)
         chat.loadConversations(app.transport)
+        agents.reset()
+        openAgent = openAgent.takeIf { app.canControl }
+        if (app.canControl) agents.refresh(app.transport)
         events.start(app.transport)
+    }
+
+    // The agent sessions ride the same stream: every frame goes to the reducer, and a
+    // break in it — a dropped connection, frames the Mac had to drop — arrives in order
+    // with them, so the sessions know exactly which frames follow on and which do not.
+    LaunchedEffect(Unit) {
+        events.agentEvents.collect { feed ->
+            when (feed) {
+                is AgentFeed.Frame -> agents.apply(feed.event)
+                AgentFeed.Broken -> agents.streamBroken()
+            }
+        }
+    }
+    // Frames dropped for this phone may have been about anything it shows: the Mac asks
+    // for the status and the render queue to be read again as well as the sessions.
+    LaunchedEffect(events.resyncs) {
+        if (events.resyncs > 0) {
+            dashboard.refresh(app.transport, app)
+            media.startFollowing(app.transport, MediaNotifier(context), live = true)
+        }
+    }
+    // The tile says how many approvals are waiting, so it is told whenever that changes.
+    LaunchedEffect(agents.board.pendingTotal) {
+        SnapshotStore(context).notePendingApprovals(agents.board.pendingTotal)
+        dev.siliconoptimizer.buddy.tile.BuddyTileService.refresh(context)
     }
 
     // Renders finish minutes after they were asked for, and on whatever screen happens
@@ -287,6 +415,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         when (destination) {
                             Destination.Dashboard -> "Silicon Buddy"
                             Destination.Create -> "Create"
+                            Destination.Agents -> openAgent?.let { AgentNotices.engine(it) } ?: "Agents"
                             Destination.Machines -> "Machines"
                             Destination.Models -> "Models"
                             Destination.Chat -> chat.current?.title ?: "Chat"
@@ -295,6 +424,18 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                },
+                navigationIcon = {
+                    when {
+                        destination == Destination.Agents && openAgent != null ->
+                            IconButton(onClick = { openAgent = null }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All agents")
+                            }
+                        destination == Destination.Settings && !wide ->
+                            IconButton(onClick = { destination = Destination.Dashboard }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                    }
                 },
                 actions = {
                     when (destination) {
@@ -320,7 +461,55 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
+                        Destination.Agents -> {
+                            val engine = openAgent
+                            if (engine == null) {
+                                IconButton(onClick = { agents.refresh(app.transport) }) {
+                                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                                }
+                            } else {
+                                val summary = agents.board.session(engine).summary
+                                IconButton(onClick = { agentMenu = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "Session actions")
+                                }
+                                DropdownMenu(expanded = agentMenu, onDismissRequest = { agentMenu = false }) {
+                                    if (summary?.isRunning == true) {
+                                        DropdownMenuItem(
+                                            text = { Text("New thread…") },
+                                            onClick = {
+                                                agentMenu = false
+                                                confirmingAgent = Confirm.NewThread(engine)
+                                            },
+                                        )
+                                    }
+                                    if (summary != null && !summary.isStopped) {
+                                        DropdownMenuItem(
+                                            text = { Text("Stop ${AgentNotices.engine(engine)}…") },
+                                            onClick = {
+                                                agentMenu = false
+                                                confirmingAgent = Confirm.Stop(engine)
+                                            },
+                                        )
+                                    } else {
+                                        DropdownMenuItem(
+                                            text = { Text("Start ${AgentNotices.engine(engine)}") },
+                                            onClick = {
+                                                agentMenu = false
+                                                agents.start(engine)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         else -> Unit
+                    }
+                    // Seven destinations do not fit a phone's bar at a readable size, so
+                    // on a phone Settings moves up here; a tablet's rail still lists it.
+                    if (!wide && destination != Destination.Settings) {
+                        IconButton(onClick = { destination = Destination.Settings }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        }
                     }
                 },
             )
@@ -328,11 +517,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         bottomBar = {
             if (!wide) {
                 NavigationBar {
-                    Destination.entries.forEach { entry ->
+                    destinations.filter { it != Destination.Settings }.forEach { entry ->
                         NavigationBarItem(
                             selected = destination == entry,
                             onClick = { destination = entry },
-                            icon = { Icon(iconFor(entry), contentDescription = null) },
+                            icon = { DestinationIcon(entry, agents.board.pendingTotal) },
                             // Six destinations on a phone, at whatever text size the
                             // owner reads at: one line each, and the end of a word
                             // rather than half of it on the next line.
@@ -343,6 +532,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                                     maxLines = 1,
                                     softWrap = false,
                                     overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.destinationSemantics(entry, agents.board.pendingTotal),
                                 )
                             },
                         )
@@ -367,12 +557,17 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             if (wide) {
                 // A tablet has room for the conversation list beside the transcript.
                 NavigationRail {
-                    Destination.entries.forEach { entry ->
+                    destinations.forEach { entry ->
                         NavigationRailItem(
                             selected = destination == entry,
                             onClick = { destination = entry },
-                            icon = { Icon(iconFor(entry), contentDescription = null) },
-                            label = { Text(entry.label) },
+                            icon = { DestinationIcon(entry, agents.board.pendingTotal) },
+                            label = {
+                                Text(
+                                    entry.label,
+                                    modifier = Modifier.destinationSemantics(entry, agents.board.pendingTotal),
+                                )
+                            },
                         )
                     }
                 }
@@ -393,6 +588,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     modifier = Modifier.fillMaxSize(),
                 )
                 Destination.Create -> CreateScreen(app, media, events.isLive, Modifier.fillMaxSize())
+                Destination.Agents -> {
+                    val engine = openAgent
+                    if (engine == null) {
+                        AgentsScreen(app, agents, onOpen = { openAgent = it }, modifier = Modifier.fillMaxSize())
+                    } else {
+                        BackHandler { openAgent = null }
+                        SessionScreen(agents, engine, Modifier.fillMaxSize())
+                    }
+                }
                 Destination.Machines -> MachinesScreen(app, machines, Modifier.fillMaxSize())
                 Destination.Models -> ModelsScreen(app, models, events, Modifier.fillMaxSize())
                 Destination.Chat -> {
@@ -412,6 +616,20 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 Destination.Settings -> SettingsScreen(app, chat, events) { pairing = true }
             }
         }
+    }
+
+    confirmingAgent?.let { confirm ->
+        ConfirmDialog(
+            confirm = confirm,
+            onDismiss = { confirmingAgent = null },
+            onConfirm = {
+                confirmingAgent = null
+                when (confirm) {
+                    is Confirm.Stop -> agents.stop(confirm.engine)
+                    is Confirm.NewThread -> agents.newThread(confirm.engine)
+                }
+            },
+        )
     }
 
     if (pairing) {
@@ -446,9 +664,37 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     }
 }
 
+/** A destination's icon — and on Agents, how many approvals are waiting. */
+@Composable
+private fun DestinationIcon(destination: Destination, waiting: Int) {
+    if (destination == Destination.Agents && waiting > 0) {
+        BadgedBox(badge = { Badge { Text(if (waiting > 99) "99+" else waiting.toString()) } }) {
+            Icon(iconFor(destination), contentDescription = null)
+        }
+    } else {
+        Icon(iconFor(destination), contentDescription = null)
+    }
+}
+
+/**
+ * What a screen reader says for a destination. The navigation bar clears its icons'
+ * semantics whenever a label is shown — so a badge on the icon is silent — and the count
+ * has to ride on the label instead: "Agents, 1 approval waiting".
+ */
+private fun Modifier.destinationSemantics(destination: Destination, waiting: Int): Modifier =
+    if (destination == Destination.Agents && waiting > 0) {
+        semantics {
+            contentDescription = destination.label + ", " +
+                if (waiting == 1) "1 approval waiting" else "$waiting approvals waiting"
+        }
+    } else {
+        this
+    }
+
 private fun iconFor(destination: Destination) = when (destination) {
     Destination.Dashboard -> Icons.Filled.Speed
     Destination.Create -> Icons.Filled.AutoAwesome
+    Destination.Agents -> Icons.Filled.SmartToy
     Destination.Machines -> Icons.Filled.Hub
     Destination.Models -> Icons.Filled.Layers
     Destination.Chat -> Icons.AutoMirrored.Filled.Chat
@@ -534,6 +780,13 @@ private fun SettingsScreen(
                 "This device may",
                 if (app.canControl) "Control the Mac" else "Chat and read only",
             )
+            if (app.isPaired && !app.canControl) {
+                Text(
+                    AgentNotices.CHAT_SCOPE,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (!app.canStoreTokenSecurely) {
                 Text(
                     "This device can't store the token securely — its keystore is " +

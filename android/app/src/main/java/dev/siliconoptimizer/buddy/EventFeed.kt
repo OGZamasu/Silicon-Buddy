@@ -46,6 +46,52 @@ class EventFeed : ViewModel() {
     val jobEvents: SharedFlow<JobProgress> = _jobEvents.asSharedFlow()
 
     /**
+     * Every `agent` frame, in the order the Mac sent them.
+     *
+     * A flow rather than state for the same reason as [jobEvents]: the sessions reducer
+     * wants each frame, not the latest one. The buffer is generous because streamed prose
+     * arrives ten frames a second per engine — and a frame that still does not fit is
+     * not lost quietly: [agentFramesDropped] moves, and the sessions catch up from the
+     * Mac rather than trusting a transcript with a hole in it.
+     */
+    private val _agentEvents = MutableSharedFlow<AgentFeed>(replay = 0, extraBufferCapacity = 512)
+    val agentEvents: SharedFlow<AgentFeed> = _agentEvents.asSharedFlow()
+
+    /** Bumped whenever an `agent` frame could not be handed on. */
+    var agentFramesDropped by mutableStateOf(0)
+        private set
+
+    /**
+     * Bumped on every `resync`: the Mac dropped frames for this phone. The agent sessions
+     * hear it in order with their frames; this is for the rest — the render queue — which
+     * has to be read again too.
+     */
+    var resyncs by mutableStateOf(0)
+        private set
+
+    /** A break this feed still owes the sessions, because the last one did not fit. */
+    private var owesBreak = false
+
+    /**
+     * Hands an agent frame on, in order. A frame that does not fit is not dropped silently:
+     * the next thing the sessions hear is that the stream broke, so they fetch the gap
+     * rather than trust a transcript with a hole in it.
+     */
+    private fun emitAgent(item: AgentFeed) {
+        if (owesBreak) {
+            if (!_agentEvents.tryEmit(AgentFeed.Broken)) {
+                agentFramesDropped++
+                return
+            }
+            owesBreak = false
+        }
+        if (!_agentEvents.tryEmit(item)) {
+            owesBreak = true
+            agentFramesDropped++
+        }
+    }
+
+    /**
      * The last answer check the Mac published, by conversation. Kept rather than
      * consumed: the chat screen may not be on screen when it arrives.
      */
@@ -89,6 +135,9 @@ class EventFeed : ViewModel() {
 
     fun start(transport: ControlTransport?) {
         stop()
+        // A new connection does not follow on from the old one: whatever the sessions heard
+        // before this, the frames after it are a new run.
+        emitAgent(AgentFeed.Broken)
         if (transport == null) {
             mustPoll = true
             return
@@ -98,6 +147,9 @@ class EventFeed : ViewModel() {
             try {
                 transport.events().collect { event ->
                     if (event is ServerEvent.Disconnected) {
+                        // The sessions hear about the break in order with their frames:
+                        // whatever arrives after it is not known to follow on.
+                        emitAgent(AgentFeed.Broken)
                         isLive = false
                         reconnectAttempt = event.attempt
                         retryAt = System.currentTimeMillis() + event.retryInMillis
@@ -139,6 +191,11 @@ class EventFeed : ViewModel() {
                             // carries no id, so a per-message match is not possible
                             // until the Mac exports one.
                             verdicts[event.verdict.conversationID.orEmpty()] = event.verdict
+                        }
+                        is ServerEvent.Agent -> emitAgent(AgentFeed.Frame(event.event))
+                        is ServerEvent.Resync -> {
+                            emitAgent(AgentFeed.Broken)
+                            resyncs++
                         }
                         is ServerEvent.Beat -> Unit
                         // Handled above, before the stream is called live.
@@ -186,4 +243,14 @@ class EventFeed : ViewModel() {
             it.key == base || it.key.startsWith("$base@")
         }?.value
     }
+}
+
+/**
+ * What the agent sessions are told, in the order the stream said it: a frame, or that the
+ * run of frames broke — a dropped connection, or frames the Mac had to drop for this phone.
+ */
+sealed interface AgentFeed {
+    data class Frame(val event: dev.siliconoptimizer.buddy.transport.AgentEvent) : AgentFeed
+
+    data object Broken : AgentFeed
 }

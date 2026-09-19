@@ -122,6 +122,40 @@ interface ControlTransport {
     /** `GET /swarm/peers/{name}/status`: one node asked now, adapter and all. */
     suspend fun peerStatus(name: String): PeerNodeStatus = unsupported("/swarm/peers")
 
+    // M4: the Mac's agent sessions. Full scope, every one: each of them runs commands on
+    // the owner's Mac.
+
+    /** `GET /agent/sessions`: every engine, running or not. */
+    suspend fun agentSessions(): AgentSessionList = unsupported("/agent/sessions")
+
+    /**
+     * `GET /agent/sessions/{engine}`. With [since] and [epoch] — one cursor in two halves —
+     * only what changed after it; `complete` in the answer says whether it is a slice to
+     * merge or a transcript to replace the one on screen with. A cursor from another
+     * transcript is answered whole.
+     */
+    suspend fun agentSession(engine: String, since: Long? = null, epoch: String? = null): AgentSessionDetail =
+        unsupported("/agent/sessions")
+
+    suspend fun startAgent(engine: String): AgentSessionSummary = unsupported("/agent/sessions")
+    suspend fun newAgentThread(engine: String): AgentSessionSummary =
+        unsupported("/agent/sessions")
+
+    suspend fun stopAgent(engine: String): AgentSessionSummary = unsupported("/agent/sessions")
+    suspend fun interruptAgent(engine: String): AgentSessionSummary =
+        unsupported("/agent/sessions")
+
+    /** 202: the row the send became. What the engine does arrives on `/events`. */
+    suspend fun sendAgentMessage(engine: String, request: AgentMessageRequest): AgentMessageAccepted =
+        unsupported("/agent/sessions")
+
+    /**
+     * Answers a held call. A 404 comes back as `NotFound` — answered already, or gone —
+     * and a 409 as `Conflict` carrying the Mac's own sentence: answered at the Mac first.
+     */
+    suspend fun answerAgentApproval(engine: String, id: String, decision: String): AgentApprovalResult =
+        unsupported("/agent/sessions")
+
     private fun unsupported(path: String): Nothing = throw TransportError.RouteUnavailable(path)
 }
 
@@ -391,6 +425,79 @@ class ControlClient(
         return decode(send("GET", path, readTimeoutMs = 30_000), path)
     }
 
+    // MARK: - Agent sessions
+
+    override suspend fun agentSessions(): AgentSessionList =
+        decode(send("GET", "/agent/sessions", readTimeoutMs = 20_000), "/agent/sessions")
+
+    override suspend fun agentSession(engine: String, since: Long?, epoch: String?): AgentSessionDetail {
+        val path = "/agent/sessions/${pathComponent(engine)}"
+        // Both halves or neither: a sequence number means nothing outside the transcript
+        // that issued it.
+        val query = if (since != null && epoch != null) {
+            mapOf("since" to since.toString(), "epoch" to epoch)
+        } else {
+            emptyMap()
+        }
+        return decode(send("GET", path, query, readTimeoutMs = 30_000), path)
+    }
+
+    override suspend fun startAgent(engine: String): AgentSessionSummary =
+        agentVerb(engine, "start")
+
+    override suspend fun newAgentThread(engine: String): AgentSessionSummary =
+        agentVerb(engine, "new")
+
+    override suspend fun interruptAgent(engine: String): AgentSessionSummary =
+        agentVerb(engine, "interrupt")
+
+    override suspend fun stopAgent(engine: String): AgentSessionSummary {
+        val path = "/agent/sessions/${pathComponent(engine)}"
+        return decode(send("DELETE", path, readTimeoutMs = 30_000), path)
+    }
+
+    /**
+     * `start`, `new` and `interrupt` take no body. An empty object goes anyway, the way
+     * `POST /unload` sends one, so the request always carries a length.
+     */
+    private suspend fun agentVerb(engine: String, verb: String): AgentSessionSummary {
+        val path = "/agent/sessions/${pathComponent(engine)}/$verb"
+        return decode(send("POST", path, body = "{}", readTimeoutMs = 30_000), path)
+    }
+
+    override suspend fun sendAgentMessage(
+        engine: String,
+        request: AgentMessageRequest,
+    ): AgentMessageAccepted {
+        val path = "/agent/sessions/${pathComponent(engine)}/messages"
+        return decode(
+            send("POST", path, body = json.encodeToString(request), readTimeoutMs = 30_000),
+            path,
+        )
+    }
+
+    override suspend fun answerAgentApproval(
+        engine: String,
+        id: String,
+        decision: String,
+    ): AgentApprovalResult {
+        val path = "/agent/sessions/${pathComponent(engine)}/approvals/${pathComponent(id)}"
+        return try {
+            decode(
+                send(
+                    "POST", path,
+                    body = json.encodeToString(AgentApprovalDecision(decision)),
+                    readTimeoutMs = 30_000,
+                ),
+                path,
+            )
+        } catch (error: TransportError.RouteUnavailable) {
+            // The route exists on any Mac that listed this approval; a 404 is about the
+            // approval — answered already, or gone with the engine — not about the Mac.
+            throw error.asNotFound()
+        }
+    }
+
     /**
      * Sends the bytes themselves.
      *
@@ -617,6 +724,16 @@ class ControlClient(
                             .getOrNull()?.let { emit(ServerEvent.Checked(it)) }
                         "job" -> runCatching { json.decodeFromString<JobProgress>(event.data) }
                             .getOrNull()?.let { emit(ServerEvent.Job(it)) }
+                        "agent" -> runCatching { json.decodeFromString<AgentEvent>(event.data) }
+                            .getOrNull()?.let { emit(ServerEvent.Agent(it)) }
+                        // The Mac dropped frames for this phone rather than wait for it.
+                        // Said even when the body does not parse: the gap is the news.
+                        "resync" -> emit(
+                            ServerEvent.Resync(
+                                runCatching { json.decodeFromString<ResyncEvent>(event.data) }
+                                    .getOrNull()?.dropped,
+                            ),
+                        )
                         "heartbeat", "ping" -> emit(
                             ServerEvent.Beat(
                                 runCatching { json.decodeFromString<Heartbeat>(event.data) }
