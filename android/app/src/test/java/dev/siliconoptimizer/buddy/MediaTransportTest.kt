@@ -10,12 +10,16 @@ import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.VideoGenerateRequest
 import dev.siliconoptimizer.buddy.transport.VideoModel
 import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -158,5 +162,53 @@ class MediaTransportTest {
         val error = runCatching { client.meshModels() }.exceptionOrNull()
         assertTrue(error is TransportError.RouteUnavailable)
         assertTrue(error!!.message!!.contains("/mesh/models"))
+    }
+
+    /**
+     * Stopping the wait has to reach the socket *while* the read is blocked.
+     *
+     * A render holds the connection for minutes, and a read blocks in the kernel where
+     * a cancelled coroutine cannot touch it; only closing the connection from another
+     * thread gets it back. The first version of this hung the handler off
+     * `invokeOnCompletion`, which fires when a coroutine has *finished* — that is,
+     * after the read it was supposed to interrupt. So what is checked here is the
+     * timing: the moment the caller gives up, not a moment later.
+     */
+    @Test
+    fun `giving up on a render reaches the connection at once`() {
+        val silent = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = java.util.concurrent.LinkedBlockingQueue<java.net.Socket>()
+        val abandoned = java.util.concurrent.CountDownLatch(1)
+        val listener = kotlin.concurrent.thread(isDaemon = true) {
+            runCatching { accepted.put(silent.accept()) }
+        }
+        // Its own scope, so a client left blocked on a socket the platform will not
+        // interrupt cannot hold the test suite open.
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
+        try {
+            val waiting = ControlClient(
+                ServerConfig("127.0.0.1", silent.localPort, token = "device-token"),
+                abandon = { abandoned.countDown(); runCatching { it.disconnect() } },
+            )
+            val call = scope.launch {
+                runCatching {
+                    waiting.generateImage(ImageRequest(prompt = "A tram", modelID = "flux2-klein"))
+                }
+            }
+            assertNotNull(
+                "the request never left",
+                accepted.poll(10, java.util.concurrent.TimeUnit.SECONDS),
+            )
+            call.cancel()
+            assertTrue(
+                "A cancelled render must reach its connection, not wait for the read",
+                abandoned.await(5, java.util.concurrent.TimeUnit.SECONDS),
+            )
+        } finally {
+            scope.cancel()
+            listener.interrupt()
+            runCatching { accepted.poll()?.close() }
+            silent.close()
+        }
     }
 }

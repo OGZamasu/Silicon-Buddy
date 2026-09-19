@@ -1,10 +1,12 @@
 package dev.siliconoptimizer.buddy.transport
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -106,7 +108,19 @@ interface ControlTransport {
 }
 
 /** The real thing: HttpURLConnection against the Mac's tiny HTTP server. */
-class ControlClient(private val config: ServerConfig) : ControlTransport {
+class ControlClient(
+    private val config: ServerConfig,
+    /**
+     * What to do with a connection whose caller has given up.
+     *
+     * On Android this is OkHttp behind the `HttpURLConnection` name, where closing the
+     * connection from another thread is what makes a blocked read return. A test on the
+     * JVM gets the platform's own implementation, which ignores it — so this is a seam,
+     * and what the tests check is that it is reached the moment the caller gives up
+     * rather than after the read it is meant to interrupt.
+     */
+    private val abandon: (HttpURLConnection) -> Unit = { runCatching { it.disconnect() } },
+) : ControlTransport {
 
     companion object {
         /** One tag for everything this client says, so `logcat -s SiliconBuddy` is enough. */
@@ -189,19 +203,33 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         authorized: Boolean = true,
         readTimeoutMs: Int = 30_000,
     ): String = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
-        var watchdog: kotlinx.coroutines.DisposableHandle? = null
-        try {
-            connection = open(method, path, query, body, authorized, readTimeoutMs = readTimeoutMs)
-            // A render holds this connection open for minutes, and reading from a socket
-            // blocks in the kernel where a cancelled coroutine cannot reach it. So
-            // cancellation disconnects the socket from another thread, which is what
-            // makes the read return — the same trick the event streams use, and what
-            // makes "stop waiting" on a render possible at all.
-            val open = connection
-            watchdog = coroutineContext[Job]?.invokeOnCompletion {
-                if (it != null) runCatching { open.disconnect() }
+        // A render holds this connection open for minutes, and reading from a socket
+        // blocks in the kernel, where a cancelled coroutine cannot reach it. A child
+        // suspended in `awaitCancellation` is cancelled at once, on another thread, and
+        // closing the connection from there is what makes the read return.
+        //
+        // `invokeOnCompletion` is no good for this: a job that is cancelling but still
+        // inside a blocking read has not *completed*, so the handler would run after
+        // the read it was meant to interrupt. And the watcher has to exist before the
+        // connection does — a child started in a scope that is already cancelled never
+        // runs at all, which is what happens when the caller gives up while the request
+        // is still being opened.
+        val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+        val watcher = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                socket.get()?.let(abandon)
             }
+        }
+        try {
+            val connection = open(
+                method, path, query, body, authorized, readTimeoutMs = readTimeoutMs,
+            )
+            socket.set(connection)
+            // Given up on while it was connecting: do not start a read that nothing is
+            // waiting for and that only a timeout would end.
+            coroutineContext.ensureActive()
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
@@ -212,8 +240,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             coroutineContext.ensureActive()
             throw TransportError.from(error, config.host)
         } finally {
-            watchdog?.dispose()
-            connection?.disconnect()
+            watcher.cancel()
+            socket.get()?.disconnect()
         }
     }
 

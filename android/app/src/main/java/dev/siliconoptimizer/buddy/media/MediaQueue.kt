@@ -177,7 +177,13 @@ data class QueueState(
                 else -> fresh
             }
         }
-        val others = jobs.filterNot { it.isQueued }
+        // A clip the stream mentioned before the queue listed it arrives as a row of
+        // its own, because an event is all there was to go on. Once the queue names it,
+        // that row *is* this one: keeping both would be the same clip twice, with the
+        // same id, which is two rows in the list and one notification missed between
+        // them.
+        val named = view.items.map { it.id }.toSet()
+        val others = jobs.filterNot { it.isQueued || it.id in named }
         val active = fromQueue.firstOrNull { it.id == view.activeID && !it.state.isTerminal }?.id
         return copy(
             paused = view.paused,

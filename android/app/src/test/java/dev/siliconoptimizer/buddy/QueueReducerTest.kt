@@ -318,4 +318,30 @@ class QueueReducerTest {
         assertFalse(QueueState.empty.applying(view(item(status = "rendering"))).job("9C2F-0001")!!.canRemove)
         assertFalse(QueueState.empty.applying(view(item(status = "submitting"))).job("9C2F-0001")!!.canRemove)
     }
+
+    /**
+     * The stream is open before the queue is asked, so the first word about a clip is
+     * usually a `job` event — with no way to tell it apart from an image the Mac
+     * started on its own. When the queue names it, it is the same clip: one row.
+     */
+    @Test
+    fun `a clip heard about on the stream first is not the queue's clip twice`() {
+        var state = QueueState.empty.applying(job(status = "rendering", fraction = 0.1))
+        assertEquals(1, state.jobs.size)
+        assertFalse("Nothing has listed it, so nothing can be done to it", state.jobs.first().isQueued)
+
+        state = state.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        assertEquals("One clip, one row", 1, state.jobs.size)
+        val row = state.job("9C2F-0001")!!
+        assertTrue("And now it is the queue's, with buttons", row.isQueued)
+        assertEquals("A tram climbing Alfama at dawn", row.prompt)
+        assertEquals(0.1, row.fraction!!, 0.0001)
+
+        // An image the Mac started itself has nothing to do with the video queue and
+        // stays where it is.
+        state = state.applying(job(id = "image", kind = "image", status = "running", title = "FLUX.2 klein"))
+        state = state.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        assertEquals(2, state.jobs.size)
+        assertNotNull(state.job("image"))
+    }
 }

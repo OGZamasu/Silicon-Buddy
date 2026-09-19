@@ -110,27 +110,52 @@ object MediaJobCenter {
     }
 
     /**
-     * Whether this phone is itself waiting on a render of this kind.
+     * Kinds this phone has just finished waiting on, and until when.
+     *
+     * The Mac's `job` event for a render often lands *after* the request it belongs to
+     * has already answered — the stand-in publishes it a moment before returning, and a
+     * real Mac has no reason to be tidier. Checking "is one running right now" therefore
+     * misses by a second and the render is announced twice. The claim outlives the
+     * request by long enough for the stream to catch up.
+     */
+    private val claims = mutableMapOf<String, Long>()
+    private const val CLAIM_GRACE_MS = 60_000L
+
+    /**
+     * Whether this phone is waiting on a render of this kind, or just was.
      *
      * The Mac reports an image or a mesh on `/events` too, under the id `image` or
      * `mesh`. Without this a render started here would be announced twice: once by the
-     * stream, once by the service that is holding the request.
+     * stream, once by the service that held the request.
      */
-    fun isRendering(kind: String): Boolean = _running.value.any { it.kind == kind }
+    @Synchronized
+    fun isRendering(kind: String): Boolean {
+        if (_running.value.any { it.kind == kind }) return true
+        val until = claims[kind] ?: return false
+        if (System.currentTimeMillis() > until) {
+            claims.remove(kind)
+            return false
+        }
+        return true
+    }
 
     internal fun began(work: Work) {
         _running.value = _running.value + work
     }
 
+    @Synchronized
     internal fun ended(work: Work, outcome: Outcome) {
         _running.value = _running.value.filterNot { it.id == work.id }
         _outcomes.value = (listOf(outcome) + _outcomes.value).take(20)
+        claims[work.kind] = System.currentTimeMillis() + CLAIM_GRACE_MS
         note(work.kind, null)
     }
 
+    @Synchronized
     fun forget() {
         _outcomes.value = emptyList()
         _fractions.value = emptyMap()
+        claims.clear()
     }
 }
 
@@ -205,9 +230,9 @@ class MediaJobService : Service() {
                     // same kind does not replace its notification.
                     id = work.id,
                     title = outcome.headline,
-                    body = listOfNotNull(work.summary, outcome.detail, outcome.warning)
+                    body = listOfNotNull(outcome.detail, outcome.warning)
                         .joinToString(" · ")
-                        .ifBlank { "Finished on the Mac." },
+                        .ifBlank { work.summary.ifBlank { "Finished on the Mac." } },
                     isFailure = outcome.failed,
                 ),
             )
@@ -238,7 +263,7 @@ class MediaJobService : Service() {
                     is MediaJobCenter.Work.Image -> client.generateImage(work.request).let {
                         MediaJobCenter.Outcome(
                             kind = work.kind,
-                            headline = "Image ready",
+                            headline = "Your image is ready",
                             path = it.path,
                             detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
                             warning = it.warning,
@@ -247,7 +272,7 @@ class MediaJobService : Service() {
                     is MediaJobCenter.Work.Video -> client.generateVideo(work.request).let {
                         MediaJobCenter.Outcome(
                             kind = work.kind,
-                            headline = "Clip ready",
+                            headline = "Your clip is ready",
                             path = it.file,
                             detail = "${it.model} on ${it.node} · ${seconds(it.elapsedSeconds)}",
                         )
@@ -255,7 +280,7 @@ class MediaJobService : Service() {
                     is MediaJobCenter.Work.Mesh -> client.generateMesh(work.request).let {
                         MediaJobCenter.Outcome(
                             kind = work.kind,
-                            headline = "Mesh ready",
+                            headline = "Your mesh is ready",
                             path = it.glbPath ?: it.objPath,
                             detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
                             warning = it.warning,
