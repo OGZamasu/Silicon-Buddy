@@ -243,6 +243,10 @@ data class VideoModel(
     val available: Boolean,
     val node: String? = null,
     val supportedParameters: List<String>? = null,
+    /** The sizes this lane renders. Absent on a node that does not say. */
+    val supportedResolutions: List<String>? = null,
+    /** Whether this lane reads a negative prompt at all. */
+    val supportsNegativePrompt: Boolean? = null,
 )
 
 @Serializable
@@ -267,6 +271,15 @@ data class VideoQueueItem(
     val outputDirectory: String,
     val error: String? = null,
     val uncertainSubmission: Boolean,
+    /** What to keep out of the shot, when the batch asked for anything. */
+    val negativePrompt: String? = null,
+    /** The Mac's own note about this take — why it chose what it chose. */
+    val detail: String? = null,
+    /** The finished clip, at `GET /media/{id}`: full control only. */
+    val mediaID: String? = null,
+    val mediaURL: String? = null,
+    /** Its poster frame, which a chat-scope device may fetch too. */
+    val thumbnailMediaID: String? = null,
 )
 
 @Serializable
@@ -284,6 +297,14 @@ data class SwarmCapability(
     val ready: Boolean,
 )
 
+/**
+ * One peer as the Mac's last poll saw it.
+ *
+ * Everything past the name, the address and whether it answered is optional, because a
+ * poll is a memory: a node that was busy when the Mac asked says less than one that was
+ * idle, and a node the Mac has not reached says almost nothing. `GET /swarm/peers/{name}/status`
+ * is the same machine asked now, and the only place its adapter appears.
+ */
 @Serializable
 data class SwarmPeer(
     val name: String,
@@ -291,6 +312,22 @@ data class SwarmPeer(
     val reachable: Boolean,
     val error: String? = null,
     val capabilities: List<SwarmCapability>,
+    val platform: String? = null,
+    /** "NVIDIA GeForce RTX 3090 Ti" on a CUDA node, the chip on a Mac. */
+    val hardware: String? = null,
+    val totalMemoryGB: Double? = null,
+    val usedMemoryGB: Double? = null,
+    val headroomGB: Double? = null,
+    val gpuUtilization: Double? = null,
+    /** What is holding the GPU, when the node says. */
+    val gpuConsumer: String? = null,
+    val queueDepth: Int? = null,
+    /** The GGUF it is serving, without the adapter riding on it. */
+    val loadedModel: String? = null,
+    val modelContextLength: Int? = null,
+    val modelEngine: String? = null,
+    /** Which kinds of work it will take, by the Mac's own reckoning. */
+    val lanes: Map<String, Boolean>? = null,
 )
 
 @Serializable

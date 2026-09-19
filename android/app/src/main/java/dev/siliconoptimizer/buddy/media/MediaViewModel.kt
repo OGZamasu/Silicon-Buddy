@@ -12,6 +12,7 @@ import dev.siliconoptimizer.buddy.transport.JobProgress
 import dev.siliconoptimizer.buddy.transport.MeshModel
 import dev.siliconoptimizer.buddy.transport.MeshPlan
 import dev.siliconoptimizer.buddy.transport.TransportError
+import dev.siliconoptimizer.buddy.transport.UploadResponse
 import dev.siliconoptimizer.buddy.transport.VideoModel
 import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
 import dev.siliconoptimizer.buddy.transport.VideoQueueView
@@ -69,7 +70,9 @@ class MediaViewModel : ViewModel() {
 
     var videoPrompt by mutableStateOf("")
     var videoTitle by mutableStateOf("")
+    var videoNegativePrompt by mutableStateOf("")
     var videoSeconds by mutableStateOf<Int?>(null)
+    var videoResolution by mutableStateOf<String?>(null)
     var videoVariations by mutableStateOf(1)
     private var chosenLaneID by mutableStateOf<String?>(null)
     private var laneChosen by mutableStateOf(false)
@@ -91,9 +94,14 @@ class MediaViewModel : ViewModel() {
         laneChosen = true
         val choices = VideoRequest.secondsChoices(lane)
         if (videoSeconds !in choices) videoSeconds = VideoRequest.seconds(lane, videoSeconds)
+        videoResolution = VideoRequest.resolution(lane, videoResolution)
     }
 
     val secondsChoices: List<Int> get() = VideoRequest.secondsChoices(lane)
+    val resolutionChoices: List<String> get() = VideoRequest.resolutions(lane)
+    val takesNegativePrompt: Boolean get() = VideoRequest.takesNegativePrompt(lane)
+    val takesAStill: Boolean
+        get() = (lane as? VideoLane.On)?.model?.supportsImageInput == true
 
     // MARK: - The image draft
 
@@ -137,7 +145,6 @@ class MediaViewModel : ViewModel() {
 
     // MARK: - The mesh draft
 
-    var meshImagePath by mutableStateOf("")
     var meshTextureSize by mutableStateOf(2048)
     private var chosenMeshModelID by mutableStateOf<String?>(null)
     var meshPlan by mutableStateOf<MeshPlan?>(null)
@@ -145,8 +152,19 @@ class MediaViewModel : ViewModel() {
     var isPlanningMesh by mutableStateOf(false)
         private set
 
-    /** What the person picked on the phone, shown beside the path the Mac needs. */
+    /** The picture this phone sent, and what the Mac calls it now. */
     var pickedPhotoName by mutableStateOf<String?>(null)
+        private set
+    var uploaded by mutableStateOf<UploadResponse?>(null)
+        private set
+    var isUploading by mutableStateOf(false)
+        private set
+
+    /** The same, for a still to animate on a lane that takes one. */
+    var stillPhotoName by mutableStateOf<String?>(null)
+        private set
+    var stillUpload by mutableStateOf<UploadResponse?>(null)
+        private set
 
     val meshModel: MeshModel?
         get() = meshModels.firstOrNull { it.id == chosenMeshModelID }
@@ -250,15 +268,18 @@ class MediaViewModel : ViewModel() {
     }
 
     /**
-     * Follows the queue while the tab is on screen.
+     * Reads the queue, and keeps reading it only when nothing is pushing.
      *
-     * The `job` events carry the fraction but never a reason for a failure, and only
-     * `GET /video/queue` has the Mac's own sentence about that — so this keeps asking,
-     * slowly, and the events fill in the movement in between.
+     * The `job` event carries the stage and the Mac's own reason for a failure now, so
+     * a live stream is the whole story and a poll beside it would only be a second
+     * source to disagree with. It still runs on a Mac without `/events` — that is what
+     * [live] is for — and the first read always happens, because the queue holds what
+     * was rendered before this phone was looking.
      */
     fun startFollowing(
         transport: ControlTransport?,
         notifier: MediaNotifier? = null,
+        live: Boolean = true,
         seconds: Long = 6,
     ) {
         poller?.cancel()
@@ -267,6 +288,7 @@ class MediaViewModel : ViewModel() {
             while (isActive) {
                 runCatching { transport.videoQueue() }.getOrNull()
                     ?.let { if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it) }
+                if (live) return@launch
                 delay(seconds * 1000)
             }
         }
@@ -283,9 +305,33 @@ class MediaViewModel : ViewModel() {
      * Also where a notification comes from: the phone says a render is done because it
      * saw it finish, whichever screen happened to be in front.
      */
-    fun apply(event: JobProgress, notifier: MediaNotifier? = null) {
+    fun apply(
+        event: JobProgress,
+        notifier: MediaNotifier? = null,
+        transport: ControlTransport? = null,
+    ) {
         MediaJobCenter.note(event.kind, event.fraction)
+        val unknown = event.kind == "video" && queue.job(event.id)?.isQueued != true
         update(queue.applying(event), notifier)
+        // A clip queued from somewhere else — the Mac's own window, another phone —
+        // is first heard of here, and an event carries no prompt and no settings. So
+        // the queue is read once, for that clip's details; this is not the old poll
+        // coming back, which asked every six seconds whether anything had happened.
+        if (unknown) readQueueOnce(transport, notifier)
+    }
+
+    private var lastRead = 0L
+
+    private fun readQueueOnce(transport: ControlTransport?, notifier: MediaNotifier?) {
+        if (transport == null) return
+        val now = System.currentTimeMillis()
+        if (now - lastRead < 3_000) return
+        lastRead = now
+        viewModelScope.launch {
+            runCatching { transport.videoQueue() }.getOrNull()?.let {
+                if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it)
+            }
+        }
     }
 
     // MARK: - Asking for work
@@ -297,6 +343,8 @@ class MediaViewModel : ViewModel() {
             title = videoTitle,
             seconds = videoSeconds,
             variations = videoVariations,
+            resolution = videoResolution,
+            negativePrompt = videoNegativePrompt,
         ) ?: run {
             error = "Type a prompt first, and pick a lane that has a machine behind it."
             return
@@ -381,9 +429,10 @@ class MediaViewModel : ViewModel() {
     }
 
     fun planMesh(transport: ControlTransport?) {
-        val request = MeshRequestBuilder.build(meshImagePath, meshModel, meshTextureSize)
+        val request = uploaded?.uploadID
+            ?.let { MeshRequestBuilder.build(it, meshModel, meshTextureSize) }
             ?: run {
-                error = "The Mac needs the picture's path on its own disk, starting with /."
+                error = "Pick a picture first: the Mac makes the mesh out of one."
                 return
             }
         if (transport == null) return
@@ -411,7 +460,14 @@ class MediaViewModel : ViewModel() {
     }
 
     fun videoWork(): MediaJobCenter.Work.Video? {
-        val request = VideoRequest.generate(videoPrompt, lane, videoSeconds) ?: return null
+        val request = VideoRequest.generate(
+            prompt = videoPrompt,
+            lane = lane,
+            seconds = videoSeconds,
+            resolution = videoResolution,
+            negativePrompt = videoNegativePrompt,
+            uploadID = stillUpload?.uploadID,
+        ) ?: return null
         return MediaJobCenter.Work.Video(
             request,
             summary = listOfNotNull(lane?.label, request.seconds?.let { "${it}s" })
@@ -420,12 +476,93 @@ class MediaViewModel : ViewModel() {
     }
 
     fun meshWork(): MediaJobCenter.Work.Mesh? {
-        val request = MeshRequestBuilder.build(meshImagePath, meshModel, meshTextureSize)
+        val request = uploaded?.uploadID
+            ?.let { MeshRequestBuilder.build(it, meshModel, meshTextureSize) }
             ?: return null
         return MediaJobCenter.Work.Mesh(
             request,
             summary = "${meshModel?.name ?: "Mesh"} · ${meshTextureSize}px texture",
         )
+    }
+
+    /**
+     * Sends a picture to the Mac so a render can start from it.
+     *
+     * The upload is the only way a device may name a picture — a path in a request from
+     * a paired phone is refused — and it is full control only, because it spends the
+     * owner's disk.
+     */
+    fun upload(picked: MediaLibrary.Picked, forStill: Boolean, transport: ControlTransport?) {
+        if (transport == null) return
+        viewModelScope.launch {
+            isUploading = true
+            try {
+                val answer = transport.upload(picked.bytes, picked.contentType, picked.name)
+                if (forStill) {
+                    stillUpload = answer
+                    stillPhotoName = picked.name
+                } else {
+                    uploaded = answer
+                    pickedPhotoName = picked.name
+                    meshPlan = null
+                }
+                message = "Sent ${picked.name ?: "the picture"} to the Mac."
+            } catch (failure: TransportError) {
+                error = failure.message
+            } finally {
+                isUploading = false
+            }
+        }
+    }
+
+    fun forgetPicture(forStill: Boolean) {
+        if (forStill) {
+            stillUpload = null
+            stillPhotoName = null
+        } else {
+            uploaded = null
+            pickedPhotoName = null
+            meshPlan = null
+        }
+    }
+
+    fun noteFailedPick(reason: String?) {
+        error = reason ?: "That picture could not be read."
+    }
+
+    /** Which result is being copied into the phone's photo library right now. */
+    var saving by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Copies a finished render onto this phone.
+     *
+     * Full control only, and that is the Mac's rule rather than this app's: a device
+     * paired for chat may fetch the preview images and is answered 403 for the renders
+     * themselves, because a phone lent to somebody is not a phone to pull the owner's
+     * work onto.
+     */
+    fun save(
+        context: android.content.Context,
+        transport: ControlTransport?,
+        mediaID: String,
+        kind: String,
+        title: String?,
+        path: String?,
+    ) {
+        if (transport == null) return
+        viewModelScope.launch {
+            saving = mediaID
+            val name = MediaLibrary.nameFor(kind, title, path)
+            MediaLibrary.save(context, transport, mediaID, name, video = kind == "video")
+                .onSuccess { message = "Saved $name to this phone." }
+                .onFailure { failure ->
+                    error = (failure as? TransportError)?.message
+                        ?: failure.message
+                        ?: "That file could not be saved."
+                }
+            saving = null
+        }
     }
 
     fun clearError() {
@@ -459,8 +596,12 @@ class MediaViewModel : ViewModel() {
         imagePrompt = ""
         sizeState = 1024
         stepsState = 8
-        meshImagePath = ""
         pickedPhotoName = null
+        uploaded = null
+        stillPhotoName = null
+        stillUpload = null
+        videoNegativePrompt = ""
+        videoResolution = null
         error = null
         message = null
         MediaJobCenter.forget()

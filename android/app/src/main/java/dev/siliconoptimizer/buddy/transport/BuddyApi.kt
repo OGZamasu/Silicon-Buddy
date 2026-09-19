@@ -219,6 +219,20 @@ data class JobProgress(
     val status: String,
     val fraction: Double? = null,
     val title: String? = null,
+    /**
+     * What the renderer is doing right now — "video-denoise 18/30", "Texture bake".
+     * Only ever set for the job the Mac is following; a clip waiting its turn has a
+     * status and no stage.
+     */
+    val stage: String? = null,
+    /**
+     * Why it failed, in the words the queue would show. Present only on a terminal
+     * failure — and the reason a phone no longer has to poll the queue beside the
+     * stream to have something true to say when a render breaks.
+     */
+    val reason: String? = null,
+    /** The finished file, at `GET /media/{id}`. Set on the frame that says it is done. */
+    val mediaID: String? = null,
 )
 
 /** The Mac's keep-alive, with its clock. */

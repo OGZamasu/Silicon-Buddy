@@ -29,10 +29,37 @@
             "id" : "image-to-mesh",
             "kind" : "mesh",
             "ready" : true
+          },
+          {
+            "id" : "text-to-video",
+            "kind" : "video",
+            "ready" : true
+          },
+          {
+            "id" : "text-to-image",
+            "kind" : "image",
+            "ready" : false
           }
         ],
+        "gpuConsumer" : "job:text-to-video",
+        "gpuUtilization" : 0.38,
+        "hardware" : "NVIDIA GeForce RTX 3090 Ti",
+        "headroomGB" : 14.6,
+        "lanes" : {
+          "gguf" : true,
+          "image" : false,
+          "mesh" : true,
+          "video" : true
+        },
+        "loadedModel" : "qwen3.8-27b-q4_k_m.gguf",
+        "modelContextLength" : 65536,
+        "modelEngine" : "stock",
         "name" : "silicon-node",
-        "reachable" : true
+        "platform" : "windows-cuda",
+        "queueDepth" : 1,
+        "reachable" : true,
+        "totalMemoryGB" : 24,
+        "usedMemoryGB" : 9.4000000000000004
       }
     ],
     "polledSecondsAgo" : 4

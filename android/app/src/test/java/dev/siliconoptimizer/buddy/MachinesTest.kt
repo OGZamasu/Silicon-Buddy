@@ -78,10 +78,46 @@ class MachinesTest {
         assertFalse(peer.isThisMac)
         assertEquals("silicon-node", peer.name)
         assertTrue(peer.reachable)
-        assertEquals("Answering", peer.headline)
+        assertEquals("NVIDIA GeForce RTX 3090 Ti · windows-cuda", peer.headline)
         assertEquals("silicon-node", peer.address)
-        assertEquals(listOf("image-to-mesh"), peer.lanes.map { it.id })
-        assertEquals(listOf("mesh"), peer.lanesByKind.keys.toList())
+        assertEquals(
+            listOf("image-to-mesh", "text-to-video", "text-to-image"),
+            peer.lanes.map { it.id },
+        )
+        assertEquals(listOf("mesh", "video", "image"), peer.lanesByKind.keys.toList())
+        assertFalse("a lane the node is not serving says so", peer.lanes.last().ready)
+    }
+
+    /** What the poll carries now, which is most of what the page used to be missing. */
+    @Test
+    fun `a peer's card shows the memory and the GPU the poll saw`() {
+        val peer = Machines.from(status, profile, metrics, node, swarm).last()
+        val stats = peer.stats.toMap()
+        assertEquals("9.4 GB of 24.0 GB", stats["Memory"])
+        assertEquals("14.6 GB", stats["Headroom"])
+        assertEquals("38%", stats["GPU"])
+        assertEquals("job:text-to-video", stats["GPU held by"])
+        assertEquals("1 waiting", stats["Queue"])
+        assertTrue("and the GGUF it is serving", peer.detail!!.contains("qwen3.8-27b"))
+    }
+
+    /**
+     * The poll is a memory; the adapter is only ever in the node's own answer. Asking
+     * replaces the remembered card with the one the node just gave.
+     */
+    @Test
+    fun `asking a node directly is the only way to see its adapter`() {
+        val remembered = Machines.from(status, profile, metrics, node, swarm).last()
+        assertFalse(remembered.detail!!.contains("lora"))
+        assertNotNull(remembered.blindSpot)
+
+        val asked = Machines.asked(response("GET__swarm_peers__name__status"))
+        assertEquals("silicon-node", asked.name)
+        assertTrue(asked.detail!!.contains("bonsai-27b-v3.lora.gguf"))
+        assertTrue(asked.detail!!.contains("64K context"))
+        assertEquals("NVIDIA GeForce RTX 3090 Ti · windows-cuda", asked.headline)
+        assertEquals("2 models", asked.stats.toMap()["On its disk"])
+        assertNull("nothing is missing from an answer it just gave", asked.blindSpot)
     }
 
     /**

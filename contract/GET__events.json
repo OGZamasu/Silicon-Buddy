@@ -31,6 +31,7 @@
       "fraction" : 0.33000000000000002,
       "id" : "9C2F-0001",
       "kind" : "video",
+      "stage" : "video-denoise 18\/30",
       "status" : "running",
       "title" : "Opening shot"
     },
@@ -49,6 +50,24 @@
         "The reply declines or deflects the request."
       ],
       "verdict" : "annotate"
+    }
+  },
+  "eventVariants" : {
+    "job" : {
+      "failed" : {
+        "id" : "9C2F-0003",
+        "kind" : "video",
+        "reason" : "silicon-node ran out of VRAM at the decode stage.",
+        "status" : "failed",
+        "title" : "Alfama rooftops at first light"
+      },
+      "finished" : {
+        "id" : "9C2F-0002",
+        "kind" : "video",
+        "mediaID" : "bWVkaWEtY2xpcC1leGFt",
+        "status" : "completed",
+        "title" : "The same tram, from the tracks"
+      }
     }
   },
   "method" : "GET",

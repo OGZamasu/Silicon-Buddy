@@ -7,6 +7,7 @@ import dev.siliconoptimizer.buddy.transport.ImageRequest
 import dev.siliconoptimizer.buddy.transport.MeshRequest
 import dev.siliconoptimizer.buddy.transport.ServerConfig
 import dev.siliconoptimizer.buddy.transport.TransportError
+import dev.siliconoptimizer.buddy.transport.Uploads
 import dev.siliconoptimizer.buddy.transport.VideoGenerateRequest
 import dev.siliconoptimizer.buddy.transport.VideoModel
 import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
@@ -210,5 +211,99 @@ class MediaTransportTest {
             runCatching { accepted.poll()?.close() }
             silent.close()
         }
+    }
+
+    // MARK: - The routes that move bytes
+
+    @Test
+    fun `an upload sends the bytes, the type and the name, and no more than the ceiling`() = runTest {
+        server.reply(
+            "/uploads", 200,
+            """{"uploadID":"0B7D","mediaID":"bWVk","bytes":12,"contentType":"image/png","mediaURL":"/media/bWVk","expiresAt":"2026-09-25T09:41:00Z"}""",
+        )
+        val answer = client.upload("a picture".toByteArray(), "image/png", "kettle.png")
+        assertEquals("0B7D", answer.uploadID)
+        val sent = server.request("/uploads")!!
+        assertEquals("image/png", sent.headers["content-type"])
+        assertEquals("kettle.png", sent.headers["x-filename"])
+        assertEquals("a picture", sent.body)
+
+        // Refused here rather than after sending 40 MB to be told about it.
+        val tooBig = runCatching {
+            client.upload(ByteArray(Uploads.MAXIMUM_BYTES.toInt() + 1), "image/png", "big.png")
+        }.exceptionOrNull()
+        assertTrue(tooBig is TransportError.TooLarge)
+        assertEquals("nothing left this phone", 1, server.requestCount("/uploads"))
+    }
+
+    @Test
+    fun `a file the Mac will not keep says which ones it will`() = runTest {
+        server.reply(
+            "/uploads", 415,
+            """{"error":"That upload is not an image or a short video this Mac will keep. Send a PNG, JPEG, GIF, WebP, MP4, MOV or WebM."}""",
+        )
+        val error = runCatching {
+            client.upload("not a picture".toByteArray(), "text/plain", "notes.txt")
+        }.exceptionOrNull()
+        assertTrue(error is TransportError.UnsupportedMedia)
+        assertTrue(error!!.message!!.contains("WebM"))
+    }
+
+    @Test
+    fun `fetching a result writes the bytes out as they arrive`() = runTest {
+        server.reply("/media/bWVk", 200, "the clip itself")
+        val sink = java.io.ByteArrayOutputStream()
+        client.media("bWVk", sink)
+        assertEquals("the clip itself", sink.toString("UTF-8"))
+        assertNotNull(server.request("/media/bWVk"))
+    }
+
+    @Test
+    fun `a chat-only phone is told why it may not pull a render`() = runTest {
+        server.reply(
+            "/media/bWVk", 403,
+            """{"error":"This device is paired for chat only, so it may fetch preview images but not the renders themselves. Pair it again with full control from Settings → Silicon Buddy on the Mac."}""",
+        )
+        val error = runCatching { client.media("bWVk", java.io.ByteArrayOutputStream()) }
+            .exceptionOrNull()
+        assertTrue(error is TransportError.Forbidden)
+        assertTrue(error!!.message!!.contains("preview images"))
+    }
+
+    @Test
+    fun `a media id is data, not a path`() = runTest {
+        server.reply("/media/..%2Fstatus", 404, """{"error":"No file with that media id."}""")
+        runCatching { client.media("../status", java.io.ByteArrayOutputStream()) }
+        assertNotNull(
+            "an id that looks like a path stays an id",
+            server.request("/media/..%2Fstatus"),
+        )
+    }
+
+    @Test
+    fun `asking one node goes to that node's own route`() = runTest {
+        server.reply(
+            "/swarm/peers/silicon-node/status", 200,
+            """{"name":"silicon-node","baseURL":"http://silicon-node:8790","reachable":true,"capabilities":[],"gguf":{"running":true,"model":"qwen.gguf","adapter":"a.lora.gguf","installedModels":[],"adapters":[]}}""",
+        )
+        val peer = client.peerStatus("silicon-node")
+        assertEquals("a.lora.gguf", peer.gguf!!.adapter)
+    }
+
+    /**
+     * A stream that has gone quiet is a stream that has gone.
+     *
+     * The Mac heartbeats every fifteen seconds. Read with no timeout, a half-open
+     * socket — a Mac restarted while the phone slept, a NAT that dropped its mapping —
+     * leaves the phone waiting forever, saying "streaming from /events" while nothing
+     * arrives and never reconnecting. The screens that read the stream then show a
+     * render that finished an hour ago as still running.
+     */
+    @Test
+    fun `the event stream does not wait forever on a socket that says nothing`() {
+        assertTrue(
+            "three heartbeats' grace, and not much more",
+            ControlClient.SILENT_STREAM_MS in 30_000..90_000,
+        )
     }
 }

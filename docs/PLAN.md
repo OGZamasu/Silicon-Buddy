@@ -153,45 +153,56 @@ Not done, and why:
 Android has a Create tab — Video, Image, 3D and the render Queue — and a Machines
 page. Video picks a lane from `GET /video/models` (and "Auto" when `GET /jev` says
 this Mac's media router is on), offers only the lengths that lane advertises, and
-queues takes through `POST /video/queue`; the Queue screen is `GET /video/queue`
-and the `job` events on `/events` together, with the Mac's own controls — pause,
-resume, retry, remove, stop following, clear finished. Image shows
-`POST /image/plan`'s phase-by-phase memory before it renders. 3D plans and
-generates a mesh. Long renders run in a foreground service with an ongoing
-notification, and a local notification says when one is done or has failed.
+queues takes through `POST /video/queue`; the Queue screen is driven by the `job`
+events, with the Mac's own controls — pause, resume, retry, remove, stop following,
+clear finished, each behind a confirmation where it throws work away. Image shows
+`POST /image/plan`'s phase-by-phase memory before it renders. 3D uploads a photo
+from the phone and makes a mesh out of it. Results are saved to the phone's own
+photo library. Long renders run in a foreground service with an ongoing
+notification that can be stopped waiting on, and a local notification says when one
+is done or has failed.
 Machines lists this Mac (`/status`, `/profile`, `/metrics`, `/v1/node`) and every
 swarm peer (`/swarm`).
 
-**What the Mac would have to grow for the rest of it.** None of these are the
-phone's to fix, and each one is a sentence the app currently has to say instead of
-a thing it can do:
+**What the Mac grew for it.** The first pass of this milestone was written against a
+control API with no way to fetch a result and no way to send a picture, and the app
+had to say so in six places. The Mac's M3 routes landed while this was in review, so
+those sentences are gone and the things they stood in for work:
 
-1. *No route serves a rendered file.* `/video/generate`, `/image/generate`,
-   `/mesh/generate` and the queue all answer with paths on the Mac's own disk. The
-   app shows the path and an "on the Mac" label; "save to Photos" cannot exist
-   until a route does — the Mac's own `GET /ui/media` is on its loopback gateway,
-   with a token no paired device holds.
-2. *No route accepts an upload.* `/mesh/plan` and `/mesh/generate` take
-   `imagePath`, and so do image-to-video and image revision. A photo on the phone
-   cannot be the subject of a mesh: the 3D tab asks for a path the Mac already
-   has, and says why.
-3. *No mesh viewer for a device.* `POST /ui/open3d` (`gatewayOpenMeshViewer`) is
-   on the loopback gateway too, so "open this on the Mac" is not offerable.
-4. *`GET /swarm` publishes a peer thinly:* name, address, reachable, and
-   capabilities as id/kind/ready. Not the node's loaded GGUF, its adapters, its
-   GPU or its own queue — the Mac reads all of that from the node and keeps it to
-   itself. Restarting a node's lanes has no route at all.
-5. *The `job` event carries no stage and no reason.* It is id, kind, status, title
-   and fraction; a failure's explanation lives only in `GET /video/queue`'s
-   `error`, so the phone polls the queue beside the stream to have something true
-   to show when a render fails.
-6. *No push.* A render that finishes while the app is not running is learned about
-   at the next open, and treated as history rather than fired as a notification —
-   otherwise opening the app would ring once per clip in the queue's memory. APNs
-   and FCM are M4's, and need a paid Apple account.
-7. *No negative prompt, and no advertised sizes for video.* The video routes take
-   a prompt; `VideoModel` advertises seconds but not resolutions, so the app sends
-   the Mac's own default.
+- `GET /media/{id}` answers the bytes, with an `ETag` and `Range` support. "Save to
+  Photos" writes a finished clip or picture straight into the phone's own library
+  through MediaStore. Scope is per id: a chat-only device may fetch the preview images
+  and is answered 403 for the renders themselves, so the button is not offered there
+  and the card says why.
+- `POST /uploads` takes a picture from the phone — 24 MiB, type read off the bytes,
+  kept a week — and answers with the two ids a render can start from. The 3D tab sends
+  the photo and the video tab can send a still to animate. Neither names a path: a
+  request from a paired device that names a file on the Mac is refused, and rightly.
+- The `job` event carries `stage`, `reason` and `mediaID`. The queue screen shows what
+  the renderer is doing ("video-denoise 18/30"), explains a failure in the Mac's own
+  words, and offers the finished file — all from the stream. The six-second poll beside
+  it is gone, and with it the whole class of poll-versus-event disagreements; the queue
+  is read once, and again only when the stream is down or when an event names a clip
+  this phone has not seen before.
+- `GET /swarm` carries a peer's hardware, memory, GPU and loaded GGUF, and
+  `GET /swarm/peers/{name}/status` asks one node now rather than remembering a poll —
+  the only place its adapter appears. The Machines page shows the poll and has an "Ask
+  it now" on each peer.
+- `GET /video/models` says which sizes a lane renders and whether it reads a negative
+  prompt, so the pickers offer what the lane offers and nothing else.
+
+What is still outstanding, and why:
+
+1. **No push.** A render that finishes while the app is not running is learned about at
+   the next open and treated as history rather than fired as a notification — otherwise
+   opening the app would ring once per clip in the queue's memory. APNs and FCM are
+   M4's, and need a paid Apple account.
+2. **No mesh viewer a device may open.** `POST /ui/open3d` is on the Mac's loopback
+   gateway, so "show me this on the Mac" is still not offerable; the mesh is saved to
+   the phone instead.
+3. **`POST /video/queue` takes no upload id**, so image-to-video is only on the
+   synchronous route. The queue is where long work belongs, so a still to animate
+   cannot be queued.
 
 ### M4 — Agent sessions (Mac API + apps)
 - Mac: sessions API over harness/Codex/Pi engines: list, create, send, event stream, tool-call approvals, cancel.

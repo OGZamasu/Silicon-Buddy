@@ -22,12 +22,17 @@
   "request" : {
     "imagePath" : "\/Users\/you\/Pictures\/kettle.png",
     "modelID" : "hunyuan3d-2",
-    "textureSize" : 2048
+    "textureSize" : 2048,
+    "uploadID" : "0B7D4C2A-5E31-4F08-9A6B-1C2D3E4F5061"
   },
   "response" : {
     "elapsedSeconds" : 323.69999999999999,
     "glbPath" : "\/Users\/you\/Models\/kettle.glb",
-    "model" : "Hunyuan3D 2"
+    "mediaID" : "bWVkaWEtbWVzaC1leGFt",
+    "mediaURL" : "\/media\/bWVkaWEtbWVzaC1leGFt",
+    "model" : "Hunyuan3D 2",
+    "objMediaID" : "bWVkaWEtbWVzaC1vYmpl",
+    "objPath" : "\/Users\/you\/Models\/kettle.obj"
   },
   "scopes" : [
     "full"

@@ -56,13 +56,15 @@ data class Machine(
 object Machines {
 
     /**
-     * What `GET /swarm` leaves out about a peer. Said once, on the peer's own card,
-     * because a missing line looks like a broken app otherwise.
+     * What `GET /swarm` is: the Mac's last poll, not the node's own answer.
+     *
+     * Everything past name, address and reachability is optional there, and the adapter
+     * riding on a loaded GGUF is not in it at all. `GET /swarm/peers/{name}/status`
+     * asks the node now, which is what the "Ask it now" button on a peer's card does.
      */
     const val PEER_BLIND_SPOT =
-        "The Mac publishes a peer's name, address, reachability and lanes — not its " +
-            "loaded GGUF, its adapters or its GPU. Those need a route on the Mac that " +
-            "proxies the node's own status."
+        "This is what the Mac's last poll saw. Ask the node itself for its loaded " +
+            "GGUF, its adapter and its GPU."
 
     fun from(
         status: Status?,
@@ -118,18 +120,85 @@ object Machines {
         )
     }
 
+    /** One peer as it answered just now, rather than as the Mac last remembered it. */
+    fun asked(status: dev.siliconoptimizer.buddy.transport.PeerNodeStatus): Machine = Machine(
+        name = status.name,
+        isThisMac = false,
+        reachable = status.reachable,
+        headline = if (!status.reachable) {
+            "Not answering"
+        } else {
+            listOfNotNull(status.hardware, status.platform).joinToString(" · ")
+                .ifEmpty { "Answering" }
+        },
+        detail = status.error ?: status.gguf?.let { gguf ->
+            if (gguf.running) {
+                listOfNotNull(
+                    gguf.model,
+                    gguf.adapter?.let { "with $it" },
+                    gguf.contextLength?.let { "${it / 1024}K context" },
+                    gguf.engine,
+                ).joinToString(" · ")
+            } else {
+                "No GGUF running"
+            }
+        },
+        address = host(status.baseURL),
+        stats = buildList {
+            status.usedMemoryGB?.let { used ->
+                status.totalMemoryGB?.let { total ->
+                    add("Memory" to "${Format.gigabytes(used)} of ${Format.gigabytes(total)}")
+                } ?: add("Memory" to Format.gigabytes(used))
+            }
+            status.headroomGB?.let { add("Headroom" to Format.gigabytes(it)) }
+            status.gpuUtilization?.let { add("GPU" to Format.percent(it)) }
+            status.queueDepth?.let { add("Queue" to "$it waiting") }
+            status.gguf?.uptimeSeconds?.let {
+                add("Serving for" to Format.secondsAgo(it).removeSuffix(" ago"))
+            }
+            status.gguf?.installedModels?.takeIf { it.isNotEmpty() }?.let {
+                add("On its disk" to "${it.size} models")
+            }
+        },
+        lanes = status.capabilities.map { Lane(it.id, it.kind, it.ready) },
+        blindSpot = null,
+    )
+
     private fun peer(peer: dev.siliconoptimizer.buddy.transport.SwarmPeer): Machine = Machine(
         name = peer.name,
         isThisMac = false,
         reachable = peer.reachable,
-        headline = if (peer.reachable) "Answering" else "Not answering",
-        detail = peer.error ?: peer.capabilities
+        // A machine that did not answer is not described by what it is made of.
+        headline = if (!peer.reachable) {
+            "Not answering"
+        } else {
+            listOfNotNull(peer.hardware, peer.platform).joinToString(" · ")
+                .ifEmpty { "Answering" }
+        },
+        detail = peer.error ?: peer.loadedModel?.let { model ->
+            listOfNotNull(
+                model,
+                peer.modelContextLength?.let { "${it / 1024}K context" },
+                peer.modelEngine,
+            ).joinToString(" · ")
+        } ?: peer.capabilities
             .filter { it.ready }
             .map { kindName(it.kind) }
             .distinct()
             .takeIf { it.isNotEmpty() }
             ?.joinToString(", "),
         address = host(peer.baseURL),
+        stats = buildList {
+            peer.usedMemoryGB?.let { used ->
+                peer.totalMemoryGB?.let { total ->
+                    add("Memory" to "${Format.gigabytes(used)} of ${Format.gigabytes(total)}")
+                } ?: add("Memory" to Format.gigabytes(used))
+            }
+            peer.headroomGB?.let { add("Headroom" to Format.gigabytes(it)) }
+            peer.gpuUtilization?.let { add("GPU" to Format.percent(it)) }
+            peer.gpuConsumer?.let { add("GPU held by" to it) }
+            peer.queueDepth?.let { add("Queue" to "$it waiting") }
+        },
         lanes = peer.capabilities.map { Lane(it.id, it.kind, it.ready) },
         blindSpot = PEER_BLIND_SPOT,
     )
@@ -197,8 +266,38 @@ class MachinesViewModel : ViewModel() {
         error = if (machines.isEmpty()) "Couldn't reach the Mac." else null
     }
 
+    /**
+     * Asks one node directly.
+     *
+     * `GET /swarm` is a memory of a poll; this is the node answering, and the only
+     * place its adapter appears. Full control only — the Mac sends its own credential
+     * for that node to ask.
+     */
+    fun ask(name: String, transport: ControlTransport?) {
+        if (transport == null) return
+        viewModelScope.launch {
+            asking = name
+            try {
+                val status = transport.peerStatus(name)
+                machines = machines.map { if (it.name == name) Machines.asked(status) else it }
+                askedAt = askedAt + (name to System.currentTimeMillis())
+            } catch (failure: dev.siliconoptimizer.buddy.transport.TransportError) {
+                error = failure.message
+            } finally {
+                asking = null
+            }
+        }
+    }
+
+    var asking by mutableStateOf<String?>(null)
+        private set
+    var askedAt by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+
     fun reset() {
         machines = emptyList()
+        asking = null
+        askedAt = emptyMap()
         polledSecondsAgo = null
         exposure = null
         error = null

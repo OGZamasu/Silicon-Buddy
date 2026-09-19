@@ -265,7 +265,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     // to be in front. The queue hears about it here, once, and says so.
     val notifier = remember(context) { MediaNotifier(context) }
     LaunchedEffect(Unit) {
-        events.jobEvents.collect { media.apply(it, notifier) }
+        events.jobEvents.collect { media.apply(it, notifier, app.transport) }
     }
 
     // What the Mac pushes, when it can push.
@@ -392,7 +392,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     onPair = { pairing = true },
                     modifier = Modifier.fillMaxSize(),
                 )
-                Destination.Create -> CreateScreen(app, media, Modifier.fillMaxSize())
+                Destination.Create -> CreateScreen(app, media, events.isLive, Modifier.fillMaxSize())
                 Destination.Machines -> MachinesScreen(app, machines, Modifier.fillMaxSize())
                 Destination.Models -> ModelsScreen(app, models, events, Modifier.fillMaxSize())
                 Destination.Chat -> {

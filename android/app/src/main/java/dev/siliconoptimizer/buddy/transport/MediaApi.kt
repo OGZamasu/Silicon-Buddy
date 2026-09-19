@@ -39,6 +39,8 @@ data class VideoQueueRequest(
     val seconds: Int? = null,
     val resolution: String? = null,
     val seed: Long? = null,
+    /** One negative prompt for the batch: the same model and settings run all of it. */
+    val negativePrompt: String? = null,
     @SerialName("h3_turbo") val h3Turbo: Boolean? = null,
     @SerialName("h3_steps") val h3Steps: Int? = null,
 )
@@ -78,7 +80,19 @@ data class VideoGenerateRequest(
     val modelID: String? = null,
     val seconds: Int? = null,
     val resolution: String? = null,
-    /** A still to animate — a path on the Mac, which a phone has no way to write. */
+    /** What to keep out of the shot, on a lane that says it reads one. */
+    val negativePrompt: String? = null,
+    /**
+     * A still to animate, named the way a device may name one: an id from
+     * `POST /uploads`, or a `mediaID` this Mac published with an earlier result.
+     */
+    val uploadID: String? = null,
+    val mediaID: String? = null,
+    /**
+     * A path on the Mac. Mirrored because the Mac still accepts one from its own
+     * tools; never sent from here — a request from a paired device that names a path
+     * is refused, and rightly: a device that could name a file could name any file.
+     */
     val imagePath: String? = null,
     @SerialName("h3_chain_prompts") val h3ChainPrompts: List<String>? = null,
     val seed: Long? = null,
@@ -113,13 +127,18 @@ object RenderBudget {
         DOWNLOAD_SECONDS + RESPONSE_OVERHEAD_SECONDS
 }
 
-/** What a finished clip is: a file on the Mac, and how long it took. */
+/** What a finished clip is: a file on the Mac, and the ids that fetch it. */
 @Serializable
 data class VideoResponse(
     val file: String,
     val node: String,
     val model: String,
     val elapsedSeconds: Double,
+    /** `GET /media/{id}` — the clip itself, for a device with full control. */
+    val mediaID: String? = null,
+    val mediaURL: String? = null,
+    /** A poster frame, which a chat-scope device may fetch as well. */
+    val thumbnailMediaID: String? = null,
 )
 
 // MARK: - Image
@@ -139,7 +158,10 @@ data class ImageRequest(
     val seed: Long? = null,
     /** True keeps the prompt on this Mac even when a node is paired. */
     val localOnly: Boolean? = null,
-    /** A picture to start from — again, a path on the Mac. */
+    /** A picture to start from, named without naming a path. */
+    val uploadID: String? = null,
+    val mediaID: String? = null,
+    /** The Mac's own spelling of the same thing. Never sent from a device. */
     val initImagePath: String? = null,
     val initImageInfluence: Double? = null,
 )
@@ -153,6 +175,9 @@ data class ImageResponse(
     val model: String,
     /** Set when the plan said this would not comfortably fit and it was run anyway. */
     val warning: String? = null,
+    /** The picture itself, at `GET /media/{id}`. */
+    val mediaID: String? = null,
+    val mediaURL: String? = null,
 )
 
 // MARK: - Mesh
@@ -161,11 +186,14 @@ data class ImageResponse(
 @Serializable
 data class MeshRequest(
     /**
-     * The conditioning image, as a path on the Mac. The phone cannot put one there:
-     * there is no upload route, so this is typed by the owner or picked from what the
-     * Mac already has.
+     * The conditioning image as a path on the Mac. Optional since `POST /uploads`
+     * landed, and never sent from here: a device names a picture by the id it was
+     * given, not by where it sits on somebody's disk.
      */
-    val imagePath: String,
+    val imagePath: String? = null,
+    /** A picture this device sent, or one this Mac published with an earlier result. */
+    val uploadID: String? = null,
+    val mediaID: String? = null,
     val modelID: String? = null,
     val pipelineType: String? = null,
     val textureSize: Int? = null,
@@ -198,6 +226,78 @@ data class MeshResponse(
     val elapsedSeconds: Double,
     val model: String,
     val warning: String? = null,
+    /** The GLB, at `GET /media/{id}`; the OBJ has an id of its own. */
+    val mediaID: String? = null,
+    val mediaURL: String? = null,
+    val objMediaID: String? = null,
+)
+
+// MARK: - Uploads and media
+
+/**
+ * `POST /uploads`: how a device names a picture without naming a path.
+ *
+ * The Mac reads the type off the bytes rather than believing the request, keeps the
+ * file for seven days, and answers with the two ids a render can start from. Full
+ * control only — an upload spends the owner's disk.
+ */
+@Serializable
+data class UploadResponse(
+    val uploadID: String,
+    val mediaID: String,
+    val bytes: Long,
+    /** What the Mac read off the bytes, which is not always what was claimed. */
+    val contentType: String,
+    /** Relative, like every media link this server hands out: `/media/<id>`. */
+    val mediaURL: String,
+    /** When the Mac will sweep it, so a phone can say "until" rather than find a 404. */
+    val expiresAt: String,
+)
+
+object Uploads {
+    /** This route's own ceiling. Every other route a device can reach keeps 4 MiB. */
+    const val MAXIMUM_BYTES = 24L * 1024 * 1024
+
+    /** What the Mac will keep. Anything else is a 415, decided from the bytes. */
+    val ACCEPTED_TYPES = listOf(
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+        "video/mp4", "video/quicktime", "video/webm",
+    )
+}
+
+/** One peer, asked now rather than remembered: `GET /swarm/peers/{name}/status`. */
+@Serializable
+data class PeerGguf(
+    val running: Boolean,
+    /** The GGUF file being served, when one is. */
+    val model: String? = null,
+    /** The LoRA riding on it — the one thing `GET /swarm` cannot carry. */
+    val adapter: String? = null,
+    /** Which build is serving it: "stock" or "prism". */
+    val engine: String? = null,
+    val contextLength: Int? = null,
+    val uptimeSeconds: Double? = null,
+    /** On the node's disk, serving or not. */
+    val installedModels: List<String> = emptyList(),
+    val adapters: List<String> = emptyList(),
+)
+
+@Serializable
+data class PeerNodeStatus(
+    val name: String,
+    val baseURL: String,
+    val reachable: Boolean,
+    val error: String? = null,
+    val platform: String? = null,
+    /** "NVIDIA GeForce RTX 3090 Ti" on a CUDA node, the chip on a Mac. */
+    val hardware: String? = null,
+    val totalMemoryGB: Double? = null,
+    val usedMemoryGB: Double? = null,
+    val headroomGB: Double? = null,
+    val gpuUtilization: Double? = null,
+    val queueDepth: Int? = null,
+    val capabilities: List<SwarmCapability> = emptyList(),
+    val gguf: PeerGguf? = null,
 )
 
 // MARK: - Jev

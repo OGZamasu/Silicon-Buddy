@@ -82,6 +82,8 @@ object MediaJobCenter {
         val kind: String,
         val headline: String,
         val path: String? = null,
+        /** `GET /media/{id}`: what makes "save to Photos" possible at all. */
+        val mediaID: String? = null,
         val detail: String? = null,
         val warning: String? = null,
         val failed: Boolean = false,
@@ -265,6 +267,7 @@ class MediaJobService : Service() {
                             kind = work.kind,
                             headline = "Your image is ready",
                             path = it.path,
+                            mediaID = it.mediaID,
                             detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
                             warning = it.warning,
                         )
@@ -274,6 +277,7 @@ class MediaJobService : Service() {
                             kind = work.kind,
                             headline = "Your clip is ready",
                             path = it.file,
+                            mediaID = it.mediaID,
                             detail = "${it.model} on ${it.node} · ${seconds(it.elapsedSeconds)}",
                         )
                     }
@@ -282,6 +286,7 @@ class MediaJobService : Service() {
                             kind = work.kind,
                             headline = "Your mesh is ready",
                             path = it.glbPath ?: it.objPath,
+                            mediaID = it.mediaID ?: it.objMediaID,
                             detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
                             warning = it.warning,
                         )

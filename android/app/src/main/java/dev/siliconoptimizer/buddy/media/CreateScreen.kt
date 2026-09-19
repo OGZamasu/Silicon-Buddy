@@ -28,11 +28,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -44,6 +46,7 @@ import dev.siliconoptimizer.buddy.ui.Format
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
 import dev.siliconoptimizer.buddy.ui.verdictTint
+import kotlinx.coroutines.launch
 
 /**
  * Create: a clip, a picture or a mesh, made on the Mac.
@@ -57,6 +60,16 @@ import dev.siliconoptimizer.buddy.ui.verdictTint
 fun CreateScreen(
     app: AppState,
     model: MediaViewModel,
+    /**
+     * Whether the event stream is up right now.
+     *
+     * The `job` event carries the stage and the reason a render failed, so a live
+     * stream is the whole story and the queue is read once. A stream that is down — an
+     * older Mac with no `/events`, a tailnet blip, a phone that slept — leaves nothing
+     * pushing, and then the queue has to be asked. Flipping this back on re-reads once,
+     * because a stream that was down missed things.
+     */
+    live: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -73,9 +86,9 @@ fun CreateScreen(
         }
     }
 
-    LaunchedEffect(model.tab, app.connectionGeneration) {
+    LaunchedEffect(model.tab, app.connectionGeneration, live) {
         if (model.tab == MediaViewModel.Tab.Queue) {
-            model.startFollowing(app.transport, notifier)
+            model.startFollowing(app.transport, notifier, live)
         } else {
             model.stopFollowing()
         }
@@ -138,6 +151,18 @@ private fun VideoForm(
     ensureNotifications: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val stillPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        uri?.let {
+            scope.launch {
+                MediaLibrary.read(context, it)
+                    .onSuccess { picked -> model.upload(picked, forStill = true, app.transport) }
+                    .onFailure { failure -> model.noteFailedPick(failure.message) }
+            }
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -152,12 +177,23 @@ private fun VideoForm(
                 enabled = app.canControl,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Text(
-                "The Mac's video routes take a prompt and nothing else — there is no " +
-                    "negative prompt in the control API.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
+        }
+        if (model.takesNegativePrompt) {
+            item {
+                OutlinedTextField(
+                    value = model.videoNegativePrompt,
+                    onValueChange = { model.videoNegativePrompt = it },
+                    label = { Text("Keep out of the shot (optional)") },
+                    minLines = 2,
+                    enabled = app.canControl,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Only lanes that say they read one are sent one.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
         }
         item {
             OutlinedTextField(
@@ -239,6 +275,61 @@ private fun VideoForm(
                 }
             }
         }
+        if (model.resolutionChoices.isNotEmpty()) {
+            item {
+                SectionCard("Size", Icons.Filled.Movie) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        model.resolutionChoices.forEach { size ->
+                            FilterChip(
+                                selected = VideoRequest.resolution(model.lane, model.videoResolution) == size,
+                                onClick = { model.videoResolution = size },
+                                enabled = app.canControl,
+                                label = { Text(size) },
+                            )
+                        }
+                    }
+                    Text(
+                        "The sizes this lane advertises.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+        }
+        if (model.takesAStill) {
+            item {
+                SectionCard("A still to animate (optional)", Icons.Filled.Movie) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                stillPicker.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            },
+                            enabled = app.canControl && !model.isUploading,
+                        ) { Text(if (model.stillUpload == null) "Pick a photo" else "Pick another") }
+                        if (model.stillUpload != null) {
+                            TextButton(onClick = { model.forgetPicture(forStill = true) }) {
+                                Text("Remove")
+                            }
+                        }
+                    }
+                    model.stillPhotoName?.let {
+                        Text(
+                            "$it — sent to the Mac.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Text(
+                        "Only \"Render one now\" animates a still; the queue takes prompts.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+        }
         item {
             SectionCard("Takes", Icons.Filled.Movie) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -284,7 +375,7 @@ private fun VideoForm(
                 color = MaterialTheme.colorScheme.outline,
             )
         }
-        item { Outcomes("video") }
+        item { Outcomes(app, model, "video") }
     }
 }
 
@@ -381,7 +472,7 @@ private fun ImageForm(app: AppState, model: MediaViewModel, ensureNotifications:
             }
         }
         model.imagePlan?.let { plan -> item { ImagePlanCard(plan) } }
-        item { Outcomes("image") }
+        item { Outcomes(app, model, "image") }
     }
 }
 
@@ -437,12 +528,17 @@ private fun ImagePlanCard(plan: ImagePlan) {
 @Composable
 private fun MeshForm(app: AppState, model: MediaViewModel, ensureNotifications: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
-        // A content URI's last segment is a row number. What a person recognises is
-        // the file's own name, which the provider will give if asked.
-        model.pickedPhotoName = uri?.let { displayName(context, it) }
+        uri?.let {
+            scope.launch {
+                MediaLibrary.read(context, it)
+                    .onSuccess { picked -> model.upload(picked, forStill = false, app.transport) }
+                    .onFailure { failure -> model.noteFailedPick(failure.message) }
+            }
+        }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
@@ -452,36 +548,46 @@ private fun MeshForm(app: AppState, model: MediaViewModel, ensureNotifications: 
         item {
             SectionCard("The picture", Icons.Filled.ViewInAr) {
                 Text(
-                    "`/mesh/plan` and `/mesh/generate` take a path on the Mac's own disk. " +
-                        "The control API has no route that accepts an upload, so a photo " +
-                        "on this phone cannot be the subject of a mesh yet — name a file " +
-                        "the Mac already has.",
+                    "The Mac makes a mesh out of a picture. This one goes to the Mac as " +
+                        "an upload — a phone may not name a file on somebody else's " +
+                        "disk, so it sends the picture itself and the Mac hands back an " +
+                        "id to render from. It is kept for a week.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
-                    value = model.meshImagePath,
-                    onValueChange = { model.meshImagePath = it },
-                    label = { Text("Path on the Mac") },
-                    placeholder = { Text("/Users/you/Pictures/kettle.png") },
-                    singleLine = true,
-                    isError = model.meshImagePath.isNotBlank() &&
-                        !MeshRequestBuilder.isMacPath(model.meshImagePath),
-                    enabled = app.canControl,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedButton(
-                    onClick = {
-                        picker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    },
-                    enabled = app.canControl,
-                ) { Text("Pick a photo here") }
-                model.pickedPhotoName?.let {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            picker.launch(
+                                PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                ),
+                            )
+                        },
+                        enabled = app.canControl && !model.isUploading,
+                    ) { Text(if (model.uploaded == null) "Pick a photo" else "Pick another") }
+                    if (model.uploaded != null) {
+                        TextButton(onClick = { model.forgetPicture(forStill = false) }) {
+                            Text("Remove")
+                        }
+                    }
+                }
+                if (model.isUploading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                model.uploaded?.let { upload ->
                     Text(
-                        "Picked $it on this phone. It stays here: there is nowhere on the " +
-                            "Mac to send it.",
+                        listOfNotNull(
+                            model.pickedPhotoName,
+                            upload.contentType,
+                            Format.bytes(upload.bytes),
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Pill("on the Mac until ${upload.expiresAt.take(10)}")
+                }
+                if (!app.canControl) {
+                    Text(
+                        "Sending a picture spends the Mac's disk, so it needs a device " +
+                            "with full control.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline,
                     )
@@ -529,20 +635,20 @@ private fun MeshForm(app: AppState, model: MediaViewModel, ensureNotifications: 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { model.planMesh(app.transport) },
-                    enabled = app.canControl && MeshRequestBuilder.isMacPath(model.meshImagePath),
+                    enabled = app.canControl && model.uploaded != null,
                 ) { Text("Plan it") }
                 Button(
                     onClick = {
                         ensureNotifications()
                         model.meshWork()?.let { MediaJobService.start(context, it) }
                     },
-                    enabled = app.canControl && MeshRequestBuilder.isMacPath(model.meshImagePath),
+                    enabled = app.canControl && model.uploaded != null,
                 ) { Text("Generate") }
             }
             if (model.isPlanningMesh) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
         model.meshPlan?.let { plan -> item { MeshPlanCard(plan) } }
-        item { Outcomes("mesh") }
+        item { Outcomes(app, model, "mesh") }
     }
 }
 
@@ -581,15 +687,6 @@ private fun MeshPlanCard(plan: MeshPlan) {
     }
 }
 
-/** The name the picture has on this phone, rather than the row it lives in. */
-private fun displayName(context: android.content.Context, uri: android.net.Uri): String? =
-    runCatching {
-        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val column = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
-        }
-    }.getOrNull() ?: uri.lastPathSegment
-
 // MARK: - What came back
 
 /**
@@ -601,7 +698,8 @@ private fun displayName(context: android.content.Context, uri: android.net.Uri):
  * exist.
  */
 @Composable
-private fun Outcomes(kind: String) {
+private fun Outcomes(app: AppState, model: MediaViewModel, kind: String) {
+    val context = LocalContext.current
     val outcomes by MediaJobCenter.outcomes.collectAsState()
     val running by MediaJobCenter.running.collectAsState()
     val mine = outcomes.filter { it.kind == kind }
@@ -646,6 +744,29 @@ private fun Outcomes(kind: String) {
             }
             outcome.path?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            if (outcome.mediaID != null && app.canControl) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            model.save(
+                                context, app.transport, outcome.mediaID, kind,
+                                outcome.headline, outcome.path,
+                            )
+                        },
+                        enabled = model.saving == null,
+                    ) { Text(if (kind == "mesh") "Save the file" else "Save to Photos") }
+                    if (model.saving == outcome.mediaID) {
+                        Text(
+                            "Copying…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else if (outcome.mediaID != null) {
+                Pill("on the Mac — a chat-only device may not pull renders")
+            } else if (outcome.path != null) {
                 Pill("on the Mac")
             }
             outcome.warning?.let {

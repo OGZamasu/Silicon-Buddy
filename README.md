@@ -66,15 +66,19 @@ A render takes minutes, so a request that has to be waited for runs in a foregro
 service behind an ongoing notification, and a local notification says when the work is
 done or has failed. Tapping it opens the queue.
 
-Results are paths. Nothing in the control API serves a rendered file to a phone, so the
-app says where a clip, an image or a mesh is on the Mac rather than drawing a "save to
-Photos" button that could not work; `docs/PLAN.md` lists that and the other routes the
-Mac would have to grow — an upload, a mesh viewer a device may open, a richer view of a
-peer than name-address-reachable-lanes.
+Results come back as ids, and `GET /media/{id}` answers the bytes — so a finished clip
+or picture is saved into the phone's own photo library, and a picture on the phone goes
+the other way through `POST /uploads` to become the mesh the Mac makes or the still it
+animates. Neither direction names a path: a request from a paired device that names a
+file on the Mac is refused, because a device that could name one could name any of them.
+A chat-only device may fetch the preview images and not the renders, which is the Mac's
+rule and is what the buttons follow.
 
 The Machines page is this Mac and every machine it can hand work to, one card each:
 chip and cores, what is loaded, memory and pressure, GPU and CPU, the lanes each one
-advertises. A peer's card also says what the Mac does not publish about it.
+advertises. A peer's card is what the Mac's last poll saw, and "Ask it now" replaces it
+with what the node says this second — including the adapter riding on its loaded GGUF,
+which a poll cannot carry.
 
 ## Building
 

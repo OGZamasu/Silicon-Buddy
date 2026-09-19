@@ -62,6 +62,27 @@ object VideoRequest {
         is VideoLane.On -> lane.model.available
     }
 
+    /** The sizes a lane offers, in its own order. Empty when it does not say. */
+    fun resolutions(lane: VideoLane?): List<String> =
+        (lane as? VideoLane.On)?.model?.supportedResolutions.orEmpty()
+
+    /** The size to send: what was chosen, when the lane still offers it. */
+    fun resolution(lane: VideoLane?, wanted: String?): String? {
+        val offered = resolutions(lane)
+        if (offered.isEmpty()) return null
+        return offered.firstOrNull { it.equals(wanted, ignoreCase = true) } ?: offered.first()
+    }
+
+    /**
+     * Whether this lane reads a negative prompt. A lane that does not is not sent one:
+     * silently ignored is the best case, and a 400 is the other.
+     */
+    fun takesNegativePrompt(lane: VideoLane?): Boolean {
+        val model = (lane as? VideoLane.On)?.model ?: return false
+        return model.supportsNegativePrompt
+            ?: model.supportedParameters.orEmpty().any { it.equals("negative_prompt", true) }
+    }
+
     /** The seconds a lane offers, in order. Never empty, never outside 1–15. */
     fun secondsChoices(lane: VideoLane?): List<Int> {
         val advertised = (lane as? VideoLane.On)?.model?.supportedSeconds.orEmpty()
@@ -97,6 +118,8 @@ object VideoRequest {
         title: String? = null,
         seconds: Int? = null,
         variations: Int = 1,
+        resolution: String? = null,
+        negativePrompt: String? = null,
     ): VideoQueueRequest? {
         val text = prompt.trim()
         if (text.isEmpty()) return null
@@ -108,19 +131,36 @@ object VideoRequest {
             variations = variations(variations),
             modelID = lane?.id,
             seconds = if (auto) null else seconds(lane, seconds),
+            resolution = if (auto) null else resolution(lane, resolution),
+            negativePrompt = negativePrompt?.trim()
+                ?.takeIf { it.isNotEmpty() && takesNegativePrompt(lane) },
         )
     }
 
     /** The body for `POST /video/generate`: one clip, waited for. */
-    fun generate(prompt: String, lane: VideoLane?, seconds: Int? = null): VideoGenerateRequest? {
+    fun generate(
+        prompt: String,
+        lane: VideoLane?,
+        seconds: Int? = null,
+        resolution: String? = null,
+        negativePrompt: String? = null,
+        uploadID: String? = null,
+    ): VideoGenerateRequest? {
         val text = prompt.trim()
         if (text.isEmpty()) return null
         if (lane != null && !isAvailable(lane)) return null
         val auto = lane == null || lane is VideoLane.Auto
+        val still = uploadID?.takeIf {
+            lane == null || lane is VideoLane.Auto || (lane as VideoLane.On).model.supportsImageInput
+        }
         return VideoGenerateRequest(
             prompt = text,
             modelID = lane?.id,
             seconds = if (auto) null else seconds(lane, seconds),
+            resolution = if (auto) null else resolution(lane, resolution),
+            negativePrompt = negativePrompt?.trim()
+                ?.takeIf { it.isNotEmpty() && takesNegativePrompt(lane) },
+            uploadID = still,
         )
     }
 }
@@ -165,32 +205,18 @@ object MeshRequestBuilder {
     val TEXTURE_SIZES = listOf(1024, 2048, 4096)
 
     /**
-     * Places only this phone has. A path under one of these is absolute and looks like
-     * a file, and is still nothing the Mac can open — sending one means a render that
-     * fails minutes later with the Mac's word for "no such file".
+     * The body for `/mesh/plan` and `/mesh/generate`, from a picture this phone sent.
+     *
+     * An id rather than a path: a request from a paired device that names a file on the
+     * Mac is refused, because a device that could name one could name any of them.
      */
-    private val PHONE_ONLY = listOf(
-        "/storage/", "/sdcard/", "/data/", "/mnt/", "/system/", "/cache/", "/proc/", "/dev/",
-    )
-
-    /**
-     * A path on the Mac, because that is all `/mesh/plan` and `/mesh/generate` take.
-     * There is no route that accepts an upload, so a picture on this phone cannot be
-     * the subject of a mesh until the Mac grows one.
-     */
-    fun isMacPath(path: String): Boolean {
-        val trimmed = path.trim()
-        if (!trimmed.startsWith("/") || trimmed.endsWith("/") || trimmed.length <= 1) return false
-        return PHONE_ONLY.none { trimmed.startsWith(it, ignoreCase = true) }
-    }
-
-    fun build(imagePath: String, model: MeshModel?, textureSize: Int): MeshRequest? {
-        val path = imagePath.trim()
-        if (!isMacPath(path)) return null
+    fun build(uploadID: String, model: MeshModel?, textureSize: Int): MeshRequest? {
+        if (uploadID.isBlank()) return null
         return MeshRequest(
-            imagePath = path,
+            uploadID = uploadID,
             modelID = model?.id,
             textureSize = if (textureSize in TEXTURE_SIZES) textureSize else TEXTURE_SIZES[1],
         )
     }
+
 }

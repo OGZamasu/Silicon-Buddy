@@ -46,7 +46,13 @@ class QueueReducerTest {
         fraction: Double? = null,
         kind: String = "video",
         title: String? = "Lisbon",
-    ) = JobProgress(id = id, kind = kind, status = status, fraction = fraction, title = title)
+        stage: String? = null,
+        reason: String? = null,
+        mediaID: String? = null,
+    ) = JobProgress(
+        id = id, kind = kind, status = status, fraction = fraction, title = title,
+        stage = stage, reason = reason, mediaID = mediaID,
+    )
 
     // MARK: - The words the Mac uses
 
@@ -343,5 +349,56 @@ class QueueReducerTest {
         state = state.applying(view(item(status = "rendering"), active = "9C2F-0001"))
         assertEquals(2, state.jobs.size)
         assertNotNull(state.job("image"))
+    }
+
+    // MARK: - What the stream carries now
+
+    /**
+     * The `job` event grew a stage and a reason, which is what let the poll beside it
+     * go: the two things the stream could not say are the two things a person needs
+     * while a render is running and when it breaks.
+     */
+    @Test
+    fun `the stream alone can say what is happening and what went wrong`() {
+        var state = QueueState.empty.applying(view(item(status = "pending")))
+        state = state.applying(
+            job(status = "rendering", fraction = 0.6, stage = "video-denoise 18/30"),
+        )
+        val running = state.job("9C2F-0001")!!
+        assertEquals("video-denoise 18/30", running.stage)
+        assertEquals("video-denoise 18/30", running.detail)
+
+        state = state.applying(
+            job(status = "failed", reason = "silicon-node ran out of VRAM at the decode stage."),
+        )
+        val failed = state.job("9C2F-0001")!!
+        assertEquals("silicon-node ran out of VRAM at the decode stage.", failed.error)
+        assertEquals("silicon-node ran out of VRAM at the decode stage.", failed.detail)
+        assertNull("a finished render is not doing anything", failed.stage)
+    }
+
+    @Test
+    fun `the event that says a render is done carries the id that fetches it`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        state = state.applying(job(status = "completed", mediaID = "bWVkaWE"))
+        assertEquals("bWVkaWE", state.job("9C2F-0001")!!.mediaID)
+    }
+
+    @Test
+    fun `a queue read brings the ids for everything it lists`() {
+        val state = QueueState.empty.applying(
+            view(item(status = "completed").copy(mediaID = "bWVkaWE", thumbnailMediaID = "cG9zdGVy")),
+        )
+        val row = state.job("9C2F-0001")!!
+        assertEquals("bWVkaWE", row.mediaID)
+        assertEquals("cG9zdGVy", row.thumbnailMediaID)
+    }
+
+    @Test
+    fun `what a batch asked to keep out of the shot is part of how it is made`() {
+        val state = QueueState.empty.applying(
+            view(item(status = "pending").copy(negativePrompt = "blurry, watermark")),
+        )
+        assertTrue(state.job("9C2F-0001")!!.detail!!.contains("without: blurry, watermark"))
     }
 }

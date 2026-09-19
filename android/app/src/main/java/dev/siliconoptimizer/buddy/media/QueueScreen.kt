@@ -51,6 +51,7 @@ fun QueueList(
     // Removing a take and clearing the finished ones both throw away work the Mac
     // will not make again, and a queue is a list of small buttons next to each other.
     var confirming by remember { mutableStateOf<Pending?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 14.dp),
@@ -137,6 +138,10 @@ fun QueueList(
             JobCard(
                 job = job,
                 canControl = app.canControl,
+                saving = model.saving,
+                onSave = { id ->
+                    model.save(context, app.transport, id, job.kind, job.title, job.file)
+                },
                 confirming = confirming?.takeIf { it.jobID == job.id }?.action,
                 onAsk = { action ->
                     confirming = if (confirming?.jobID == job.id && confirming?.action == action) {
@@ -165,6 +170,8 @@ fun QueueList(
 private fun JobCard(
     job: MediaJob,
     canControl: Boolean,
+    saving: String?,
+    onSave: (String) -> Unit,
     /** The action this card is currently asking about, if any. */
     confirming: String?,
     onAsk: (String) -> Unit,
@@ -222,6 +229,29 @@ private fun JobCard(
         }
         (job.file ?: job.outputDirectory.takeIf { job.state == JobState.Done })?.let {
             Text(it, style = MaterialTheme.typography.labelSmall)
+        }
+        if (job.state == JobState.Done && job.mediaID != null) {
+            if (canControl) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { onSave(job.mediaID) },
+                        enabled = saving == null,
+                    ) { Text("Save to Photos") }
+                    if (saving == job.mediaID) {
+                        Text(
+                            "Copying…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                Pill("on the Mac — a chat-only device may not pull renders")
+            }
+        } else if (job.state == JobState.Done) {
             Pill("on the Mac")
         }
 

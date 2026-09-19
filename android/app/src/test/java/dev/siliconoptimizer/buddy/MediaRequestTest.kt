@@ -185,42 +185,79 @@ class MediaRequestTest {
     )
 
     @Test
-    fun `a mesh is asked for by a path on the Mac`() {
-        val request = MeshRequestBuilder.build("/Users/you/Pictures/kettle.png", hunyuan, 2048)!!
-        assertEquals("/Users/you/Pictures/kettle.png", request.imagePath)
+    fun `a mesh is asked for by the id the upload came back with`() {
+        val request = MeshRequestBuilder.build("0B7D4C2A-5E31", hunyuan, 2048)!!
+        assertEquals("0B7D4C2A-5E31", request.uploadID)
         assertEquals("hunyuan3d-2", request.modelID)
         assertEquals(2048, request.textureSize)
+        assertNull(
+            "A request from a phone that names a path on the Mac is refused, and " +
+                "rightly: a device that could name one could name any of them",
+            request.imagePath,
+        )
     }
 
     @Test
-    fun `a phone's own picture is not a path the Mac can read`() {
-        assertFalse(MeshRequestBuilder.isMacPath("content://media/external/images/media/42"))
-        assertFalse(MeshRequestBuilder.isMacPath("kettle.png"))
-        assertFalse(MeshRequestBuilder.isMacPath(""))
-        assertTrue(MeshRequestBuilder.isMacPath(" /Users/you/Pictures/kettle.png "))
-        assertNull(MeshRequestBuilder.build("content://media/42", hunyuan, 2048))
-    }
-
-    /**
-     * A path from this phone is absolute and looks like a file, and is still nothing
-     * the Mac can open. Sending one buys a render that fails minutes later.
-     */
-    @Test
-    fun `a path only this phone has is refused before it is sent`() {
-        listOf(
-            "/storage/emulated/0/DCIM/Camera/IMG_0042.jpg",
-            "/sdcard/Download/kettle.png",
-            "/data/user/0/dev.siliconoptimizer.buddy/files/kettle.png",
-            "/mnt/media_rw/kettle.png",
-        ).forEach {
-            assertFalse(it, MeshRequestBuilder.isMacPath(it))
-            assertNull(MeshRequestBuilder.build(it, hunyuan, 2048))
-        }
-        assertTrue(MeshRequestBuilder.isMacPath("/Volumes/Work/kettle.png"))
+    fun `no picture is no mesh`() {
+        assertNull(MeshRequestBuilder.build("", hunyuan, 2048))
+        assertNull(MeshRequestBuilder.build("   ", hunyuan, 2048))
     }
 
     @Test
     fun `a texture size nothing offers becomes one that is offered`() {
-        assertEquals(2048, MeshRequestBuilder.build("/tmp/a.png", hunyuan, 777)!!.textureSize)
+        assertEquals(2048, MeshRequestBuilder.build("an-upload", hunyuan, 777)!!.textureSize)
+    }
+
+    // MARK: - What a lane says it takes
+
+    @Test
+    fun `a size is sent only from the list the lane advertises`() {
+        val lane = VideoLane.On(h3.copy(supportedResolutions = listOf("480p", "720p")))
+        assertEquals(listOf("480p", "720p"), VideoRequest.resolutions(lane))
+        assertEquals("720p", VideoRequest.resolution(lane, "720p"))
+        assertEquals("480p", VideoRequest.resolution(lane, "4K"))
+        assertEquals("480p", VideoRequest.resolution(lane, null))
+        // A lane that says nothing about sizes is sent nothing.
+        assertNull(VideoRequest.resolution(VideoLane.On(h3), "720p"))
+        assertNull(VideoRequest.resolution(VideoLane.Auto, "720p"))
+    }
+
+    @Test
+    fun `a negative prompt goes only to a lane that reads one`() {
+        val reads = VideoLane.On(h3.copy(supportsNegativePrompt = true))
+        val deaf = VideoLane.On(h3.copy(supportsNegativePrompt = false))
+        assertTrue(VideoRequest.takesNegativePrompt(reads))
+        assertFalse(VideoRequest.takesNegativePrompt(deaf))
+        // A lane that only lists the parameter counts as reading one.
+        assertTrue(
+            VideoRequest.takesNegativePrompt(
+                VideoLane.On(h3.copy(supportedParameters = listOf("negative_prompt"))),
+            ),
+        )
+
+        assertEquals(
+            "blurry",
+            VideoRequest.enqueue("A tram", reads, negativePrompt = "blurry")!!.negativePrompt,
+        )
+        assertNull(
+            "Ignored at best, a 400 at worst",
+            VideoRequest.enqueue("A tram", deaf, negativePrompt = "blurry")!!.negativePrompt,
+        )
+        assertNull(VideoRequest.enqueue("A tram", reads, negativePrompt = "   ")!!.negativePrompt)
+    }
+
+    @Test
+    fun `a still is sent only to a lane that animates one`() {
+        val animates = VideoLane.On(h3.copy(supportsImageInput = true))
+        val doesNot = VideoLane.On(h3.copy(supportsImageInput = false))
+        assertEquals(
+            "an-upload",
+            VideoRequest.generate("A tram", animates, uploadID = "an-upload")!!.uploadID,
+        )
+        assertNull(VideoRequest.generate("A tram", doesNot, uploadID = "an-upload")!!.uploadID)
+        assertNull(
+            "And never a path",
+            VideoRequest.generate("A tram", animates, uploadID = "an-upload")!!.imagePath,
+        )
     }
 }

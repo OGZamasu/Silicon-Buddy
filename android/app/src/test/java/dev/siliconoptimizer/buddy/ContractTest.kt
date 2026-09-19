@@ -32,6 +32,7 @@ import dev.siliconoptimizer.buddy.transport.NodeAdvertisement
 import dev.siliconoptimizer.buddy.transport.PairRequest
 import dev.siliconoptimizer.buddy.transport.PairResponse
 import dev.siliconoptimizer.buddy.transport.PairedDevice
+import dev.siliconoptimizer.buddy.transport.PeerNodeStatus
 import dev.siliconoptimizer.buddy.transport.Plan
 import dev.siliconoptimizer.buddy.transport.PlanRequest
 import dev.siliconoptimizer.buddy.transport.Profile
@@ -40,6 +41,8 @@ import dev.siliconoptimizer.buddy.transport.StatusMessage
 import dev.siliconoptimizer.buddy.transport.SwarmView
 import dev.siliconoptimizer.buddy.transport.TokenEvent
 import dev.siliconoptimizer.buddy.transport.TransportError
+import dev.siliconoptimizer.buddy.transport.UploadResponse
+import dev.siliconoptimizer.buddy.transport.Uploads
 import dev.siliconoptimizer.buddy.transport.VideoGenerateRequest
 import dev.siliconoptimizer.buddy.transport.VideoModel
 import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
@@ -88,6 +91,8 @@ class ContractTest {
     private fun part(name: String, part: String): JsonElement {
         val fields = fixture(name)
         return when {
+            part.startsWith("requests.") ->
+                (fields["requests"] as JsonObject).getValue(part.removePrefix("requests."))
             part.startsWith("events.") ->
                 (fields["events"] as JsonObject).getValue(part.removePrefix("events."))
             part.startsWith("errors.") ->
@@ -259,13 +264,93 @@ class ContractTest {
         roundTrip<VideoQueueView>("POST__video_queue")
     }
 
+    /** Six verbs, each with a fixture of its own now, and no seventh. */
     @Test
     fun `controlling the queue`() {
+        val fixture = fixture("POST__video_queue_control")
+        val requests = fixture.getValue("requests") as JsonObject
         assertEquals(
-            "pause",
-            roundTrip<VideoQueueControlRequest>("POST__video_queue_control", "request").action,
+            setOf("pause", "resume", "retry", "remove", "stop_following", "clear_finished"),
+            requests.keys,
+        )
+        for (action in requests.keys) {
+            val sent = roundTrip<VideoQueueControlRequest>(
+                "POST__video_queue_control", "requests.$action",
+            )
+            assertEquals(action, sent.action)
+            if (action in VideoQueueControlRequest.NEEDS_ID) {
+                assertNotNull("$action names the item it is about", sent.id)
+            } else {
+                assertNull("$action is about the queue, not an item", sent.id)
+            }
+        }
+        assertTrue(
+            "retry is the one that has to be meant",
+            roundTrip<VideoQueueControlRequest>(
+                "POST__video_queue_control", "requests.retry",
+            ).confirmNewRender == true,
         )
         roundTrip<VideoQueueView>("POST__video_queue_control")
+    }
+
+    @Test
+    fun `a lane says what it takes`() {
+        val lanes = roundTrip<List<VideoModel>>("GET__video_models")
+        val h3 = lanes.first()
+        assertEquals(listOf("480p", "720p", "1080p"), h3.supportedResolutions)
+        assertTrue(h3.supportsNegativePrompt == true)
+        assertTrue(h3.supportedParameters.orEmpty().contains("negative_prompt"))
+    }
+
+    @Test
+    fun `a queue item carries its reason, its file and the id that fetches it`() {
+        val queue = roundTrip<VideoQueueView>("GET__video_queue")
+        assertNotNull("the Mac's word about the queue itself", queue.message)
+        val done = queue.items.first { it.status == "completed" }
+        assertNotNull(done.file)
+        assertNotNull(done.mediaID)
+        assertNotNull("a poster a chat-scope device may fetch", done.thumbnailMediaID)
+        assertNotNull("why the Mac chose what it chose", done.detail)
+        val failed = queue.items.first { it.status == "failed" }
+        assertNotNull(failed.error)
+        assertTrue(failed.uncertainSubmission)
+        assertNotNull(queue.items.first().negativePrompt)
+    }
+
+    @Test
+    fun `a job event carries the stage and the reason the queue used to hold`() {
+        val job = roundTrip<JobProgress>("GET__events", "events.job")
+        assertEquals("video-denoise 18/30", job.stage)
+        assertEquals("running", job.status)
+    }
+
+    @Test
+    fun `sending a picture, and fetching a result back`() {
+        val upload = roundTrip<UploadResponse>("POST__uploads")
+        assertTrue(upload.uploadID.isNotEmpty())
+        assertEquals("/media/${upload.mediaID}", upload.mediaURL)
+        assertEquals("image/jpeg", upload.contentType)
+        // The ceiling this app refuses at is the one the Mac documents.
+        val tooLarge = (part("POST__uploads", "errors.413") as JsonObject)
+            .getValue("error").toString()
+        assertTrue(tooLarge.contains(Uploads.MAXIMUM_BYTES.toString()))
+        // `GET /media/{id}` answers bytes, so there is no response type to mirror —
+        // only the scopes, which decide what this app offers to whom.
+        assertEquals(listOf("full", "chat"), fixture("GET__media__id_")["scopes"].toString()
+            .removeSurrounding("[", "]").split(",").map { it.trim().removeSurrounding("\"") })
+    }
+
+    @Test
+    fun `a peer asked directly says what the poll cannot`() {
+        val peer = roundTrip<PeerNodeStatus>("GET__swarm_peers__name__status")
+        assertEquals("silicon-node", peer.name)
+        assertEquals("NVIDIA GeForce RTX 3090 Ti", peer.hardware)
+        assertNotNull(peer.gguf)
+        assertEquals("bonsai-27b-v3.lora.gguf", peer.gguf!!.adapter)
+        assertTrue(peer.gguf!!.installedModels.isNotEmpty())
+        assertEquals(listOf("full"), fixture("GET__swarm_peers__name__status")["scopes"]
+            .toString().removeSurrounding("[", "]").split(",")
+            .map { it.trim().removeSurrounding("\"") })
     }
 
     @Test
@@ -273,8 +358,13 @@ class ContractTest {
         val request = roundTrip<VideoGenerateRequest>("POST__video_generate", "request")
         assertEquals("hailuo-h3", request.modelID)
         assertEquals(5, request.seconds)
-        // Every clip is a file on the Mac; nothing on this API serves it to a phone.
-        assertTrue(roundTrip<VideoResponse>("POST__video_generate").file.startsWith("/"))
+        assertEquals("what a device may name a picture with", null, request.imagePath)
+        assertNotNull(request.uploadID)
+        assertNotNull(request.negativePrompt)
+        val clip = roundTrip<VideoResponse>("POST__video_generate")
+        assertTrue(clip.file.startsWith("/"))
+        assertNotNull("and now the phone can fetch it", clip.mediaID)
+        assertNotNull(clip.thumbnailMediaID)
     }
 
     @Test
@@ -286,15 +376,19 @@ class ContractTest {
         val image = roundTrip<ImageResponse>("POST__image_generate")
         assertTrue(image.path.startsWith("/"))
         assertNotNull(image.peakMemoryBytes)
+        assertNotNull(image.mediaID)
     }
 
     @Test
-    fun `a mesh is asked for by a path on the Mac`() {
+    fun `a mesh is asked for by an id, and comes back as one`() {
         val request = roundTrip<MeshRequest>("POST__mesh_plan", "request")
-        assertTrue("There is no upload route; this is a path on the Mac", request.imagePath.startsWith("/"))
+        assertNotNull("what a device sends instead of a path", request.uploadID)
         assertEquals(request, roundTrip<MeshRequest>("POST__mesh_generate", "request"))
         assertFalse(roundTrip<MeshPlan>("POST__mesh_plan").isRemote)
-        assertTrue(roundTrip<MeshResponse>("POST__mesh_generate").glbPath!!.startsWith("/"))
+        val mesh = roundTrip<MeshResponse>("POST__mesh_generate")
+        assertTrue(mesh.glbPath!!.startsWith("/"))
+        assertNotNull(mesh.mediaID)
+        assertNotNull("the OBJ has an id of its own", mesh.objMediaID)
     }
 
     /** Read for one fact: whether this Mac would pick the model for a media request. */
@@ -347,7 +441,9 @@ class ContractTest {
             "GET__profile",
             "GET__recommend",
             "GET__status",
+            "GET__media__id_",
             "GET__swarm",
+            "GET__swarm_peers__name__status",
             "GET__v1_node",
             "GET__video_models",
             "GET__video_queue",
@@ -370,6 +466,7 @@ class ContractTest {
             "POST__plan",
             "POST__recommend",
             "POST__unload",
+            "POST__uploads",
             "POST__v1_systemone",
             "POST__video_generate",
             "POST__video_queue",
@@ -408,8 +505,12 @@ class ContractTest {
                 val mapped = TransportError.from(code, body.toString(), "/x")
                 assertNotNull("$name documents $code; nothing maps it", mapped)
                 assertTrue(
+                    // A 500 is a server error and `Server` is what it is; what matters
+                    // is that it arrives as the Mac's own sentence rather than as a
+                    // number, which the next assertion checks. Everything else has to
+                    // have a case of its own.
                     "$name documents $code and it falls through to Server",
-                    mapped !is TransportError.Server,
+                    mapped !is TransportError.Server || code == 500,
                 )
                 assertTrue(
                     "$name $code reaches a person as nothing",
@@ -419,7 +520,7 @@ class ContractTest {
         }
         assertEquals(
             "The statuses the Mac documents changed — run contract/refresh.sh, then map them",
-            setOf(400, 401, 403, 404, 409, 411, 413, 429),
+            setOf(400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500),
             seen,
         )
     }

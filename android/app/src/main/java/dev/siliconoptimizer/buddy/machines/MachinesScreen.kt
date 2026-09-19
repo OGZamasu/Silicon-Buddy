@@ -67,7 +67,13 @@ fun MachinesScreen(
             item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
         }
         items(model.machines, key = { it.name + it.isThisMac }) { machine ->
-            MachineCard(machine)
+            MachineCard(
+                machine = machine,
+                canAsk = app.canControl && !machine.isThisMac,
+                asking = model.asking == machine.name,
+                answered = model.askedAt.containsKey(machine.name),
+                onAsk = { model.ask(machine.name, app.transport) },
+            )
         }
         model.exposure?.let { exposure ->
             item {
@@ -112,7 +118,13 @@ private fun laneHeading(kind: String): String = when (kind.lowercase()) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MachineCard(machine: Machine) {
+private fun MachineCard(
+    machine: Machine,
+    canAsk: Boolean = false,
+    asking: Boolean = false,
+    answered: Boolean = false,
+    onAsk: () -> Unit = {},
+) {
     SectionCard(
         title = machine.name,
         icon = if (machine.isThisMac) Icons.Filled.Memory else Icons.Filled.Hub,
@@ -185,6 +197,20 @@ private fun MachineCard(machine: Machine) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline,
             )
+        }
+        if (canAsk) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.TextButton(onClick = onAsk, enabled = !asking) {
+                    Text(if (answered) "Ask it again" else "Ask it now")
+                }
+                if (asking) {
+                    Text(
+                        "Asking…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }

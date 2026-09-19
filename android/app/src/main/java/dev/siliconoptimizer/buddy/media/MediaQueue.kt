@@ -63,9 +63,15 @@ data class MediaJob(
     val prompt: String? = null,
     /** Model, duration, size — whatever the queue knows about how it is being made. */
     val settings: String? = null,
-    /** Why it failed, in the Mac's words. Only `GET /video/queue` carries this. */
+    /** Why it failed, in the Mac's words. Now on the `job` event as well as the queue. */
     val error: String? = null,
+    /** What the renderer is doing right now, when the Mac is following this one. */
+    val stage: String? = null,
     val file: String? = null,
+    /** `GET /media/{id}`: the finished clip, for a device with full control. */
+    val mediaID: String? = null,
+    /** Its poster frame, which a chat-scope device may fetch too. */
+    val thumbnailMediaID: String? = null,
     val outputDirectory: String? = null,
     val scene: Int? = null,
     val variation: Int? = null,
@@ -87,9 +93,12 @@ data class MediaJob(
 
     val canStopFollowing: Boolean get() = isQueued && isActive && state.isRunning
 
-    /** One line under the title: the reason when there is one, the settings otherwise. */
+    /**
+     * One line under the title: why it failed, or what it is doing, or how it is made.
+     * In that order, because that is the order somebody looking at it wants them.
+     */
     val detail: String?
-        get() = error ?: settings
+        get() = error ?: stage?.takeIf { state.isRunning } ?: settings
 
     companion object {
         fun of(item: VideoQueueItem, activeID: String?, fraction: Double? = null): MediaJob {
@@ -99,6 +108,7 @@ data class MediaJob(
                 add(item.resolution)
                 item.h3Steps?.let { add("$it steps") }
                 if (item.h3Turbo == true) add("turbo")
+                item.negativePrompt?.takeIf { it.isNotBlank() }?.let { add("without: $it") }
             }.joinToString(" · ")
             return MediaJob(
                 id = item.id,
@@ -111,6 +121,8 @@ data class MediaJob(
                 settings = settings,
                 error = item.error,
                 file = item.file,
+                mediaID = item.mediaID,
+                thumbnailMediaID = item.thumbnailMediaID,
                 outputDirectory = item.outputDirectory,
                 scene = item.scene,
                 variation = item.variation,
@@ -215,8 +227,14 @@ data class QueueState(
                 statusWord = event.status,
                 title = event.title?.takeIf { it.isNotBlank() } ?: existing.title,
                 fraction = fractionFor(existing, state, event.fraction),
-                // A fresh attempt is not the old failure.
-                error = if (state == JobState.Queued || state.isRunning) null else existing.error,
+                stage = if (state.isTerminal) null else event.stage ?: existing.stage,
+                // A fresh attempt is not the old failure. The event carries the Mac's
+                // own reason now, so a failure is explained without asking the queue.
+                error = when {
+                    state == JobState.Queued || state.isRunning -> null
+                    else -> event.reason ?: existing.error
+                },
+                mediaID = event.mediaID ?: existing.mediaID,
             )
             else -> MediaJob(
                 id = event.id,
@@ -227,6 +245,9 @@ data class QueueState(
                 state = state,
                 statusWord = event.status,
                 fraction = if (state == JobState.Done) 1.0 else event.fraction,
+                stage = event.stage?.takeIf { !state.isTerminal },
+                error = event.reason,
+                mediaID = event.mediaID,
                 // Only the video queue lists items; an image or a mesh is this event
                 // and nothing more, so it cannot be paused, retried or removed.
                 isQueued = false,

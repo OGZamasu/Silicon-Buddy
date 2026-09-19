@@ -1,0 +1,41 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "That upload has no body in it."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (25165824 bytes)."
+    },
+    "415" : {
+      "error" : "That upload is not an image or a short video this Mac will keep. Send a PNG, JPEG, GIF, WebP, MP4, MOV or WebM."
+    },
+    "500" : {
+      "error" : "This Mac could not save that upload. Check the Mac has free space, then try again."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/uploads",
+  "request" : null,
+  "response" : {
+    "bytes" : 2118404,
+    "contentType" : "image\/jpeg",
+    "expiresAt" : "2026-09-25T09:41:00Z",
+    "mediaID" : "bWVkaWEtdXBsb2FkLWV4",
+    "mediaURL" : "\/media\/bWVkaWEtdXBsb2FkLWV4",
+    "uploadID" : "0B7D4C2A-5E31-4F08-9A6B-1C2D3E4F5061"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Send a picture or a short clip, and get back the two ids that let a render start from it. Raw bytes or multipart; at most 24 MiB; kept for seven days."
+}

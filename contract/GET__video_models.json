@@ -21,11 +21,22 @@
       "name" : "Hailuo H3",
       "node" : "silicon-node",
       "summary" : "Text and image to video.",
+      "supportedParameters" : [
+        "h3_turbo",
+        "h3_steps",
+        "negative_prompt"
+      ],
+      "supportedResolutions" : [
+        "480p",
+        "720p",
+        "1080p"
+      ],
       "supportedSeconds" : [
         5,
         10
       ],
       "supportsImageInput" : true,
+      "supportsNegativePrompt" : true,
       "typicalDuration" : "4 minutes"
     }
   ],
