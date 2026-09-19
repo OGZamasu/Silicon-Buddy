@@ -146,9 +146,52 @@ Not done, and why:
 - **`material-icons-extended` is still the largest single cost**, ~45,000 icon classes
   for the 24 this app draws. R8 removes them from release; debug still carries them.
 
-### M3 — Media jobs and machines
+### M3 — Media jobs and machines — **Android done, iOS to follow**
 - Image, video, 3D from the phone on the Mac or the node; queue view; progress (Live Activity on iOS, ongoing notification on Android); results saved to the phone.
 - Node page: GPU, loaded GGUF, adapters, restart lanes. Swarm page.
+
+Android has a Create tab — Video, Image, 3D and the render Queue — and a Machines
+page. Video picks a lane from `GET /video/models` (and "Auto" when `GET /jev` says
+this Mac's media router is on), offers only the lengths that lane advertises, and
+queues takes through `POST /video/queue`; the Queue screen is `GET /video/queue`
+and the `job` events on `/events` together, with the Mac's own controls — pause,
+resume, retry, remove, stop following, clear finished. Image shows
+`POST /image/plan`'s phase-by-phase memory before it renders. 3D plans and
+generates a mesh. Long renders run in a foreground service with an ongoing
+notification, and a local notification says when one is done or has failed.
+Machines lists this Mac (`/status`, `/profile`, `/metrics`, `/v1/node`) and every
+swarm peer (`/swarm`).
+
+**What the Mac would have to grow for the rest of it.** None of these are the
+phone's to fix, and each one is a sentence the app currently has to say instead of
+a thing it can do:
+
+1. *No route serves a rendered file.* `/video/generate`, `/image/generate`,
+   `/mesh/generate` and the queue all answer with paths on the Mac's own disk. The
+   app shows the path and an "on the Mac" label; "save to Photos" cannot exist
+   until a route does — the Mac's own `GET /ui/media` is on its loopback gateway,
+   with a token no paired device holds.
+2. *No route accepts an upload.* `/mesh/plan` and `/mesh/generate` take
+   `imagePath`, and so do image-to-video and image revision. A photo on the phone
+   cannot be the subject of a mesh: the 3D tab asks for a path the Mac already
+   has, and says why.
+3. *No mesh viewer for a device.* `POST /ui/open3d` (`gatewayOpenMeshViewer`) is
+   on the loopback gateway too, so "open this on the Mac" is not offerable.
+4. *`GET /swarm` publishes a peer thinly:* name, address, reachable, and
+   capabilities as id/kind/ready. Not the node's loaded GGUF, its adapters, its
+   GPU or its own queue — the Mac reads all of that from the node and keeps it to
+   itself. Restarting a node's lanes has no route at all.
+5. *The `job` event carries no stage and no reason.* It is id, kind, status, title
+   and fraction; a failure's explanation lives only in `GET /video/queue`'s
+   `error`, so the phone polls the queue beside the stream to have something true
+   to show when a render fails.
+6. *No push.* A render that finishes while the app is not running is learned about
+   at the next open, and treated as history rather than fired as a notification —
+   otherwise opening the app would ring once per clip in the queue's memory. APNs
+   and FCM are M4's, and need a paid Apple account.
+7. *No negative prompt, and no advertised sizes for video.* The video routes take
+   a prompt; `VideoModel` advertises seconds but not resolutions, so the app sends
+   the Mac's own default.
 
 ### M4 — Agent sessions (Mac API + apps)
 - Mac: sessions API over harness/Codex/Pi engines: list, create, send, event stream, tool-call approvals, cancel.
