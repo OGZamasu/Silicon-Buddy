@@ -231,7 +231,7 @@ public final class ChatModel {
                 ) {
                 case .answered:
                     finishStreamingMessage(failure: nil)
-                    await persist()
+                    await persist(using: transport)
                     return
                 case .missingRoute:
                     // Only this route is missing. Plain streaming may still be there.
@@ -249,7 +249,7 @@ public final class ChatModel {
                 case .failed(let message):
                     finishStreamingMessage(failure: message)
                     error = message
-                    await persist()
+                    await persist(using: transport)
                     return
                 }
             }
@@ -258,7 +258,7 @@ public final class ChatModel {
             switch await consume(transport.chatStream(request), into: messageID) {
             case .answered:
                 finishStreamingMessage(failure: nil)
-                await persist()
+                await persist(using: transport)
                 return
             case .missingRoute:
                 usesStreaming = false
@@ -272,7 +272,7 @@ public final class ChatModel {
             case .failed(let message):
                 finishStreamingMessage(failure: message)
                 error = message
-                await persist()
+                await persist(using: transport)
                 return
             }
         }
@@ -297,7 +297,7 @@ public final class ChatModel {
             finishStreamingMessage(failure: description)
             self.error = description
         }
-        await persist()
+        await persist(using: transport)
     }
 
     /// Drains one SSE stream into the placeholder message.
@@ -405,8 +405,14 @@ public final class ChatModel {
         current = conversation
     }
 
-    private func persist() async {
-        guard let conversation = current, !usesRemoteConversations else { return }
+    private func persist(using transport: (any ControlTransport)? = nil) async {
+        if usesRemoteConversations {
+            // The Mac keeps the transcript, so the list it publishes is the one worth
+            // showing: the title and the count are its answers, not ours.
+            await loadConversations(using: transport)
+            return
+        }
+        guard let conversation = current else { return }
         let saved = await store.save(conversation)
         current = saved
         if let index = conversations.firstIndex(where: { $0.id == saved.id }) {
@@ -417,6 +423,22 @@ public final class ChatModel {
     }
 
     public func clearError() { error = nil }
+
+    /// Called when the paired Mac changes. What this Mac supports is a fact about that
+    /// Mac, and so is its transcript: neither survives a re-pair.
+    public func macChanged() {
+        sendTask?.cancel()
+        sendTask = nil
+        isSending = false
+        sendingSince = nil
+        isConversationBusy = false
+        usesStreaming = true
+        usesRemoteConversations = false
+        askedAboutConversations = false
+        conversations = []
+        current = nil
+        error = nil
+    }
 
     /// Where the transcript came from, said plainly in the UI so nobody wonders why
     /// their Mac does not show the same list.

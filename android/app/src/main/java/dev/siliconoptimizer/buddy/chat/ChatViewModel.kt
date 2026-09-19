@@ -67,7 +67,10 @@ class ChatViewModel(
     // MARK: - Conversations
 
     fun loadConversations(transport: ControlTransport?) {
-        viewModelScope.launch {
+        viewModelScope.launch { loadConversationsNow(transport) }
+    }
+
+    private suspend fun loadConversationsNow(transport: ControlTransport?) {
             if (transport != null && (usesRemoteConversations || !askedAboutConversations)) {
                 askedAboutConversations = true
                 val remote = runCatching { transport.conversations() }.getOrNull()
@@ -80,10 +83,11 @@ class ChatViewModel(
                                 id = it.id,
                                 title = it.title,
                                 updatedAt = System.currentTimeMillis(),
+                                remoteMessageCount = it.messageCount,
                             )
                         },
                     )
-                    return@launch
+                    return
                 }
                 usesRemoteConversations = false
             }
@@ -94,7 +98,6 @@ class ChatViewModel(
             current?.let { open ->
                 if (conversations.none { it.id == open.id }) conversations.add(0, open)
             }
-        }
     }
 
     fun newConversation() {
@@ -209,7 +212,7 @@ class ChatViewModel(
             if (usesRemoteConversations && id != null && last != null) {
                 when (consume(transport.sendMessage(id, last, maxTokens), messageID)) {
                     Outcome.Answered -> {
-                        finishStreaming(null); persist(); return
+                        finishStreaming(null); persist(transport); return
                     }
                     // Only this route is missing; plain streaming may still be there.
                     Outcome.MissingRoute -> usesRemoteConversations = false
@@ -217,13 +220,13 @@ class ChatViewModel(
                         // The Mac is still answering the previous message here. Sending
                         // it again would only be refused again.
                         isConversationBusy = true
-                        persist(); return
+                        persist(transport); return
                     }
                     Outcome.Stopped -> {
                         finishStreaming("Stopped."); return
                     }
                     Outcome.Failed -> {
-                        persist(); return
+                        persist(transport); return
                     }
                 }
             }
@@ -231,18 +234,18 @@ class ChatViewModel(
             // Second: streaming without a stored conversation.
             when (consume(transport.chatStream(request), messageID)) {
                 Outcome.Answered -> {
-                    finishStreaming(null); persist(); return
+                    finishStreaming(null); persist(transport); return
                 }
                 Outcome.MissingRoute -> usesStreaming = false
                 Outcome.Busy -> {
                     isConversationBusy = true
-                    persist(); return
+                    persist(transport); return
                 }
                 Outcome.Stopped -> {
                     finishStreaming("Stopped."); return
                 }
                 Outcome.Failed -> {
-                    persist(); return
+                    persist(transport); return
                 }
             }
         }
@@ -268,7 +271,7 @@ class ChatViewModel(
             finishStreaming(description)
             error = description
         }
-        persist()
+        persist(transport)
     }
 
     /** Drains one SSE stream into the placeholder message. */
@@ -342,9 +345,14 @@ class ChatViewModel(
         )
     }
 
-    private suspend fun persist() {
+    private suspend fun persist(transport: ControlTransport? = null) {
+        if (usesRemoteConversations) {
+            // The Mac keeps the transcript, so the list it publishes is the one worth
+            // showing: the title and the count are its answers, not ours.
+            loadConversationsNow(transport)
+            return
+        }
         val conversation = current ?: return
-        if (usesRemoteConversations) return
         val saved = store.save(conversation)
         current = saved
         val index = conversations.indexOfFirst { it.id == saved.id }
@@ -352,6 +360,24 @@ class ChatViewModel(
     }
 
     fun clearError() {
+        error = null
+    }
+
+    /**
+     * Called when the paired Mac changes. What this Mac supports is a fact about that
+     * Mac, and so is its transcript: neither survives a re-pair.
+     */
+    fun macChanged() {
+        sendJob?.cancel()
+        sendJob = null
+        isSending = false
+        sendingSince = null
+        isConversationBusy = false
+        usesStreaming = true
+        usesRemoteConversations = false
+        askedAboutConversations = false
+        conversations.clear()
+        current = null
         error = null
     }
 

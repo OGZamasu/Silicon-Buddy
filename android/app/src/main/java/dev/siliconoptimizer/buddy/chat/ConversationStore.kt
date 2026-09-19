@@ -43,8 +43,15 @@ data class Conversation(
     val title: String = DEFAULT_TITLE,
     val updatedAt: Long = System.currentTimeMillis(),
     val messages: List<ChatMessage> = emptyList(),
+    /** What the Mac says, for a conversation it keeps and this device has not opened. */
+    val remoteMessageCount: Int? = null,
 ) {
-    val messageCount: Int get() = messages.count { it.role != ChatMessage.ROLE_SYSTEM }
+    val messageCount: Int
+        get() = if (messages.isEmpty() && remoteMessageCount != null) {
+            remoteMessageCount
+        } else {
+            messages.count { it.role != ChatMessage.ROLE_SYSTEM }
+        }
 
     /** The first thing the person said makes a better title than "New conversation". */
     fun titledFromFirstMessage(): Conversation {

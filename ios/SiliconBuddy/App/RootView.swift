@@ -21,6 +21,8 @@ public struct RootView: View {
         .task { app.events.start(using: app.transport) }
         .onChange(of: app.connectionGeneration) { _, _ in
             app.events.start(using: app.transport)
+            chat.macChanged()
+            Task { await chat.loadConversations(using: app.transport) }
         }
     }
 }

@@ -105,6 +105,7 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
     LaunchedEffect(app.connectionGeneration) {
         dashboard.reset()
         models.reset()
+        chat.macChanged()
         dashboard.refresh(app.transport, app)
         dashboard.startLiveUpdates(app.transport)
         models.refresh(app.transport)
