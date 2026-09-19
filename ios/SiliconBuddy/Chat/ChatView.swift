@@ -256,17 +256,24 @@ public struct ChatView: View {
                 PushToTalkButton(voice: voice) { problem in voiceProblem = problem }
             }
 
-            if let partial = voice.partial, !partial.isEmpty {
-                Text(partial)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Heard so far: \(partial)")
-            } else if voice.state.isListening {
-                Text(voice.isOnDevice ? "Listening — on this device" : "Listening")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if voice.state.isListening {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let partial = voice.partial, !partial.isEmpty {
+                        Text(partial)
+                            .accessibilityLabel("Heard so far: \(partial)")
+                    }
+                    // Said every time the button is down, not once in Settings: where
+                    // the recording of a question goes is worth knowing while you are
+                    // speaking it.
+                    Text(voice.recognitionNote)
+                        .foregroundStyle(
+                            voice.isOnDevice
+                                ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange)
+                        )
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(Theme.gap)

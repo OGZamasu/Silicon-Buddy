@@ -19,8 +19,20 @@ public final class VoiceController: NSObject {
     public var partial: String? { session.state.partial }
     /// Set when the microphone or speech recognition was refused, in words to show.
     public private(set) var permissionProblem: String?
-    /// True when the phone can do speech recognition without sending audio anywhere.
+    /// True when this phone recognises speech without sending the audio anywhere.
+    ///
+    /// False is not a detail: it means the recording of the question goes to Apple to
+    /// be turned into text. The app says so on screen rather than leaving the earlier
+    /// unconditional promise standing.
     public private(set) var isOnDevice = false
+
+    /// What the caption says about where the audio is going, for whoever is holding
+    /// the button down.
+    public var recognitionNote: String {
+        isOnDevice
+            ? "Listening — recognised on this device"
+            : "Listening — sent to Apple for recognition"
+    }
 
     /// Called with the finished question. The chat screen sends it.
     public var onAsk: ((String) -> Void)?

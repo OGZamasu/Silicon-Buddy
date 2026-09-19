@@ -42,9 +42,27 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
     var problem by mutableStateOf<String?>(null)
         private set
 
-    /** True when the phone recognises speech without sending audio anywhere. */
+    /**
+     * True when this phone recognises speech without sending the audio anywhere.
+     *
+     * Set from which recogniser was actually created, not from the SDK version. Below
+     * API 33 there is no on-device recogniser to create, and `EXTRA_PREFER_OFFLINE` is
+     * a preference the engine is free to ignore — so "offline" cannot be claimed, only
+     * asked for, and this stays false.
+     */
     var isOnDevice by mutableStateOf(false)
         private set
+
+    /**
+     * What the caption says about where the audio is going, for whoever is holding the
+     * button down.
+     */
+    val recognitionNote: String
+        get() = if (isOnDevice) {
+            "Listening — recognised on this phone"
+        } else {
+            "Listening — sent to Google for recognition"
+        }
 
     /** Called with the finished question. The chat screen sends it. */
     var onAsk: ((String) -> Unit)? = null
@@ -117,7 +135,21 @@ class VoiceController(application: Application) : AndroidViewModel(application) 
             return
         }
         recogniser?.destroy()
-        val recogniser = SpeechRecognizer.createSpeechRecognizer(context)
+        // The on-device recogniser where there is one: the question is going to the
+        // owner's own Mac, and routing the audio through Google's servers on the way
+        // would undo the point of the app. `createOnDeviceSpeechRecognizer` is the only
+        // way to be sure, because `EXTRA_PREFER_OFFLINE` is a hint the engine may
+        // ignore without saying so.
+        val onDevice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
+                .getOrDefault(false)
+        val recogniser = if (onDevice) {
+            runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }
+                .getOrElse { SpeechRecognizer.createSpeechRecognizer(context) }
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(context)
+        }
+        isOnDevice = onDevice
         this.recogniser = recogniser
         recogniser.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = Unit

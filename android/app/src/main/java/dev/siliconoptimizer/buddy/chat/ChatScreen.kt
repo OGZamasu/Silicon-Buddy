@@ -234,12 +234,27 @@ fun ChatScreen(
 
         HorizontalDivider()
 
-        voice.partial?.takeIf { it.isNotEmpty() }?.let { heard ->
+        if (voice.state is VoiceState.Listening) {
+            voice.partial?.takeIf { it.isNotEmpty() }?.let { heard ->
+                Text(
+                    heard,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            // Said every time the button is down, not once in Settings: where the
+            // recording of a question goes is worth knowing while you are speaking it.
             Text(
-                heard,
+                voice.recognitionNote,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                color = if (voice.isOnDevice) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
             )
         }
         voice.problem?.let { problem ->
@@ -500,14 +515,27 @@ private fun MessageBubble(
         }
 
         message.verdict?.let { verdict ->
+            // Three lines rather than one run-on sentence, the same shape iOS draws:
+            // the Mac's word, then its reasons, then what it suggests doing about it.
             Text(
-                verdict.summary +
-                    (verdict.reasons?.takeIf { it.isNotEmpty() }
-                        ?.joinToString(" · ", prefix = " — ") ?: "") +
-                    (verdict.suggestion?.takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""),
+                verdict.summary,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            verdict.reasons?.takeIf { it.isNotEmpty() }?.let { reasons ->
+                Text(
+                    reasons.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            verdict.suggestion?.takeIf { it.isNotEmpty() }?.let { suggestion ->
+                Text(
+                    suggestion,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
         }
 
         message.metrics?.takeIf { it.generatedTokens > 0 }?.let {

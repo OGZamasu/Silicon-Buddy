@@ -508,8 +508,10 @@ private fun SettingsScreen(
             Text(
                 "The widget's button asks this question with one tap. Hold the " +
                     "microphone in a conversation to ask out loud; let go to send. " +
-                    "Speech is recognised on this phone where it can be, so the audio " +
-                    "goes nowhere.",
+                    "Where this phone can recognise speech itself the audio never " +
+                    "leaves it; where it cannot, the recording goes to Google to be " +
+                    "turned into text, and the composer says which is happening while " +
+                    "you hold the button.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

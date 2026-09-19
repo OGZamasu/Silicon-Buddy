@@ -91,8 +91,10 @@ public struct SettingsView: View {
                 Text(
                     "The widget's button asks this question with one tap. Hold the "
                         + "microphone in a conversation to ask out loud; let go to send. "
-                        + "Speech is recognised on this device where the phone can, so "
-                        + "the audio goes nowhere."
+                        + "Where this phone can recognise speech itself the audio never "
+                        + "leaves it; where it cannot, the recording goes to Apple to be "
+                        + "turned into text, and the composer says which is happening "
+                        + "while you hold the button."
                 )
             }
 
