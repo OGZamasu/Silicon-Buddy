@@ -20,11 +20,36 @@ android {
         ndk {
             // ML Kit's barcode scanner — the QR reader on the pairing screen — bundles
             // `libbarhopper_v3.so`, and it arrives for four ABIs: 19 MB, of which 11.6 MB
-            // is x86 and x86_64. Every machine this project targets is ARM: the S24
-            // Ultra, the iPad mini, and the Apple Silicon Mac whose emulators are
-            // arm64 too. Revert this line if an Intel emulator or an Intel CI runner is
-            // ever wanted — nothing else depends on it.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // is x86 and x86_64 and 3.1 MB is 32-bit ARM. The S24 Ultra is arm64, minSdk
+            // is 29, and Play has required 64-bit since 2019, so there is no device this
+            // app can be installed on that needs any of the other three.
+            //
+            // This applies to *every* variant, debug included, so an x86_64 emulator
+            // cannot install the default build. That is deliberate — the Mac here is
+            // Apple Silicon and its emulators are arm64 — and `-Pbuddy.abis=x86_64` is
+            // the way back for an Intel emulator or a CI runner.
+            abiFilters += (findProperty("buddy.abis") as String? ?: "arm64-v8a")
+                .split(",")
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+        }
+    }
+
+    signingConfigs {
+        // Release is signed with the local debug key when there is one, purely so it can
+        // be installed and instrumented. It is not a distribution key and must not become
+        // one: anybody's debug keystore has the same password. A real key belongs in the
+        // owner's keychain and in CI secrets, and until then `assembleRelease` on a
+        // machine without `~/.android/debug.keystore` produces an unsigned APK — see
+        // docs/PLAN.md.
+        create("local") {
+            val keystore = File(System.getProperty("user.home"), ".android/debug.keystore")
+            if (keystore.exists()) {
+                storeFile = keystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
@@ -38,6 +63,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            testProguardFiles("proguard-androidTest.pro")
+            signingConfigs.getByName("local").storeFile?.let { signingConfig = signingConfigs.getByName("local") }
         }
         debug {
             // The control API is plain HTTP on a tailnet address; see
@@ -45,6 +72,11 @@ android {
             isMinifyEnabled = false
         }
     }
+
+    // Instrumented tests run against the *minified* build, because the thing worth
+    // testing on a device is whether R8's keep rules survived. A debug APK keeps
+    // everything and would prove nothing.
+    testBuildType = "release"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -110,4 +142,9 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
 }

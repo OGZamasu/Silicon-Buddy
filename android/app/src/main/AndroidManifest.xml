@@ -68,11 +68,21 @@
         </activity>
 
         <!-- Text, a link or a picture from any app, asked about in place. -->
+        <!--
+          `taskAffinity=""` gives this its own task instead of joining MainActivity's.
+          Without it a share that arrives while the app is open lands in the same task,
+          where two things go wrong: `excludeFromRecents` then applies to that whole
+          task, so using the share sheet takes Silicon Buddy out of the recents list
+          altogether; and backing out of the share drops into the app rather than
+          returning to whatever was being shared from, which is not what the back
+          gesture means after a share.
+        -->
         <activity
             android:name=".share.ShareActivity"
             android:exported="true"
             android:label="@string/share_label"
             android:excludeFromRecents="true"
+            android:taskAffinity=""
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.SiliconBuddy">
             <intent-filter>

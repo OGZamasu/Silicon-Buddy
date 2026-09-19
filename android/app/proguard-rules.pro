@@ -45,3 +45,18 @@
 
 # CameraX picks its implementation from a class name in the manifest metadata.
 -keep class androidx.camera.camera2.Camera2Config { *; }
+
+
+# --- so the app can be instrumented ------------------------------------------
+#
+# `androidx.tracing` is on the app's classpath but unused, so R8 removes it. The
+# instrumented tests run *in the app's process*, and `AndroidJUnitRunner.onCreate` calls
+# `androidx.tracing.Trace` by name — and because the test APK is shrunk against the app's
+# already-shrunk output, a class the app dropped is not duplicated back into it. The
+# result is neither APK having it and the process dying before the first test runs.
+#
+# A few kilobytes to keep the release build testable on a device, which is where the keep
+# rules above are actually worth proving.
+-keep class androidx.tracing.** { *; }
+-keep class kotlin.LazyKt { *; }
+-keep class kotlin.jvm.internal.** { *; }

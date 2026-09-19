@@ -83,20 +83,50 @@ Fixed here:
   Ultra included — whether or not the audio was going to Google. The decision moved to
   `RecognitionRoute`, which has tests.
 - **The camera kept running after its sheet closed**, bound to the activity rather than
-  to the preview, so the privacy indicator stayed lit. It also blocked the main thread
-  waiting for the camera provider.
+  to the preview, so the privacy indicator stayed lit. Fixing it exposed a race — close
+  the sheet while the camera service is still starting and the listener bound afterwards,
+  with no dispose left to undo it — so the wait is now a cancellable `awaitInstance`
+  rather than a blocking `get()` on the main thread. The bind itself still runs on the
+  main thread, which is where CameraX wants it; it is the *waiting* that moved. Unbinds
+  the two use cases rather than everything, because the QR scanner shares the provider,
+  and closes the `ImageProxy` in a `finally`.
 - **The event stream healed silently.** Nothing downstream could tell a live stream from
   one that had been flapping for ten minutes, and Settings said "Streaming from /events"
   during an outage. It now emits `ServerEvent.Disconnected` and logs both ends of every
-  reconnect under one `SiliconBuddy` tag.
+  reconnect under one `SiliconBuddy` tag — but only `TransportError.logSummary`, a fixed
+  tag per case, never the error's message. The first version of that logging wrote
+  `error.message`, and `Unreachable` names the Mac's tailnet address in its message by
+  construction, so every flap printed the owner's 100.x address into a log that outlives
+  the moment and travels in bug reports.
 - **The composer floated above the keyboard.** Scaffold's padding and `imePadding()`
   each counted the navigation bar, leaving ~128dp of dead space under the composer on a
   three-button phone. Fixed with `consumeWindowInsets`.
 - **The open tab and conversation were lost** to any restart One UI felt like doing.
-- **Release was built unminified at 75 MB.** R8 and resource shrinking, plus ARM-only
-  ABIs, take it to **15.9 MB** (debug 94 → 78 MB). The keep rules are the substance: a
-  Glance `ActionCallback` is reached by class *name*, so without one the widget's button
-  becomes a no-op on release and nothing reports it.
+  Saving the id then exposed a second bug: it comes back before the Mac has been asked
+  whether it stores conversations, and `open` used to answer that with a fabricated empty
+  transcript wearing the right title. It now waits for the answer — but only when there
+  is a Mac to wait for, since unpaired that flag is never set and a blunter guard made
+  every local conversation permanently unopenable.
+- **Release was built unminified at 75 MB.** R8 and resource shrinking take it to
+  28.9 MB; restricting to `arm64-v8a` takes it to **12.7 MB** (debug 94 → 74.6 MB). The
+  keep rules are the substance: a Glance `ActionCallback` is reached by class *name*, so
+  without one the widget's button becomes a no-op on release and nothing reports it.
+  CI asserts both callbacks and all 48 serializers appear in R8's own `seeds.txt`, and
+  an instrumented test (`testBuildType = "release"`) resolves them through the real
+  classloader on the minified APK — three tests, green on an Android 16 emulator.
+  Minifying the *test* APK against an already-shrunk app is awkward in both directions:
+  classes the app dropped are not copied back into it, so the runner needs a couple of
+  app-side keeps to exist at all, and two tests that referenced app classes directly had
+  to go, because R8 renames them and that is R8 working correctly.
+
+  Two things to know about that `abiFilters` line. It sits in `defaultConfig`, so it
+  applies to **every variant including debug**: an x86_64 emulator or an Intel CI runner
+  cannot install this build at all. `-Pbuddy.abis=x86_64` is the way back, and CI uses
+  it. And `assembleRelease` signs with the local **debug keystore** when there is one,
+  purely so the build can be installed and instrumented — that is not a distribution key
+  and must not become one, since every debug keystore shares a password. A real key, in
+  the owner's keychain and in CI secrets, is still outstanding; on a machine without
+  `~/.android/debug.keystore` the release APK comes out unsigned.
 
 Not done, and why:
 
@@ -109,6 +139,10 @@ Not done, and why:
   Wi-Fi, so aeroplane mode would have severed the only channel to a locked phone with no
   way back short of physical access. The backoff was exercised on the emulator instead.
 - **The widget has no `previewLayout`**, so One UI's picker shows Glance's placeholder.
+- **The share target now has its own task** (`taskAffinity=""`). Joining MainActivity's
+  meant `excludeFromRecents` applied to the whole task, so using the share sheet took
+  Silicon Buddy out of recents, and backing out of a share dropped into the app instead
+  of returning to whatever was being shared from.
 - **`material-icons-extended` is still the largest single cost**, ~45,000 icon classes
   for the 24 this app draws. R8 removes them from release; debug still carries them.
 

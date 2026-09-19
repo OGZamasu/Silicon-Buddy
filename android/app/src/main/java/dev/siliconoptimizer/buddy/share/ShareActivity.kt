@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -109,6 +111,12 @@ private fun ShareComposer(model: ShareViewModel, arrived: SharedIntent, close: (
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                // The same pair as the chat composer, for the same reason: Scaffold has
+                // already accounted for the system bars, so `imePadding` must add only
+                // what the keyboard needs on top of that. Without the consume, the text
+                // field here sits a navigation bar's height above the keyboard.
+                .consumeWindowInsets(padding)
+                .imePadding()
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
