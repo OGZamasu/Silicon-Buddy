@@ -77,6 +77,32 @@ interface ControlTransport {
         message: ChatMessageWire,
         maxTokens: Int? = null,
     ): Flow<ChatStreamEvent>
+
+    // M3: the media routes and the render queue. Defaulted rather than abstract, so a
+    // transport written for one surface — the widget's, a test's — does not have to
+    // answer for routes it will never call.
+    suspend fun meshModels(): List<MeshModel> = unsupported("/mesh/models")
+    suspend fun videoQueue(): VideoQueueView = unsupported("/video/queue")
+    suspend fun enqueueVideos(request: VideoQueueRequest): VideoQueueView =
+        unsupported("/video/queue")
+
+    suspend fun controlVideoQueue(request: VideoQueueControlRequest): VideoQueueView =
+        unsupported("/video/queue/control")
+
+    suspend fun generateVideo(request: VideoGenerateRequest): VideoResponse =
+        unsupported("/video/generate")
+
+    suspend fun planImage(request: ImageRequest): ImagePlan = unsupported("/image/plan")
+    suspend fun generateImage(request: ImageRequest): ImageResponse =
+        unsupported("/image/generate")
+
+    suspend fun planMesh(request: MeshRequest): MeshPlan = unsupported("/mesh/plan")
+    suspend fun generateMesh(request: MeshRequest): MeshResponse = unsupported("/mesh/generate")
+
+    /** `GET /jev`, read for one fact: whether this Mac routes media requests itself. */
+    suspend fun jev(): JevView = unsupported("/jev")
+
+    private fun unsupported(path: String): Nothing = throw TransportError.RouteUnavailable(path)
 }
 
 /** The real thing: HttpURLConnection against the Mac's tiny HTTP server. */
@@ -218,6 +244,69 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
 
     override suspend fun imageModels(): List<ImageModel> =
         decode(send("GET", "/image/models", readTimeoutMs = 45_000), "/image/models")
+
+    // MARK: - The media routes
+
+    override suspend fun meshModels(): List<MeshModel> =
+        decode(send("GET", "/mesh/models", readTimeoutMs = 45_000), "/mesh/models")
+
+    override suspend fun videoQueue(): VideoQueueView =
+        decode(send("GET", "/video/queue", readTimeoutMs = 20_000), "/video/queue")
+
+    override suspend fun enqueueVideos(request: VideoQueueRequest): VideoQueueView = decode(
+        send("POST", "/video/queue", body = json.encodeToString(request), readTimeoutMs = 30_000),
+        "/video/queue",
+    )
+
+    override suspend fun controlVideoQueue(request: VideoQueueControlRequest): VideoQueueView =
+        decode(
+            send(
+                "POST", "/video/queue/control",
+                body = json.encodeToString(request), readTimeoutMs = 30_000,
+            ),
+            "/video/queue/control",
+        )
+
+    /**
+     * The one route that holds a connection open for the length of a render. The
+     * queue is the better path for anything real; this exists for a single short clip,
+     * and the Mac answers 429 rather than making a ninth caller wait.
+     */
+    override suspend fun generateVideo(request: VideoGenerateRequest): VideoResponse = decode(
+        send(
+            "POST", "/video/generate",
+            body = json.encodeToString(request), readTimeoutMs = 1_800_000,
+        ),
+        "/video/generate",
+    )
+
+    override suspend fun planImage(request: ImageRequest): ImagePlan = decode(
+        send("POST", "/image/plan", body = json.encodeToString(request), readTimeoutMs = 60_000),
+        "/image/plan",
+    )
+
+    override suspend fun generateImage(request: ImageRequest): ImageResponse = decode(
+        send(
+            "POST", "/image/generate",
+            body = json.encodeToString(request), readTimeoutMs = 900_000,
+        ),
+        "/image/generate",
+    )
+
+    override suspend fun planMesh(request: MeshRequest): MeshPlan = decode(
+        send("POST", "/mesh/plan", body = json.encodeToString(request), readTimeoutMs = 60_000),
+        "/mesh/plan",
+    )
+
+    override suspend fun generateMesh(request: MeshRequest): MeshResponse = decode(
+        send(
+            "POST", "/mesh/generate",
+            body = json.encodeToString(request), readTimeoutMs = 1_800_000,
+        ),
+        "/mesh/generate",
+    )
+
+    override suspend fun jev(): JevView = decode(send("GET", "/jev", readTimeoutMs = 20_000), "/jev")
 
     override suspend fun load(request: LoadRequest): Status = decode(
         send("POST", "/load", body = json.encodeToString(request), readTimeoutMs = 900_000),

@@ -14,10 +14,17 @@ import dev.siliconoptimizer.buddy.transport.ErrorResponse
 import dev.siliconoptimizer.buddy.transport.Health
 import dev.siliconoptimizer.buddy.transport.Heartbeat
 import dev.siliconoptimizer.buddy.transport.ImageModel
+import dev.siliconoptimizer.buddy.transport.ImagePlan
+import dev.siliconoptimizer.buddy.transport.ImageRequest
+import dev.siliconoptimizer.buddy.transport.ImageResponse
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.JevView
 import dev.siliconoptimizer.buddy.transport.JobProgress
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.MeshModel
+import dev.siliconoptimizer.buddy.transport.MeshPlan
+import dev.siliconoptimizer.buddy.transport.MeshRequest
+import dev.siliconoptimizer.buddy.transport.MeshResponse
 import dev.siliconoptimizer.buddy.transport.Metrics
 import dev.siliconoptimizer.buddy.transport.NewConversation
 import dev.siliconoptimizer.buddy.transport.NewMessageRequest
@@ -33,8 +40,12 @@ import dev.siliconoptimizer.buddy.transport.StatusMessage
 import dev.siliconoptimizer.buddy.transport.SwarmView
 import dev.siliconoptimizer.buddy.transport.TokenEvent
 import dev.siliconoptimizer.buddy.transport.TransportError
+import dev.siliconoptimizer.buddy.transport.VideoGenerateRequest
 import dev.siliconoptimizer.buddy.transport.VideoModel
+import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
+import dev.siliconoptimizer.buddy.transport.VideoQueueRequest
 import dev.siliconoptimizer.buddy.transport.VideoQueueView
+import dev.siliconoptimizer.buddy.transport.VideoResponse
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -238,6 +249,64 @@ class ContractTest {
     }
 
 
+    // MARK: - The M3 routes: starting work, and what comes back
+
+    @Test
+    fun `queueing a clip`() {
+        val request = roundTrip<VideoQueueRequest>("POST__video_queue", "request")
+        assertEquals(1, request.prompts.size)
+        assertEquals(2, request.variations)
+        roundTrip<VideoQueueView>("POST__video_queue")
+    }
+
+    @Test
+    fun `controlling the queue`() {
+        assertEquals(
+            "pause",
+            roundTrip<VideoQueueControlRequest>("POST__video_queue_control", "request").action,
+        )
+        roundTrip<VideoQueueView>("POST__video_queue_control")
+    }
+
+    @Test
+    fun `rendering one clip and waiting`() {
+        val request = roundTrip<VideoGenerateRequest>("POST__video_generate", "request")
+        assertEquals("hailuo-h3", request.modelID)
+        assertEquals(5, request.seconds)
+        // Every clip is a file on the Mac; nothing on this API serves it to a phone.
+        assertTrue(roundTrip<VideoResponse>("POST__video_generate").file.startsWith("/"))
+    }
+
+    @Test
+    fun `planning and generating an image take the same body`() {
+        val planned = roundTrip<ImageRequest>("POST__image_plan", "request")
+        val generated = roundTrip<ImageRequest>("POST__image_generate", "request")
+        assertEquals(planned, generated)
+        assertEquals(1024, roundTrip<ImagePlan>("POST__image_plan").width)
+        val image = roundTrip<ImageResponse>("POST__image_generate")
+        assertTrue(image.path.startsWith("/"))
+        assertNotNull(image.peakMemoryBytes)
+    }
+
+    @Test
+    fun `a mesh is asked for by a path on the Mac`() {
+        val request = roundTrip<MeshRequest>("POST__mesh_plan", "request")
+        assertTrue("There is no upload route; this is a path on the Mac", request.imagePath.startsWith("/"))
+        assertEquals(request, roundTrip<MeshRequest>("POST__mesh_generate", "request"))
+        assertFalse(roundTrip<MeshPlan>("POST__mesh_plan").isRemote)
+        assertTrue(roundTrip<MeshResponse>("POST__mesh_generate").glbPath!!.startsWith("/"))
+    }
+
+    /** Read for one fact: whether this Mac would pick the model for a media request. */
+    @Test
+    fun `jev says whether the Mac routes media itself`() {
+        val jev = roundTrip<JevView>("GET__jev")
+        assertTrue(jev.enabled)
+        assertFalse("The fixture's Mac has the router built but switched off", jev.routesMedia)
+        assertFalse(jev.advertisesMediaRouting)
+        assertNotNull(jev.features.firstOrNull { it.id == JevView.MEDIA_ROUTING })
+    }
+
     // MARK: - The export itself
 
     companion object {
@@ -255,10 +324,11 @@ class ContractTest {
             // because a type for a route this app is forbidden to call would be a
             // type nothing can ever use.
             //
-            // The six Jev and recommend routes below are unmirrored for the softer
-            // reason: nothing in this app speaks them yet. The Jev settings are the
-            // Mac's own business and the pages that would use the other two arrive
-            // in M3. Mirroring a type nothing calls is a guess that rots.
+            // The Jev and recommend routes below are unmirrored for the softer
+            // reason: nothing in this app speaks them yet. `GET /jev` left that list
+            // in M3 — the Create tab reads it to know whether this Mac routes media
+            // itself — but the calibration, guardrail and recommend shapes are still
+            // types nothing would call, and a type nothing calls is a guess that rots.
             "DELETE__buddy_devices__id_",
             "DELETE__buddy_invitations",
             "GET__buddy_devices",
