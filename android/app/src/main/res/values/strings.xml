@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Silicon Buddy</string>
+    <string name="widget_label">Silicon Buddy</string>
+    <string name="widget_description">What your Mac has loaded, the last answer, and a question you can fire with one tap.</string>
+    <string name="tile_label">Ask your Mac</string>
+    <string name="share_label">Ask your Mac</string>
+    <string name="shortcut_ask_short">Ask my Mac</string>
+    <string name="shortcut_ask_long">Ask my Mac a question</string>
 </resources>

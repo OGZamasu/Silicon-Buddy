@@ -57,7 +57,13 @@ import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
+import dev.siliconoptimizer.buddy.reach.BuddyLink
+import dev.siliconoptimizer.buddy.reach.QuickPrompt
+import dev.siliconoptimizer.buddy.reach.SnapshotStore
+import dev.siliconoptimizer.buddy.shortcuts.BuddyShortcuts
 import dev.siliconoptimizer.buddy.ui.SiliconBuddyTheme
+import dev.siliconoptimizer.buddy.widget.BuddyWidget
+import androidx.glance.appwidget.updateAll
 
 class MainActivity : ComponentActivity() {
 
@@ -95,10 +101,23 @@ class MainActivity : ComponentActivity() {
 
     private fun read(intent: Intent?): LinkArrival? {
         val data = intent?.data ?: return null
-        return try {
-            LinkArrival.Invite(PairingInvite.parse(data))
-        } catch (error: PairingInvite.ParseError) {
-            LinkArrival.Refused(error.message ?: "That isn't a Silicon Buddy code.")
+        // `siliconbuddy://` means three things now: a pairing code, a composer to open,
+        // and a conversation to show. All three are requests rather than instructions —
+        // anything on the phone can fire one — so a composer link fills the box in and
+        // never sends.
+        return when (
+            val link = BuddyLink.parse(
+                data.scheme, data.host ?: data.path?.trim('/'),
+                data.getQueryParameter("text"), data.getQueryParameter("id"),
+            )
+        ) {
+            is BuddyLink.Compose -> LinkArrival.Compose(link.text)
+            is BuddyLink.Conversation -> LinkArrival.OpenConversation(link.id)
+            BuddyLink.Pair, null -> try {
+                LinkArrival.Invite(PairingInvite.parse(data))
+            } catch (error: PairingInvite.ParseError) {
+                LinkArrival.Refused(error.message ?: "That isn't a Silicon Buddy code.")
+            }
         }
     }
 }
@@ -107,6 +126,10 @@ class MainActivity : ComponentActivity() {
 sealed interface LinkArrival {
     data class Invite(val invite: PairingInvite) : LinkArrival
     data class Refused(val reason: String) : LinkArrival
+
+    /** Open the composer, with this typed into it. Never sent. */
+    data class Compose(val text: String?) : LinkArrival
+    data class OpenConversation(val id: String) : LinkArrival
 }
 
 private enum class Destination(val label: String) {
@@ -137,8 +160,38 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         when (val arrival = arriving.value) {
             is LinkArrival.Invite -> app.pendingInvite = arrival.invite
             is LinkArrival.Refused -> refusedLink = arrival.reason
+            is LinkArrival.Compose -> {
+                destination = Destination.Chat
+                if (chat.current == null) chat.newConversation()
+                openConversation = chat.current?.id
+                arrival.text?.let { chat.draft = it }
+                arriving.value = null
+            }
+            is LinkArrival.OpenConversation -> {
+                destination = Destination.Chat
+                openConversation = arrival.id
+                arriving.value = null
+            }
             null -> Unit
         }
+    }
+
+    // What the Mac is running is what a widget, a tile and the launcher's long-press
+    // menu all show, so it is written down every time this app learns it.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(events.status, app.config) {
+        events.status?.let {
+            SnapshotStore(context).note(it, app.config?.macName)
+            BuddyShortcuts.refresh(context)
+            BuddyWidget().updateAll(context)
+        }
+    }
+
+    // Answer checks arrive after the reply they are about, on the shared event stream,
+    // so they are applied wherever the chat screen happens to be.
+    LaunchedEffect(events.verdicts.size, openConversation) {
+        val id = chat.current?.id ?: return@LaunchedEffect
+        (events.verdicts[id] ?: events.verdicts[""])?.let { chat.apply(it) }
     }
 
     // Pairing happens over the dashboard, so the first reading has to be triggered by
@@ -411,6 +464,52 @@ private fun SettingsScreen(
                 } else {
                     app.scope.explanation
                 },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item {
+            HorizontalDivider()
+            Text("Reaching in", style = MaterialTheme.typography.titleMedium)
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val snapshots = remember { SnapshotStore(context) }
+            var speaks by remember { mutableStateOf(snapshots.speaksReplies) }
+            var quickPrompt by remember { mutableStateOf(snapshots.quickPrompt) }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Read answers out loud",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.Switch(
+                    checked = speaks,
+                    onCheckedChange = { speaks = it; snapshots.speaksReplies = it },
+                )
+            }
+            Text(
+                "Widget question",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            QuickPrompt.presets.forEach { preset ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = quickPrompt == preset,
+                        onClick = { quickPrompt = preset; snapshots.quickPrompt = preset },
+                    )
+                    Text(preset, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Text(
+                "The widget's button asks this question with one tap. Hold the " +
+                    "microphone in a conversation to ask out loud; let go to send. " +
+                    "Speech is recognised on this phone where it can be, so the audio " +
+                    "goes nowhere.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

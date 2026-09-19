@@ -87,6 +87,11 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.mlkit.barcode.scanning)
 
+    // Glance is the only way to draw an app widget in Compose; a RemoteViews widget
+    // would mean a second UI toolkit in this app for one screen's worth of content.
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.glance.material3)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
