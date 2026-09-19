@@ -254,7 +254,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         dashboard.startLiveUpdates(app.transport)
         models.refresh(app.transport)
         media.reset()
-        media.refresh(app.transport, MediaNotifier(context))
+        media.refresh(app.transport, MediaNotifier(context), app.canControl)
         machines.reset()
         machines.refresh(app.transport)
         chat.loadConversations(app.transport)
@@ -316,7 +316,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
                         Destination.Create -> IconButton(onClick = {
-                            media.refresh(app.transport)
+                            media.refresh(app.transport, canControl = app.canControl)
                         }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
@@ -333,13 +333,16 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             selected = destination == entry,
                             onClick = { destination = entry },
                             icon = { Icon(iconFor(entry), contentDescription = null) },
-                            // Six destinations on a phone: one line each, or "Machines"
-                            // breaks in half.
+                            // Six destinations on a phone, at whatever text size the
+                            // owner reads at: one line each, and the end of a word
+                            // rather than half of it on the next line.
                             label = {
                                 Text(
                                     entry.label,
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             },
                         )

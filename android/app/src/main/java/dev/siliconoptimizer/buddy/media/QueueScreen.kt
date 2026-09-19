@@ -38,6 +38,9 @@ import dev.siliconoptimizer.buddy.ui.SectionCard
  * Mac's own vocabulary and no more — there is no "cancel" on a clip a node is already
  * rendering, and calling one of these that does not exist would be a button that lied.
  */
+/** Something destructive, waiting to be meant. */
+private data class Pending(val jobID: String?, val action: String)
+
 @Composable
 fun QueueList(
     app: AppState,
@@ -45,7 +48,9 @@ fun QueueList(
     notifier: MediaNotifier? = null,
     modifier: Modifier = Modifier,
 ) {
-    var confirming by remember { mutableStateOf<String?>(null) }
+    // Removing a take and clearing the finished ones both throw away work the Mac
+    // will not make again, and a queue is a list of small buttons next to each other.
+    var confirming by remember { mutableStateOf<Pending?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 14.dp),
@@ -82,14 +87,31 @@ fun QueueList(
                 }
                 OutlinedButton(
                     onClick = {
+                        confirming = Pending(null, VideoQueueControlRequest.CLEAR_FINISHED)
+                    },
+                    enabled = app.canControl && model.queue.finished.isNotEmpty(),
+                ) { Text("Clear finished") }
+            }
+            if (confirming?.action == VideoQueueControlRequest.CLEAR_FINISHED) {
+                Text(
+                    "This takes ${model.queue.finished.size} finished " +
+                        (if (model.queue.finished.size == 1) "item" else "items") +
+                        " off the Mac's queue. The files it already wrote stay where " +
+                        "they are.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        confirming = null
                         model.control(
                             VideoQueueControlRequest.CLEAR_FINISHED,
                             transport = app.transport,
                             notifier = notifier,
                         )
-                    },
-                    enabled = app.canControl && model.queue.finished.isNotEmpty(),
-                ) { Text("Clear finished") }
+                    }) { Text("Clear them") }
+                    TextButton(onClick = { confirming = null }) { Text("Keep them") }
+                }
             }
             model.queue.message?.let {
                 Text(
@@ -115,13 +137,22 @@ fun QueueList(
             JobCard(
                 job = job,
                 canControl = app.canControl,
-                confirming = confirming == job.id,
-                onConfirm = { confirming = if (confirming == job.id) null else job.id },
-                onAction = { action ->
+                confirming = confirming?.takeIf { it.jobID == job.id }?.action,
+                onAsk = { action ->
+                    confirming = if (confirming?.jobID == job.id && confirming?.action == action) {
+                        null
+                    } else {
+                        Pending(job.id, action)
+                    }
+                },
+                onAction = { action, warned ->
                     confirming = null
                     when (action) {
+                        // `confirmNewRender` is the Mac asking whether this was meant:
+                        // it is true because somebody read the warning and tapped
+                        // again, never because the app filled it in for them.
                         VideoQueueControlRequest.RETRY ->
-                            model.retry(job.id, job.uncertainSubmission, app.transport, notifier)
+                            model.retry(job.id, warned, app.transport, notifier)
                         else -> model.control(action, job.id, app.transport, notifier)
                     }
                 },
@@ -134,9 +165,10 @@ fun QueueList(
 private fun JobCard(
     job: MediaJob,
     canControl: Boolean,
-    confirming: Boolean,
-    onConfirm: () -> Unit,
-    onAction: (String) -> Unit,
+    /** The action this card is currently asking about, if any. */
+    confirming: String?,
+    onAsk: (String) -> Unit,
+    onAction: (action: String, warned: Boolean) -> Unit,
 ) {
     SectionCard(
         title = job.title,
@@ -206,19 +238,27 @@ private fun JobCard(
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             if (job.canStopFollowing) {
                 TextButton(
-                    onClick = { onAction(VideoQueueControlRequest.STOP_FOLLOWING) },
+                    onClick = { onAction(VideoQueueControlRequest.STOP_FOLLOWING, false) },
                     enabled = canControl,
                 ) { Text("Stop following") }
             }
             if (job.canRetry) {
                 TextButton(
-                    onClick = { if (job.uncertainSubmission) onConfirm() else onAction(VideoQueueControlRequest.RETRY) },
+                    onClick = {
+                        // A clip the Mac never saw accepted may render twice. That is
+                        // worth reading before it happens.
+                        if (job.uncertainSubmission) {
+                            onAsk(VideoQueueControlRequest.RETRY)
+                        } else {
+                            onAction(VideoQueueControlRequest.RETRY, false)
+                        }
+                    },
                     enabled = canControl,
                 ) { Text("Retry") }
             }
             if (job.canRemove) {
                 TextButton(
-                    onClick = { onAction(VideoQueueControlRequest.REMOVE) },
+                    onClick = { onAsk(VideoQueueControlRequest.REMOVE) },
                     enabled = canControl,
                 ) { Text("Remove") }
             }
@@ -232,18 +272,44 @@ private fun JobCard(
                 color = MaterialTheme.colorScheme.outline,
             )
         }
-        if (confirming) {
-            Text(
-                "The Mac never saw this one accepted. Retrying may render it twice.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { onAction(VideoQueueControlRequest.RETRY) }) {
-                    Text("Retry anyway")
+
+        when (confirming) {
+            VideoQueueControlRequest.RETRY -> {
+                Text(
+                    "The Mac never saw this one accepted. Retrying may render it twice.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onAction(VideoQueueControlRequest.RETRY, true) }) {
+                        Text("Retry anyway")
+                    }
+                    TextButton(onClick = { onAsk(VideoQueueControlRequest.RETRY) }) {
+                        Text("Leave it")
+                    }
                 }
-                TextButton(onClick = onConfirm) { Text("Leave it") }
             }
+            VideoQueueControlRequest.REMOVE -> {
+                Text(
+                    if (job.state == JobState.Done) {
+                        "This takes the take off the queue. The file it wrote stays on " +
+                            "the Mac."
+                    } else {
+                        "This take will not be rendered."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onAction(VideoQueueControlRequest.REMOVE, true) }) {
+                        Text("Remove it")
+                    }
+                    TextButton(onClick = { onAsk(VideoQueueControlRequest.REMOVE) }) {
+                        Text("Keep it")
+                    }
+                }
+            }
+            else -> Unit
         }
     }
 }

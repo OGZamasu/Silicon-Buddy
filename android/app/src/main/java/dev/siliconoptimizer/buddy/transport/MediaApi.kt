@@ -91,6 +91,28 @@ data class VideoGenerateRequest(
     }
 }
 
+/**
+ * How long a synchronous render may take, from the Mac's own `VideoGenerationBudget`.
+ *
+ * The Mac allows an accepted node job twelve hours, which is not a number a phone can
+ * hold a socket for. What a client can bound is the two things that mean something has
+ * gone wrong rather than slow: silence, and a total wait after which the queue is the
+ * better place to look. Both are the Mac's constants rather than invented ones.
+ */
+object RenderBudget {
+    const val NODE_REQUEST_SECONDS = 120
+    const val NETWORK_RESOURCE_SECONDS = 600
+    const val DOWNLOAD_SECONDS = 600
+    const val RESPONSE_OVERHEAD_SECONDS = 60
+
+    /** Nothing at all from the Mac for this long is a broken connection. */
+    const val IDLE_SECONDS = NETWORK_RESOURCE_SECONDS
+
+    /** The whole wait a phone will hold before pointing at the queue instead. */
+    const val TOTAL_SECONDS = NODE_REQUEST_SECONDS + NETWORK_RESOURCE_SECONDS +
+        DOWNLOAD_SECONDS + RESPONSE_OVERHEAD_SECONDS
+}
+
 /** What a finished clip is: a file on the Mac, and how long it took. */
 @Serializable
 data class VideoResponse(
@@ -191,37 +213,37 @@ data class MeshResponse(
 @Serializable
 data class JevFeature(
     val id: String,
-    val displayName: String,
-    val summary: String,
-    val built: Boolean,
-    val available: Boolean,
-    val enabled: Boolean,
-    val calls: Int,
-    val estimatedUSD: Double,
-    val inputTokens: Long,
+    val displayName: String = "",
+    val summary: String = "",
+    val built: Boolean = false,
+    val available: Boolean = false,
+    val enabled: Boolean = false,
+    val calls: Int = 0,
+    val estimatedUSD: Double = 0.0,
+    val inputTokens: Long = 0,
 )
 
 /** `GET /jev`: how the TypeSafe lane is set up, and what it has cost. */
 @Serializable
 data class JevView(
-    val enabled: Boolean,
-    val keySet: Boolean,
-    val model: String,
-    val availableModels: List<String>,
-    val models: Map<String, Int>,
-    val calls: Int,
-    val inputTokens: Long,
-    val estimatedUSD: Double,
-    val monthlyUSD: Map<String, Double>,
-    val month: String,
-    val monthlyBudgetUSD: Double,
-    val budgetRemainingUSD: Double,
-    val cacheMinutes: Int,
-    val composerAutoRoute: Boolean,
-    val automaticUncensoredLaneInEffect: Boolean,
-    val ledgerWriteFailed: Boolean,
-    val maxStateBytes: Long,
-    val features: List<JevFeature>,
+    val enabled: Boolean = false,
+    val keySet: Boolean = false,
+    val model: String = "",
+    val availableModels: List<String> = emptyList(),
+    val models: Map<String, Int> = emptyMap(),
+    val calls: Int = 0,
+    val inputTokens: Long = 0,
+    val estimatedUSD: Double = 0.0,
+    val monthlyUSD: Map<String, Double> = emptyMap(),
+    val month: String = "",
+    val monthlyBudgetUSD: Double = 0.0,
+    val budgetRemainingUSD: Double = 0.0,
+    val cacheMinutes: Int = 0,
+    val composerAutoRoute: Boolean = false,
+    val automaticUncensoredLaneInEffect: Boolean = false,
+    val ledgerWriteFailed: Boolean = false,
+    val maxStateBytes: Long = 0,
+    val features: List<JevFeature> = emptyList(),
 ) {
     private val mediaRouting: JevFeature? get() = features.firstOrNull { it.id == MEDIA_ROUTING }
 

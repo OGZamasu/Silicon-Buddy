@@ -43,8 +43,8 @@ enum class DeviceScope {
         get() = when (this) {
             Full -> "This device has full control of the Mac."
             Chat -> "This device is paired for chat only. Loading, installing and " +
-                "rendering are hidden. Pair it again with full control from Settings, " +
-                "Silicon Buddy on the Mac."
+                "rendering are disabled. Pair it again with full control from " +
+                "Settings, Silicon Buddy on the Mac."
         }
 
     companion object {

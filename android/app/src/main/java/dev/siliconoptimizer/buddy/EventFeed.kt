@@ -123,11 +123,12 @@ class EventFeed : ViewModel() {
                             }
                         }
                         is ServerEvent.Job -> {
-                            // The Mac's own words for a render that is over. "completed"
-                            // is the video queue's; the others are what the image and
-                            // mesh lanes say.
-                            val done = event.progress.status.lowercase() in
-                                setOf("finished", "completed", "failed", "cancelled")
+                            // One vocabulary for "over", shared with the queue screen:
+                            // two lists of the Mac's status words would drift apart,
+                            // and a render would be finished in one place and running
+                            // in the other.
+                            val done = dev.siliconoptimizer.buddy.media.JobState
+                                .of(event.progress.status).isTerminal
                             if (done) jobs.remove(event.progress.id)
                             else jobs[event.progress.id] = event.progress
                             _jobEvents.tryEmit(event.progress)

@@ -14,6 +14,7 @@ import dev.siliconoptimizer.buddy.transport.MeshPlan
 import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.VideoModel
 import dev.siliconoptimizer.buddy.transport.VideoQueueControlRequest
+import dev.siliconoptimizer.buddy.transport.VideoQueueView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -97,9 +98,27 @@ class MediaViewModel : ViewModel() {
     // MARK: - The image draft
 
     var imagePrompt by mutableStateOf("")
-    var imageSize by mutableStateOf(1024)
-    var imageSteps by mutableStateOf(8)
     private var chosenImageModelID by mutableStateOf<String?>(null)
+
+    // A plan is an answer about one size at one number of steps. Changing either makes
+    // the numbers on screen belong to a render nobody asked for.
+    private var sizeState by mutableStateOf(1024)
+    var imageSize: Int
+        get() = sizeState
+        set(value) {
+            if (value == sizeState) return
+            sizeState = value
+            imagePlan = null
+        }
+
+    private var stepsState by mutableStateOf(8)
+    var imageSteps: Int
+        get() = stepsState
+        set(value) {
+            if (value == stepsState) return
+            stepsState = value
+            imagePlan = null
+        }
     var imagePlan by mutableStateOf<ImagePlan?>(null)
         private set
     var isPlanningImage by mutableStateOf(false)
@@ -110,8 +129,8 @@ class MediaViewModel : ViewModel() {
 
     fun choose(model: ImageModel) {
         chosenImageModelID = model.id
-        imageSteps = ImageRequestBuilder.defaultSteps(model)
-        imageSize = ImageRequestBuilder.defaultSize(model)
+        stepsState = ImageRequestBuilder.defaultSteps(model)
+        sizeState = ImageRequestBuilder.defaultSize(model)
         // The plan on screen belongs to the model that was there a moment ago.
         imagePlan = null
     }
@@ -157,11 +176,34 @@ class MediaViewModel : ViewModel() {
     private fun update(next: QueueState, notifier: MediaNotifier?) {
         val previous = queue
         queue = next
-        announcer.notices(previous, next).forEach { notifier?.post(it) }
+        announcer.notices(previous, next, ::handledByTheService).forEach { notifier?.post(it) }
+    }
+
+    /**
+     * Work this phone is holding a request open for. The Mac reports it on `/events`
+     * as well, and the service that is waiting on it does the telling.
+     */
+    private fun handledByTheService(job: MediaJob): Boolean =
+        !job.isQueued && MediaJobCenter.isRendering(job.kind)
+
+    /**
+     * The first `GET /video/queue` of a Mac, which is its history.
+     *
+     * Priming has to come from a queue rather than from whatever arrived first: a `job`
+     * event can beat the first poll, and priming on that would make every finished clip
+     * in the Mac's memory new a moment later — one notification each.
+     */
+    private fun prime(view: VideoQueueView) {
+        queue = queue.applying(view)
+        announcer.prime(queue)
     }
 
     /** One pass over every list the Create tab shows. */
-    fun refresh(transport: ControlTransport?, notifier: MediaNotifier? = null) {
+    fun refresh(
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+        canControl: Boolean = true,
+    ) {
         if (transport == null) return
         viewModelScope.launch {
             isLoading = true
@@ -169,10 +211,12 @@ class MediaViewModel : ViewModel() {
             val image = async { runCatching { transport.imageModels() }.getOrNull() }
             val mesh = async { runCatching { transport.meshModels() }.getOrNull() }
             val queued = async { runCatching { transport.videoQueue() }.getOrNull() }
-            // `GET /jev` is a full-control route: a chat-scope phone is answered 403,
-            // and an older Mac 404. Either way there is no auto lane to offer, and
-            // that is a fact rather than an error to show.
-            val jev = async { runCatching { transport.jev() }.getOrNull() }
+            // `GET /jev` takes full control: a chat-scope phone is answered 403, so it
+            // does not ask. An older Mac answers 404, which is the same answer in the
+            // end — no auto lane — and a fact rather than an error to show.
+            val jev = async {
+                if (canControl) runCatching { transport.jev() }.getOrNull() else null
+            }
 
             val newVideo = video.await()
             val newImage = image.await()
@@ -183,7 +227,7 @@ class MediaViewModel : ViewModel() {
             newVideo?.let { videoModels = it }
             newImage?.let { imageModels = it }
             newMesh?.let { meshModels = it }
-            newQueue?.let { update(queue.applying(it), notifier) }
+            newQueue?.let { if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it) }
             routesMedia = newJev?.routesMedia == true
             autoNote = when {
                 newJev == null -> null
@@ -193,8 +237,8 @@ class MediaViewModel : ViewModel() {
                 else -> null
             }
             if (imageModel != null && chosenImageModelID == null) {
-                imageSteps = ImageRequestBuilder.defaultSteps(imageModel)
-                imageSize = ImageRequestBuilder.defaultSize(imageModel)
+                stepsState = ImageRequestBuilder.defaultSteps(imageModel)
+                sizeState = ImageRequestBuilder.defaultSize(imageModel)
             }
             error = if (newVideo == null && newImage == null && newMesh == null) {
                 "Couldn't read what this Mac can render."
@@ -222,7 +266,7 @@ class MediaViewModel : ViewModel() {
         poller = viewModelScope.launch {
             while (isActive) {
                 runCatching { transport.videoQueue() }.getOrNull()
-                    ?.let { update(queue.applying(it), notifier) }
+                    ?.let { if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it) }
                 delay(seconds * 1000)
             }
         }
@@ -413,6 +457,8 @@ class MediaViewModel : ViewModel() {
         videoSeconds = null
         videoVariations = 1
         imagePrompt = ""
+        sizeState = 1024
+        stepsState = 8
         meshImagePath = ""
         pickedPhotoName = null
         error = null

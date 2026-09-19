@@ -10,20 +10,27 @@ import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.ImageRequest
 import dev.siliconoptimizer.buddy.transport.MeshRequest
+import dev.siliconoptimizer.buddy.transport.RenderBudget
 import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.VideoGenerateRequest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The work the Mac is doing for this phone, and what came back.
@@ -37,21 +44,35 @@ object MediaJobCenter {
 
     @Serializable
     sealed interface Work {
+        /** This render's own id, so its notification is its own. */
+        val id: String
         val kind: String
         val summary: String
 
         @Serializable
-        data class Image(val request: ImageRequest, override val summary: String) : Work {
+        data class Image(
+            val request: ImageRequest,
+            override val summary: String,
+            override val id: String = UUID.randomUUID().toString(),
+        ) : Work {
             override val kind: String get() = "image"
         }
 
         @Serializable
-        data class Video(val request: VideoGenerateRequest, override val summary: String) : Work {
+        data class Video(
+            val request: VideoGenerateRequest,
+            override val summary: String,
+            override val id: String = UUID.randomUUID().toString(),
+        ) : Work {
             override val kind: String get() = "video"
         }
 
         @Serializable
-        data class Mesh(val request: MeshRequest, override val summary: String) : Work {
+        data class Mesh(
+            val request: MeshRequest,
+            override val summary: String,
+            override val id: String = UUID.randomUUID().toString(),
+        ) : Work {
             override val kind: String get() = "mesh"
         }
     }
@@ -88,12 +109,21 @@ object MediaJobCenter {
         }
     }
 
+    /**
+     * Whether this phone is itself waiting on a render of this kind.
+     *
+     * The Mac reports an image or a mesh on `/events` too, under the id `image` or
+     * `mesh`. Without this a render started here would be announced twice: once by the
+     * stream, once by the service that is holding the request.
+     */
+    fun isRendering(kind: String): Boolean = _running.value.any { it.kind == kind }
+
     internal fun began(work: Work) {
         _running.value = _running.value + work
     }
 
     internal fun ended(work: Work, outcome: Outcome) {
-        _running.value = _running.value.filterNot { it === work }
+        _running.value = _running.value.filterNot { it.id == work.id }
         _outcomes.value = (listOf(outcome) + _outcomes.value).take(20)
         note(work.kind, null)
     }
@@ -111,49 +141,83 @@ object MediaJobCenter {
  * done, which is minutes later. Run from a screen, that request dies the moment Android
  * decides the app is in the background — and the Mac finishes the render anyway, so the
  * phone has thrown away an answer it paid for. So the request runs here, behind an
- * ongoing notification, and the result lands in [MediaJobCenter] whether anybody is
- * watching or not.
+ * ongoing notification with a way out of it, and the result lands in [MediaJobCenter]
+ * whether anybody is watching or not.
  */
 class MediaJobService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val notifier by lazy { MediaNotifier(this) }
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true }
-    private var outstanding = 0
+
+    /** Counted from the main thread and from every render's own coroutine. */
+    private val outstanding = AtomicInteger(0)
+    private val running = ConcurrentHashMap<String, Job>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // The bar in the ongoing notification is the same fraction the queue screen
+        // draws, which arrives on the app's one event stream.
+        scope.launch {
+            MediaJobCenter.fractions.collect { fractions ->
+                MediaJobCenter.running.value
+                    .filter { running.containsKey(it.id) }
+                    .forEach { work ->
+                        notifier.showOngoing(
+                            notificationID(work), work, fractions[work.kind], this@MediaJobService,
+                        )
+                    }
+            }
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val payload = intent?.getStringExtra(EXTRA_WORK)
-        val work = payload?.let { runCatching { json.decodeFromString<MediaJobCenter.Work>(it) }.getOrNull() }
-        if (work == null) {
-            if (outstanding == 0) stopSelf()
+        if (intent?.action == ACTION_CANCEL) {
+            // Stops the waiting, not the render: the Mac has the request and will
+            // finish it. Cancelling disconnects the socket, which is the only thing
+            // that gets a blocked read to return.
+            intent.getStringExtra(EXTRA_WORK_ID)?.let { running[it]?.cancel() }
             return START_NOT_STICKY
         }
 
-        outstanding++
+        val payload = intent?.getStringExtra(EXTRA_WORK)
+        val work = payload?.let {
+            runCatching { json.decodeFromString<MediaJobCenter.Work>(it) }.getOrNull()
+        }
+        if (work == null) {
+            if (outstanding.get() == 0) stopSelf()
+            return START_NOT_STICKY
+        }
+
+        outstanding.incrementAndGet()
         startInForeground(work)
         MediaJobCenter.began(work)
 
-        scope.launch {
+        val job = scope.launch {
             val outcome = runWork(work)
             MediaJobCenter.ended(work, outcome)
+            notifier.cancel(notificationID(work))
             notifier.post(
                 JobNotice(
-                    id = "${work.kind}-${System.currentTimeMillis()}",
+                    // This render's own id: it rings once, and a second render of the
+                    // same kind does not replace its notification.
+                    id = work.id,
                     title = outcome.headline,
-                    body = listOfNotNull(outcome.path, outcome.detail, outcome.warning)
+                    body = listOfNotNull(work.summary, outcome.detail, outcome.warning)
                         .joinToString(" · ")
                         .ifBlank { "Finished on the Mac." },
                     isFailure = outcome.failed,
                 ),
             )
-            outstanding--
-            if (outstanding <= 0) {
+            running.remove(work.id)
+            if (outstanding.decrementAndGet() <= 0) {
                 stopForegroundCompat()
                 stopSelf()
             }
         }
+        running[work.id] = job
         return START_NOT_STICKY
     }
 
@@ -166,34 +230,52 @@ class MediaJobService : Service() {
             )
         val client = ControlClient(config)
         return try {
-            when (work) {
-                is MediaJobCenter.Work.Image -> client.generateImage(work.request).let {
-                    MediaJobCenter.Outcome(
-                        kind = work.kind,
-                        headline = "Image ready",
-                        path = it.path,
-                        detail = "${it.model} · ${String.format(Locale.US, "%.1f", it.elapsedSeconds)}s",
-                        warning = it.warning,
-                    )
+            // The Mac gives an accepted job twelve hours. A phone holding a socket for
+            // that long is a phone with a stuck notification on it, so this waits the
+            // rest of the Mac's own budget and then says where to look instead.
+            withTimeoutOrNull(RenderBudget.TOTAL_SECONDS * 1000L) {
+                when (work) {
+                    is MediaJobCenter.Work.Image -> client.generateImage(work.request).let {
+                        MediaJobCenter.Outcome(
+                            kind = work.kind,
+                            headline = "Image ready",
+                            path = it.path,
+                            detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
+                            warning = it.warning,
+                        )
+                    }
+                    is MediaJobCenter.Work.Video -> client.generateVideo(work.request).let {
+                        MediaJobCenter.Outcome(
+                            kind = work.kind,
+                            headline = "Clip ready",
+                            path = it.file,
+                            detail = "${it.model} on ${it.node} · ${seconds(it.elapsedSeconds)}",
+                        )
+                    }
+                    is MediaJobCenter.Work.Mesh -> client.generateMesh(work.request).let {
+                        MediaJobCenter.Outcome(
+                            kind = work.kind,
+                            headline = "Mesh ready",
+                            path = it.glbPath ?: it.objPath,
+                            detail = "${it.model} · ${seconds(it.elapsedSeconds)}",
+                            warning = it.warning,
+                        )
+                    }
                 }
-                is MediaJobCenter.Work.Video -> client.generateVideo(work.request).let {
-                    MediaJobCenter.Outcome(
-                        kind = work.kind,
-                        headline = "Clip ready",
-                        path = it.file,
-                        detail = "${it.model} on ${it.node} · ${String.format(Locale.US, "%.0f", it.elapsedSeconds)}s",
-                    )
-                }
-                is MediaJobCenter.Work.Mesh -> client.generateMesh(work.request).let {
-                    MediaJobCenter.Outcome(
-                        kind = work.kind,
-                        headline = "Mesh ready",
-                        path = it.glbPath ?: it.objPath,
-                        detail = "${it.model} · ${String.format(Locale.US, "%.0f", it.elapsedSeconds)}s",
-                        warning = it.warning,
-                    )
-                }
-            }
+            } ?: MediaJobCenter.Outcome(
+                kind = work.kind,
+                headline = "Still rendering on the Mac",
+                detail = "This phone stopped waiting after " +
+                    "${RenderBudget.TOTAL_SECONDS / 60} minutes. The Mac kept going.",
+                failed = true,
+            )
+        } catch (cancelled: CancellationException) {
+            MediaJobCenter.Outcome(
+                kind = work.kind,
+                headline = "Stopped waiting",
+                detail = "The Mac still has the request and may finish it.",
+                failed = true,
+            )
         } catch (error: TransportError) {
             MediaJobCenter.Outcome(
                 kind = work.kind,
@@ -204,20 +286,25 @@ class MediaJobService : Service() {
         }
     }
 
+    private fun seconds(value: Double): String = String.format(Locale.US, "%.0fs", value)
+
+    /** One notification per render, so two of them do not replace each other. */
+    private fun notificationID(work: MediaJobCenter.Work): Int =
+        JobNotifications.PROGRESS_NOTIFICATION + (work.id.hashCode() and 0xffff)
+
     private fun startInForeground(work: MediaJobCenter.Work) {
         notifier.ensureChannels()
         val notification = notifier.ongoing(
-            JobNotifications.ongoingText(work.kind, work.summary),
-            MediaJobCenter.fractions.value[work.kind],
+            work, MediaJobCenter.fractions.value[work.kind], this,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
-                JobNotifications.PROGRESS_NOTIFICATION,
+                notificationID(work),
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
         } else {
-            startForeground(JobNotifications.PROGRESS_NOTIFICATION, notification)
+            startForeground(notificationID(work), notification)
         }
     }
 
@@ -237,6 +324,8 @@ class MediaJobService : Service() {
 
     companion object {
         const val EXTRA_WORK = "dev.siliconoptimizer.buddy.media.WORK"
+        const val EXTRA_WORK_ID = "dev.siliconoptimizer.buddy.media.WORK_ID"
+        const val ACTION_CANCEL = "dev.siliconoptimizer.buddy.media.STOP_WAITING"
 
         private val json = Json {
             ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true

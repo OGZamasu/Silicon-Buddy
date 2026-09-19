@@ -76,7 +76,15 @@ data class MediaJob(
     val uncertainSubmission: Boolean = false,
 ) {
     val canRetry: Boolean get() = isQueued && (state == JobState.Failed || state == JobState.Stopped)
-    val canRemove: Boolean get() = isQueued && !state.isRunning
+
+    /**
+     * Removing needs a state that is positively still — waiting, or over. A word this
+     * build has never heard of is not one of those: the Mac may well be in the middle
+     * of something, and a button that removes it would be guessing.
+     */
+    val canRemove: Boolean
+        get() = isQueued && (state == JobState.Queued || state.isTerminal)
+
     val canStopFollowing: Boolean get() = isQueued && isActive && state.isRunning
 
     /** One line under the title: the reason when there is one, the settings otherwise. */
@@ -114,6 +122,21 @@ data class MediaJob(
     }
 }
 
+/**
+ * Whether a row may move from one state to another.
+ *
+ * Events arrive late, twice and out of order, and a poll can answer with a snapshot
+ * older than the event that overtook it. Both would otherwise walk a finished clip
+ * backwards into "rendering" and leave it there for good, because nothing after it
+ * would say otherwise. So an ending is final: only being queued again — which is what a
+ * retry is — moves a row out of it.
+ */
+internal fun mayMove(from: JobState?, to: JobState): Boolean = when {
+    from == null -> true
+    !from.isTerminal -> true
+    else -> to == JobState.Queued
+}
+
 /** The whole queue: what the Mac is doing, and whether it is doing it. */
 data class QueueState(
     val paused: Boolean = false,
@@ -135,16 +158,32 @@ data class QueueState(
      * queue must not make one disappear.
      */
     fun applying(view: VideoQueueView): QueueState {
-        val fractions = jobs.associate { it.id to it.fraction }
+        val known = jobs.associateBy { it.id }
         val fromQueue = view.items.map { item ->
-            MediaJob.of(item, view.activeID, fractions[item.id])
+            val existing = known[item.id]
+            val incoming = JobState.of(item.status)
+            val fresh = MediaJob.of(item, view.activeID, existing?.fraction)
+            when {
+                existing == null -> fresh
+                // A snapshot older than what the stream already said. Its prompt, its
+                // settings and its reason are still worth having; its state is not.
+                !mayMove(existing.state, incoming) -> fresh.copy(
+                    state = existing.state,
+                    statusWord = existing.statusWord,
+                    fraction = existing.fraction,
+                    isActive = false,
+                )
+                incoming == JobState.Queued -> fresh.copy(fraction = null)
+                else -> fresh
+            }
         }
         val others = jobs.filterNot { it.isQueued }
+        val active = fromQueue.firstOrNull { it.id == view.activeID && !it.state.isTerminal }?.id
         return copy(
             paused = view.paused,
             message = view.message,
-            activeID = view.activeID,
-            jobs = fromQueue + others,
+            activeID = active,
+            jobs = fromQueue.map { it.copy(isActive = it.id == active) } + others,
         )
     }
 
@@ -159,17 +198,17 @@ data class QueueState(
     fun applying(event: JobProgress): QueueState {
         val state = JobState.of(event.status)
         val existing = job(event.id)
+        if (existing != null && !mayMove(existing.state, state)) {
+            // Late progress for a clip that has already ended, or the same ending
+            // twice. Neither is news, and neither may undo the ending.
+            return this
+        }
         val updated = when {
             existing != null -> existing.copy(
                 state = state,
                 statusWord = event.status,
                 title = event.title?.takeIf { it.isNotBlank() } ?: existing.title,
-                fraction = when {
-                    state == JobState.Done -> 1.0
-                    event.fraction != null -> event.fraction
-                    state.isTerminal -> null
-                    else -> existing.fraction
-                },
+                fraction = fractionFor(existing, state, event.fraction),
                 // A fresh attempt is not the old failure.
                 error = if (state == JobState.Queued || state.isRunning) null else existing.error,
             )
@@ -187,7 +226,10 @@ data class QueueState(
                 isQueued = false,
             )
         }
+        // Only the video queue has an "active" item. An image or a mesh running on the
+        // Mac must not take that title from the clip the queue is rendering.
         val active = when {
+            !updated.isQueued -> activeID
             state.isRunning -> event.id
             activeID == event.id -> null
             else -> activeID
@@ -202,6 +244,20 @@ data class QueueState(
             activeID = active,
         )
     }
+
+    /**
+     * A bar that goes backwards reads as a render starting over. Inside one attempt a
+     * fraction only grows; a new attempt — being queued again — starts from nothing.
+     */
+    private fun fractionFor(existing: MediaJob, state: JobState, reported: Double?): Double? =
+        when {
+            state == JobState.Done -> 1.0
+            state == JobState.Queued -> null
+            state.isTerminal -> existing.fraction
+            reported == null -> existing.fraction
+            existing.fraction == null -> reported
+            else -> maxOf(existing.fraction, reported)
+        }
 
     companion object {
         val empty = QueueState()

@@ -56,9 +56,27 @@ class NotificationTest {
         val notice = JobNotifications.transition(row(JobState.Rendering), row(JobState.Done))
         assertNotNull(notice)
         assertEquals("Your clip is ready", notice!!.title)
-        assertTrue(notice.body.contains("scene-001.mp4"))
+        assertTrue(notice.body.contains("Lisbon"))
         assertFalse(notice.isFailure)
         assertNull(JobNotifications.transition(row(JobState.Done), row(JobState.Done)))
+    }
+
+    /**
+     * A notification is drawn on a locked screen, in a room with other people in it.
+     * What was rendered is worth saying; where it is on somebody's disk is not.
+     */
+    @Test
+    fun `a notification never carries a path from the Mac`() {
+        val done = JobNotifications.transition(row(JobState.Rendering), row(JobState.Done))!!
+        assertFalse(done.body.contains("/Users/"))
+
+        val failed = JobNotifications.transition(
+            row(JobState.Rendering),
+            row(JobState.Failed, error = "Could not write /Users/you/Movies/Silicon/a.mp4: disk full."),
+        )!!
+        assertFalse(failed.body.contains("/Users/"))
+        assertTrue("The Mac's sentence survives", failed.body.contains("disk full"))
+        assertTrue(failed.body.contains("a file on the Mac"))
     }
 
     @Test
@@ -113,6 +131,7 @@ class NotificationTest {
     fun `the first reading of a Mac is history, not news`() {
         val announcer = JobAnnouncer()
         val opening = QueueState.empty.applying(view("completed"))
+        announcer.prime(opening)
         assertTrue(announcer.notices(QueueState.empty, opening).isEmpty())
 
         // What happens after that is news, though.
@@ -123,9 +142,74 @@ class NotificationTest {
     }
 
     @Test
+    fun `nothing is said before a queue has been read`() {
+        val announcer = JobAnnouncer()
+        assertFalse(announcer.isPrimed)
+        val done = QueueState.empty.applying(view("completed"))
+        assertTrue(announcer.notices(QueueState.empty, done).isEmpty())
+        assertFalse("Being asked is not being primed", announcer.isPrimed)
+    }
+
+    /**
+     * The storm.
+     *
+     * A `job` event can beat the first `GET /video/queue` — the stream is already open
+     * when the screen asks. Priming on whatever arrived first meant priming on a queue
+     * of one, and then the first real snapshot, with everything the Mac has rendered
+     * this week in it, was news: one notification per clip.
+     */
+    @Test
+    fun `an event arriving before the first queue read does not make history into news`() {
+        val announcer = JobAnnouncer()
+        var state = QueueState.empty.applying(
+            JobProgress(id = "9C2F-0009", kind = "video", status = "rendering", title = "Now"),
+        )
+        // Not primed: the stream alone never primes.
+        assertTrue(announcer.notices(QueueState.empty, state).isEmpty())
+        assertFalse(announcer.isPrimed)
+
+        val history = VideoQueueView(
+            paused = false, activeID = null, message = null,
+            items = (1..8).map { item("completed").copy(id = "OLD-000$it") },
+        )
+        state = state.applying(history)
+        announcer.prime(state)
+        assertTrue(
+            "Eight finished clips from last week are not eight notifications",
+            announcer.notices(QueueState.empty, state).isEmpty(),
+        )
+
+        // And the clip that really is running still rings when it ends.
+        val ending = state.applying(
+            JobProgress(id = "9C2F-0009", kind = "video", status = "completed", title = "Now"),
+        )
+        assertEquals(1, announcer.notices(state, ending).size)
+    }
+
+    /**
+     * A render this phone is holding a request open for is reported on `/events` too.
+     * The service that is waiting on it does the telling, or it rings twice.
+     */
+    @Test
+    fun `work the service is waiting on is left to the service`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val running = QueueState.empty.applying(
+            JobProgress(id = "image", kind = "image", status = "running", title = "FLUX.2 klein"),
+        )
+        announcer.notices(QueueState.empty, running)
+        val done = running.applying(
+            JobProgress(id = "image", kind = "image", status = "completed", title = "FLUX.2 klein"),
+        )
+        assertTrue(
+            announcer.notices(running, done, handledElsewhere = { it.kind == "image" }).isEmpty(),
+        )
+    }
+
+    @Test
     fun `a clip that finishes is announced once, however the news arrived`() {
         val announcer = JobAnnouncer()
-        announcer.notices(QueueState.empty, QueueState.empty)
+        announcer.prime(QueueState.empty)
         var state = QueueState.empty.applying(view("rendering"))
         assertTrue(announcer.notices(QueueState.empty, state).isEmpty())
 
@@ -144,8 +228,9 @@ class NotificationTest {
     @Test
     fun `the event getting there first is the same story`() {
         val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
         var state = QueueState.empty.applying(view("rendering"))
-        announcer.notices(QueueState.empty, state)  // The first reading primes it.
+        announcer.notices(QueueState.empty, state)
 
         val streamed = state.applying(
             JobProgress(id = "9C2F-0001", kind = "video", status = "completed", title = "Lisbon"),
@@ -160,7 +245,7 @@ class NotificationTest {
     @Test
     fun `a retried clip is announced again when it ends again`() {
         val announcer = JobAnnouncer()
-        announcer.notices(QueueState.empty, QueueState.empty)
+        announcer.prime(QueueState.empty)
         var state = QueueState.empty.applying(view("failed", "The node ran out of memory."))
         assertEquals(1, announcer.notices(QueueState.empty, state).size)
 
@@ -178,7 +263,7 @@ class NotificationTest {
     @Test
     fun `a clip that goes from failed to done is announced for the ending it reached`() {
         val announcer = JobAnnouncer()
-        announcer.notices(QueueState.empty, QueueState.empty)
+        announcer.prime(QueueState.empty)
         var state = QueueState.empty.applying(view("failed", "No node accepted this clip."))
         assertTrue(announcer.notices(QueueState.empty, state).first().isFailure)
 
@@ -193,7 +278,7 @@ class NotificationTest {
     @Test
     fun `an image render announces itself too, though the video queue knows nothing about it`() {
         val announcer = JobAnnouncer()
-        announcer.notices(QueueState.empty, QueueState.empty)
+        announcer.prime(QueueState.empty)
         val running = QueueState.empty.applying(
             JobProgress(id = "image", kind = "image", status = "running", title = "FLUX.2 klein"),
         )
@@ -207,13 +292,16 @@ class NotificationTest {
     @Test
     fun `forgetting a Mac forgets what was said about its work`() {
         val announcer = JobAnnouncer()
-        announcer.notices(QueueState.empty, QueueState.empty)
+        announcer.prime(QueueState.empty)
         val done = QueueState.empty.applying(view("completed"))
         assertEquals(1, announcer.notices(QueueState.empty, done).size)
+
+        // A re-pair starts the story again: nothing is said until the new Mac's queue
+        // has been read, and what is in it then is that Mac's history.
         announcer.forget()
-        // A re-pair starts the story again — and the first reading of the new Mac is
-        // its history, so the clip has to end once more to be worth saying.
+        assertFalse(announcer.isPrimed)
         assertTrue(announcer.notices(QueueState.empty, done).isEmpty())
+        announcer.prime(done)
         val queuedAgain = done.applying(view("pending"))
         announcer.notices(done, queuedAgain)
         val again = queuedAgain.applying(view("completed"))

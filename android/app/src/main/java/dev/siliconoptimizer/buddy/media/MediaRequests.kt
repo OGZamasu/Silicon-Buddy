@@ -165,13 +165,23 @@ object MeshRequestBuilder {
     val TEXTURE_SIZES = listOf(1024, 2048, 4096)
 
     /**
+     * Places only this phone has. A path under one of these is absolute and looks like
+     * a file, and is still nothing the Mac can open — sending one means a render that
+     * fails minutes later with the Mac's word for "no such file".
+     */
+    private val PHONE_ONLY = listOf(
+        "/storage/", "/sdcard/", "/data/", "/mnt/", "/system/", "/cache/", "/proc/", "/dev/",
+    )
+
+    /**
      * A path on the Mac, because that is all `/mesh/plan` and `/mesh/generate` take.
      * There is no route that accepts an upload, so a picture on this phone cannot be
      * the subject of a mesh until the Mac grows one.
      */
     fun isMacPath(path: String): Boolean {
         val trimmed = path.trim()
-        return trimmed.startsWith("/") && !trimmed.endsWith("/") && trimmed.length > 1
+        if (!trimmed.startsWith("/") || trimmed.endsWith("/") || trimmed.length <= 1) return false
+        return PHONE_ONLY.none { trimmed.startsWith(it, ignoreCase = true) }
     }
 
     fun build(imagePath: String, model: MeshModel?, textureSize: Int): MeshRequest? {

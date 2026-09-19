@@ -190,16 +190,29 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         readTimeoutMs: Int = 30_000,
     ): String = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
+        var watchdog: kotlinx.coroutines.DisposableHandle? = null
         try {
             connection = open(method, path, query, body, authorized, readTimeoutMs = readTimeoutMs)
+            // A render holds this connection open for minutes, and reading from a socket
+            // blocks in the kernel where a cancelled coroutine cannot reach it. So
+            // cancellation disconnects the socket from another thread, which is what
+            // makes the read return — the same trick the event streams use, and what
+            // makes "stop waiting" on a render possible at all.
+            val open = connection
+            watchdog = coroutineContext[Job]?.invokeOnCompletion {
+                if (it != null) runCatching { open.disconnect() }
+            }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+            coroutineContext.ensureActive()
             TransportError.from(status, text, path)?.let { throw it }
             text
         } catch (error: IOException) {
+            coroutineContext.ensureActive()
             throw TransportError.from(error, config.host)
         } finally {
+            watchdog?.dispose()
             connection?.disconnect()
         }
     }
@@ -275,7 +288,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
     override suspend fun generateVideo(request: VideoGenerateRequest): VideoResponse = decode(
         send(
             "POST", "/video/generate",
-            body = json.encodeToString(request), readTimeoutMs = 1_800_000,
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
         ),
         "/video/generate",
     )
@@ -288,7 +302,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
     override suspend fun generateImage(request: ImageRequest): ImageResponse = decode(
         send(
             "POST", "/image/generate",
-            body = json.encodeToString(request), readTimeoutMs = 900_000,
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
         ),
         "/image/generate",
     )
@@ -301,7 +316,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
     override suspend fun generateMesh(request: MeshRequest): MeshResponse = decode(
         send(
             "POST", "/mesh/generate",
-            body = json.encodeToString(request), readTimeoutMs = 1_800_000,
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
         ),
         "/mesh/generate",
     )

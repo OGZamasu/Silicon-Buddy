@@ -194,4 +194,128 @@ class QueueReducerTest {
             state.job("9C2F-0001")!!.file,
         )
     }
+
+    // MARK: - Events that arrive late, twice, or in the wrong order
+
+    /**
+     * A poll answers with the queue as it was when the request left. If the stream
+     * overtook it, applying that answer would walk a finished clip back into
+     * "rendering" — and nothing after it would ever say otherwise.
+     */
+    @Test
+    fun `a stale poll cannot undo an ending`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        state = state.applying(job(status = "completed"))
+        assertEquals(JobState.Done, state.job("9C2F-0001")!!.state)
+
+        state = state.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        assertEquals(JobState.Done, state.job("9C2F-0001")!!.state)
+        assertNull("And nothing is running because of it", state.activeID)
+        assertFalse(state.job("9C2F-0001")!!.isActive)
+    }
+
+    @Test
+    fun `a stale poll still brings what only the queue knows`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering")))
+        state = state.applying(job(status = "failed"))
+        // The reason arrives on the next poll, which is "older" in status terms.
+        state = state.applying(view(item(status = "rendering", error = "The node ran out of memory.")))
+        val row = state.job("9C2F-0001")!!
+        assertEquals(JobState.Failed, row.state)
+        assertEquals("The node ran out of memory.", row.error)
+    }
+
+    @Test
+    fun `progress that arrives after the ending is ignored`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        state = state.applying(job(status = "completed"))
+        state = state.applying(job(status = "rendering", fraction = 0.4))
+        val row = state.job("9C2F-0001")!!
+        assertEquals(JobState.Done, row.state)
+        assertEquals(1.0, row.fraction!!, 0.0001)
+    }
+
+    @Test
+    fun `the same event twice changes nothing`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        state = state.applying(job(status = "completed"))
+        val once = state
+        state = state.applying(job(status = "completed"))
+        assertEquals(once, state)
+    }
+
+    @Test
+    fun `a fraction only grows inside one attempt`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        state = state.applying(job(status = "rendering", fraction = 0.6))
+        // An older event overtaken by a newer one: the bar does not go backwards.
+        state = state.applying(job(status = "rendering", fraction = 0.2))
+        assertEquals(0.6, state.job("9C2F-0001")!!.fraction!!, 0.0001)
+
+        // A retry is a new attempt, and starts from nothing.
+        state = state.applying(job(status = "pending"))
+        assertNull(state.job("9C2F-0001")!!.fraction)
+        state = state.applying(job(status = "rendering", fraction = 0.1))
+        assertEquals(0.1, state.job("9C2F-0001")!!.fraction!!, 0.0001)
+    }
+
+    @Test
+    fun `an ending is left only by being queued again`() {
+        val done = QueueState.empty
+            .applying(view(item(status = "completed")))
+        for (word in listOf("rendering", "submitting", "running")) {
+            assertEquals(
+                "\"$word\" after an ending is a late event, not a new attempt",
+                JobState.Done, done.applying(job(status = word)).job("9C2F-0001")!!.state,
+            )
+        }
+        assertEquals(JobState.Queued, done.applying(job(status = "pending")).job("9C2F-0001")!!.state)
+    }
+
+    // MARK: - Whose turn it is
+
+    @Test
+    fun `an image on the Mac cannot take the queue's turn`() {
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        assertEquals("9C2F-0001", state.activeID)
+
+        state = state.applying(job(id = "image", kind = "image", status = "running", fraction = 0.3, title = "FLUX.2 klein"))
+        assertEquals(
+            "The clip is still the one the queue is rendering",
+            "9C2F-0001", state.activeID,
+        )
+        assertTrue(state.job("9C2F-0001")!!.isActive)
+        assertFalse(state.job("image")!!.isActive)
+
+        state = state.applying(job(id = "image", kind = "image", status = "completed", title = "FLUX.2 klein"))
+        assertEquals("9C2F-0001", state.activeID)
+    }
+
+    @Test
+    fun `a finished clip is not the active one, whatever the queue says`() {
+        val state = QueueState.empty
+            .applying(view(item(status = "completed"), active = "9C2F-0001"))
+        assertNull(state.activeID)
+        assertFalse(state.job("9C2F-0001")!!.isActive)
+    }
+
+    // MARK: - What may be done to a row
+
+    @Test
+    fun `a word this build does not know is never a remove button`() {
+        val unknown = QueueState.empty.applying(view(item(status = "reticulating")))
+        val row = unknown.job("9C2F-0001")!!
+        assertEquals(JobState.Unknown, row.state)
+        assertFalse("The Mac may be in the middle of something", row.canRemove)
+        assertFalse(row.canRetry)
+    }
+
+    @Test
+    fun `waiting and finished takes may be removed`() {
+        assertTrue(QueueState.empty.applying(view(item(status = "pending"))).job("9C2F-0001")!!.canRemove)
+        assertTrue(QueueState.empty.applying(view(item(status = "completed"))).job("9C2F-0001")!!.canRemove)
+        assertTrue(QueueState.empty.applying(view(item(status = "failed"))).job("9C2F-0001")!!.canRemove)
+        assertFalse(QueueState.empty.applying(view(item(status = "rendering"))).job("9C2F-0001")!!.canRemove)
+        assertFalse(QueueState.empty.applying(view(item(status = "submitting"))).job("9C2F-0001")!!.canRemove)
+    }
 }

@@ -440,7 +440,9 @@ private fun MeshForm(app: AppState, model: MediaViewModel, ensureNotifications: 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
-        model.pickedPhotoName = uri?.lastPathSegment
+        // A content URI's last segment is a row number. What a person recognises is
+        // the file's own name, which the provider will give if asked.
+        model.pickedPhotoName = uri?.let { displayName(context, it) }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
@@ -474,6 +476,7 @@ private fun MeshForm(app: AppState, model: MediaViewModel, ensureNotifications: 
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                         )
                     },
+                    enabled = app.canControl,
                 ) { Text("Pick a photo here") }
                 model.pickedPhotoName?.let {
                     Text(
@@ -577,6 +580,15 @@ private fun MeshPlanCard(plan: MeshPlan) {
         }
     }
 }
+
+/** The name the picture has on this phone, rather than the row it lives in. */
+private fun displayName(context: android.content.Context, uri: android.net.Uri): String? =
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment
 
 // MARK: - What came back
 

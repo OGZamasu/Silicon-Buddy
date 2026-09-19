@@ -201,6 +201,24 @@ class MediaRequestTest {
         assertNull(MeshRequestBuilder.build("content://media/42", hunyuan, 2048))
     }
 
+    /**
+     * A path from this phone is absolute and looks like a file, and is still nothing
+     * the Mac can open. Sending one buys a render that fails minutes later.
+     */
+    @Test
+    fun `a path only this phone has is refused before it is sent`() {
+        listOf(
+            "/storage/emulated/0/DCIM/Camera/IMG_0042.jpg",
+            "/sdcard/Download/kettle.png",
+            "/data/user/0/dev.siliconoptimizer.buddy/files/kettle.png",
+            "/mnt/media_rw/kettle.png",
+        ).forEach {
+            assertFalse(it, MeshRequestBuilder.isMacPath(it))
+            assertNull(MeshRequestBuilder.build(it, hunyuan, 2048))
+        }
+        assertTrue(MeshRequestBuilder.isMacPath("/Volumes/Work/kettle.png"))
+    }
+
     @Test
     fun `a texture size nothing offers becomes one that is offered`() {
         assertEquals(2048, MeshRequestBuilder.build("/tmp/a.png", hunyuan, 777)!!.textureSize)

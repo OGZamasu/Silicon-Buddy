@@ -65,30 +65,47 @@ object JobNotifications {
             JobState.Done -> JobNotice(
                 id = next.id,
                 title = "Your $noun is ready",
+                // What it was, not where it is. A notification is drawn on a locked
+                // screen and read by whoever is holding the phone, and the path is a
+                // fact about the owner's disk that nobody standing nearby needs.
                 body = listOfNotNull(
                     next.title.takeIf { it.isNotBlank() },
-                    // The file, once the queue has named it; until then the folder it
-                    // is being written to, which is what the event alone knows.
-                    next.file ?: next.outputDirectory?.let { "saved in $it" },
-                ).joinToString(" — ").ifBlank { "Rendered on the Mac." },
+                    next.scene?.let { scene ->
+                        next.variation?.let { "scene $scene · take $it" } ?: "scene $scene"
+                    },
+                    "on the Mac",
+                ).joinToString(" — "),
                 isFailure = false,
             )
             JobState.Failed -> JobNotice(
                 id = next.id,
                 title = "That $noun failed",
-                body = next.error ?: next.title.ifBlank { "The Mac stopped rendering it." },
+                body = withoutPaths(
+                    next.error ?: next.title.ifBlank { "The Mac stopped rendering it." },
+                ),
                 isFailure = true,
             )
             JobState.Stopped -> JobNotice(
                 id = next.id,
                 title = "That $noun stopped",
-                body = next.error
-                    ?: "The Mac is no longer following it. The node may still finish it.",
+                body = withoutPaths(
+                    next.error
+                        ?: "The Mac is no longer following it. The node may still finish it.",
+                ),
                 isFailure = true,
             )
             else -> null
         }
     }
+
+    /**
+     * The Mac's sentences sometimes name a file, and a notification is read by whoever
+     * is holding the phone. The sentence survives; the path does not.
+     */
+    fun withoutPaths(text: String): String =
+        text.split(" ").joinToString(" ") { word ->
+            if (word.startsWith("/") && word.count { it == '/' } > 1) "a file on the Mac" else word
+        }
 
     /** The line the ongoing notification shows while a request is open. */
     fun ongoingText(kind: String, detail: String?): String =
@@ -110,15 +127,37 @@ class JobAnnouncer {
     private val announced = mutableMapOf<String, JobState>()
     private var primed = false
 
-    fun notices(previous: QueueState, next: QueueState): List<JobNotice> {
-        // The first reading of a Mac is its history. A queue keeps finished clips for a
-        // long time, and opening the app should not fire a notification for every one of
-        // them — those endings happened, and were said at the time or not at all.
-        if (!primed) {
-            primed = true
-            next.jobs.filter { it.state.isTerminal }.forEach { announced[it.id] = it.state }
-            return emptyList()
-        }
+    /** True once a queue has been read; nothing is announced before that. */
+    val isPrimed: Boolean get() = primed
+
+    /**
+     * The Mac's queue as it was when this phone arrived.
+     *
+     * Everything already finished in it is history: it happened while the app was
+     * somewhere else, and was said at the time or not at all. Priming has to come from
+     * a real `GET /video/queue` rather than from whatever happened to be applied first
+     * — a `job` event can beat the first poll, and priming on that would make every
+     * clip in the Mac's memory "new" a moment later, which is a notification each.
+     */
+    fun prime(queue: QueueState) {
+        announced.clear()
+        queue.jobs.filter { it.state.isTerminal }.forEach { announced[it.id] = it.state }
+        primed = true
+    }
+
+    /**
+     * What is worth saying about the move from [previous] to [next].
+     *
+     * [handledElsewhere] is for work this phone started itself through the foreground
+     * service: the Mac reports it on `/events` as well, and the render should ring
+     * once, from whichever of the two owns it.
+     */
+    fun notices(
+        previous: QueueState,
+        next: QueueState,
+        handledElsewhere: (MediaJob) -> Boolean = { false },
+    ): List<JobNotice> {
+        if (!primed) return emptyList()
         val notices = mutableListOf<JobNotice>()
         for (job in next.jobs) {
             if (!job.state.isTerminal) {
@@ -127,9 +166,9 @@ class JobAnnouncer {
                 continue
             }
             if (announced[job.id] == job.state) continue
-            val notice = JobNotifications.transition(previous.job(job.id), job)
             announced[job.id] = job.state
-            if (notice != null) notices.add(notice)
+            if (handledElsewhere(job)) continue
+            JobNotifications.transition(previous.job(job.id), job)?.let { notices.add(it) }
         }
         // A clip the Mac has forgotten cannot be announced again either way.
         announced.keys.retainAll(next.jobs.map { it.id }.toSet())
@@ -177,23 +216,56 @@ class MediaNotifier(private val context: Context) {
         )
     }
 
-    /** The ongoing one the foreground service holds up while a request is open. */
-    fun ongoing(text: String, fraction: Double?): Notification {
+    /**
+     * The ongoing one the foreground service holds up while a request is open, with
+     * the only thing a person can do about a render they are tired of waiting for.
+     */
+    fun ongoing(work: MediaJobCenter.Work, fraction: Double?, context: Context): Notification {
         ensureChannels()
-        val builder = NotificationCompat.Builder(context, JobNotifications.PROGRESS_CHANNEL)
+        val builder = NotificationCompat.Builder(this.context, JobNotifications.PROGRESS_CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Silicon Buddy")
-            .setContentText(text)
+            .setContentText(JobNotifications.ongoingText(work.kind, work.summary))
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(queueIntent())
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .addAction(
+                R.drawable.ic_launcher_foreground,
+                "Stop waiting",
+                stopWaitingIntent(context, work.id),
+            )
         if (fraction != null) {
             builder.setProgress(100, (fraction.coerceIn(0.0, 1.0) * 100).toInt(), false)
         } else {
             builder.setProgress(0, 0, true)
         }
         return builder.build()
+    }
+
+    /** Redraws a render's ongoing notification as its fraction moves. */
+    fun showOngoing(id: Int, work: MediaJobCenter.Work, fraction: Double?, context: Context) {
+        if (!isAllowed) return
+        runCatching { manager.notify(id, ongoing(work, fraction, context)) }
+    }
+
+    fun cancel(id: Int) {
+        runCatching { manager.cancel(id) }
+    }
+
+    /**
+     * "Stop waiting" lets go of the request. It is not a cancel: the Mac has the work
+     * and will finish it, and this app will not claim otherwise.
+     */
+    fun stopWaitingIntent(context: Context, workID: String): PendingIntent {
+        val intent = Intent(context, MediaJobService::class.java)
+            .setAction(MediaJobService.ACTION_CANCEL)
+            .putExtra(MediaJobService.EXTRA_WORK_ID, workID)
+        return PendingIntent.getService(
+            context, workID.hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     fun post(notice: JobNotice) {
@@ -207,9 +279,23 @@ class MediaNotifier(private val context: Context) {
             .setAutoCancel(true)
             .setContentIntent(queueIntent())
             .setCategory(if (notice.isFailure) NotificationCompat.CATEGORY_ERROR else null)
+            // What is on somebody's Mac is their business, and a locked screen is
+            // shown to whoever is in the room.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(generic(notice))
             .build()
         runCatching { manager.notify(notice.id.hashCode(), notification) }
     }
+
+    /** What a locked phone shows instead: that there is something, not what. */
+    private fun generic(notice: JobNotice): Notification =
+        NotificationCompat.Builder(context, JobNotifications.FINISHED_CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("Silicon Buddy")
+            .setContentText(if (notice.isFailure) "A render needs a look" else "A render finished")
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .build()
 
     /** Tapping any of these opens the queue, which is where a job can be acted on. */
     private fun queueIntent(): PendingIntent {
