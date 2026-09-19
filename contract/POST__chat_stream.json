@@ -13,6 +13,9 @@
     },
     "413" : {
       "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "429" : {
+      "error" : "Too many open streams. Close one before opening another."
     }
   },
   "events" : {

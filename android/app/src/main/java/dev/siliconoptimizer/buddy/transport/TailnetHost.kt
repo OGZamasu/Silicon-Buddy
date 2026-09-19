@@ -12,6 +12,10 @@ package dev.siliconoptimizer.buddy.transport
  *
  * Parsed as an address, never scanned for digits: `100.64.0.1.evil.example.com`
  * contains a tailnet address and is a name someone else controls.
+ *
+ * One name is accepted — `localhost` — because it cannot resolve anywhere but this
+ * device. No other name is, including Tailscale's own `*.ts.net`: accepting a name
+ * means trusting whatever answers for it, and the Mac advertises an address.
  */
 object TailnetHost {
 

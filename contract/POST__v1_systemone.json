@@ -1,6 +1,9 @@
 {
   "auth" : "device",
   "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
     "401" : {
       "error" : "Invalid or missing control token."
     },

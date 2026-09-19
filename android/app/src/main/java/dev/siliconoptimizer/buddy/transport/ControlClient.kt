@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy.transport
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
@@ -80,6 +81,26 @@ interface ControlTransport {
 
 /** The real thing: HttpURLConnection against the Mac's tiny HTTP server. */
 class ControlClient(private val config: ServerConfig) : ControlTransport {
+
+    companion object {
+        /** A connection that lasted this long counts as having worked. */
+        const val STEADY_CONNECTION_MS = 30_000L
+
+        /** The delay before opening the stream again: 1, 2, 4… seconds, capped. */
+        fun reconnectDelayMillis(attempt: Int): Long =
+            if (attempt <= 0) 0 else minOf(30_000L, 1000L shl (minOf(attempt, 6) - 1))
+
+        /**
+         * The next attempt number. A stream that stayed up starts the count again; one
+         * that dropped immediately does not, however many events it managed first.
+         */
+        fun nextAttempt(attempt: Int, connectedForMs: Long): Int =
+            if (connectedForMs >= STEADY_CONNECTION_MS) 0 else minOf(attempt + 1, 6)
+
+        /** An id is data, not a path: a conversation called `../status` stays an id. */
+        fun pathComponent(id: String): String =
+            java.net.URLEncoder.encode(id, "UTF-8").replace("+", "%20")
+    }
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -230,7 +251,7 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         message: ChatMessageWire,
         maxTokens: Int?,
     ): Flow<ChatStreamEvent> = chatEvents(
-        "/conversations/$conversationID/messages",
+        "/conversations/${pathComponent(conversationID)}/messages",
         json.encodeToString(
             NewMessageRequest(
                 content = message.content, images = message.images, maxTokens = maxTokens,
@@ -271,11 +292,15 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         var lastEventID: String? = null
         var attempt = 0
         while (true) {
+            // How long this attempt stayed up decides the next delay. Counting events
+            // instead would be worse than counting nothing: a Mac that sends one
+            // heartbeat and drops would pin the delay at a second and this client would
+            // knock twenty times a minute, forever.
+            val openedAt = System.currentTimeMillis()
             try {
                 stream(
                     "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
                 ).collect { event ->
-                    attempt = 0
                     event.id?.let { lastEventID = it }
                     when (event.name) {
                         "status" -> runCatching { json.decodeFromString<Status>(event.data) }
@@ -297,8 +322,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             } catch (error: TransportError) {
                 if (error.isMissingRoute || error is TransportError.Unauthorized) throw error
             }
-            attempt = minOf(attempt + 1, 6)
-            kotlinx.coroutines.delay(minOf(30_000L, 1000L shl (attempt - 1)))
+            attempt = nextAttempt(attempt, System.currentTimeMillis() - openedAt)
+            kotlinx.coroutines.delay(reconnectDelayMillis(attempt))
         }
     }
 
@@ -329,12 +354,19 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                     ?: TransportError.Server(status, text)
             }
             val parser = SseParser()
-            BufferedReader(InputStreamReader(connection.inputStream)).use { reader ->
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val line = reader.readLine() ?: break
+            // `readLine` blocks in the kernel; a cancelled coroutine cannot interrupt
+            // it, and the stream would be held open until the Mac said something. So
+            // cancellation disconnects the socket, which is what makes the read return.
+            val open = connection
+            val watchdog = coroutineContext[Job]?.invokeOnCompletion {
+                runCatching { open.disconnect() }
+            }
+            try {
+                readLines(connection.inputStream) { line ->
                     parser.consume(line)?.let { emit(it) }
                 }
+            } finally {
+                watchdog?.dispose()
             }
             parser.finish()?.let { emit(it) }
         } catch (error: IOException) {
@@ -343,6 +375,40 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             connection?.disconnect()
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Reads an event stream a line at a time.
+     *
+     * Not `BufferedReader.readLine`: it treats CR, LF and CRLF alike and then tells you
+     * nothing about which it saw, and — worse for SSE — a reader cannot distinguish the
+     * blank line that ends a block from a stream that has simply paused. This reads
+     * bytes, splits on LF, keeps the empty lines, and decodes each line as UTF-8 only
+     * once it is whole, so a multi-byte character split across two reads survives.
+     */
+    private suspend inline fun readLines(
+        stream: java.io.InputStream,
+        crossinline onLine: suspend (String) -> Unit,
+    ) {
+        val line = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            coroutineContext.ensureActive()
+            val read = stream.read(buffer)
+            if (read < 0) break
+            for (index in 0 until read) {
+                val byte = buffer[index]
+                if (byte == '\n'.code.toByte()) {
+                    onLine(line.toString("UTF-8"))
+                    line.reset()
+                } else {
+                    line.write(byte.toInt())
+                }
+            }
+        }
+        if (line.size() > 0) onLine(line.toString("UTF-8"))
+    }
+
+    // MARK: - Reconnection
 
     /**
      * A token event may be a bare string or `{"text": "…"}`; accept both, because the
@@ -371,6 +437,14 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         "/conversations",
     )
 
-    override suspend fun conversation(id: String): ConversationDetail =
-        decode(send("GET", "/conversations/$id", readTimeoutMs = 20_000), "/conversations/$id")
+    override suspend fun conversation(id: String): ConversationDetail {
+        val path = "/conversations/${pathComponent(id)}"
+        return try {
+            decode(send("GET", path, readTimeoutMs = 20_000), path)
+        } catch (error: TransportError.RouteUnavailable) {
+            // This route exists on any Mac that has conversations at all; a 404 here is
+            // about the conversation, not about the Mac.
+            throw error.asNotFound()
+        }
+    }
 }

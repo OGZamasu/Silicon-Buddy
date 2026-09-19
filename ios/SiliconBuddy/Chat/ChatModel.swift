@@ -81,9 +81,16 @@ public final class ChatModel {
                 conversations = try await transport.conversations()
                 usesRemoteConversations = true
                 return
-            } catch {
-                // The Mac has not grown conversations yet; the device keeps them.
+            } catch let failure as TransportError where failure.isMissingRoute {
+                // This Mac has no /conversations at all; the device keeps them.
                 usesRemoteConversations = false
+            } catch {
+                // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still owns
+                // these conversations — moving them to the device over a bad minute
+                // would fork the transcript, and nothing would merge it back.
+                self.error = (error as? TransportError)?.localizedDescription
+                    ?? error.localizedDescription
+                if usesRemoteConversations { return }
             }
         }
         conversations = await store.all().map(\.summary)
@@ -96,14 +103,21 @@ public final class ChatModel {
 
     public func newConversation(using transport: (any ControlTransport)?) async {
         if usesRemoteConversations, let transport {
-            if let created = try? await transport.createConversation(title: nil) {
+            do {
+                let created = try await transport.createConversation(title: nil)
                 current = Conversation(
                     id: created.id, title: created.title, updatedAt: created.updatedAt
                 )
                 await loadConversations(using: transport)
                 return
+            } catch let failure as TransportError where failure.isMissingRoute {
+                usesRemoteConversations = false
+            } catch {
+                // The Mac keeps these; a failure now is a failure to say so.
+                self.error = (error as? TransportError)?.localizedDescription
+                    ?? error.localizedDescription
+                return
             }
-            usesRemoteConversations = false
         }
         let fresh = Conversation()
         current = fresh
@@ -112,7 +126,8 @@ public final class ChatModel {
 
     public func open(id: String, using transport: (any ControlTransport)?) async {
         if usesRemoteConversations, let transport {
-            if let detail = try? await transport.conversation(id: id) {
+            do {
+                let detail = try await transport.conversation(id: id)
                 current = Conversation(
                     id: detail.id,
                     title: detail.title,
@@ -129,8 +144,19 @@ public final class ChatModel {
                 )
                 isConversationBusy = detail.isGenerating
                 return
+            } catch let failure as TransportError where failure.isMissingRoute {
+                // No /conversations on this Mac at all.
+                usesRemoteConversations = false
+            } catch let failure as TransportError {
+                // Including "no such conversation": the Mac still owns the rest.
+                error = failure.localizedDescription
+                conversations.removeAll { $0.id == id }
+                current = nil
+                return
+            } catch let failure {
+                error = failure.localizedDescription
+                return
             }
-            usesRemoteConversations = false
         }
         current = await store.conversation(id: id) ?? Conversation(id: id)
     }

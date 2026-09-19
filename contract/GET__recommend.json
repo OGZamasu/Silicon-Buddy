@@ -4,6 +4,9 @@
     "401" : {
       "error" : "Invalid or missing control token."
     },
+    "404" : {
+      "error" : "No model in the catalog fits this machine."
+    },
     "411" : {
       "error" : "This server needs a Content-Length. Chunked bodies are not read."
     },

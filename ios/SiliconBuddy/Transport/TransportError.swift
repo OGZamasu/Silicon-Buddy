@@ -24,6 +24,12 @@ public enum TransportError: Error, Equatable, Sendable {
     case conflict(String)
     /// 413. More than a device may send: 4 MiB a body, about 1.5 MB an image.
     case tooLarge(String)
+    /// 411. The Mac will not read a chunked body. This one is ours to fix, not the
+    /// owner's: every request this app sends sets a Content-Length.
+    case chunkedNotAccepted(String)
+    /// 404 on a route that exists, about a thing that does not — a conversation that
+    /// was deleted on the Mac, say. Not the same as "this Mac is too old".
+    case notFound(String)
     /// 404 on a route this app knows about — which for the M0 routes means "that Mac
     /// has not shipped them yet", and the caller should fall back rather than fail.
     case routeUnavailable(String)
@@ -59,6 +65,10 @@ extension TransportError: LocalizedError {
                 ? "That conversation is still being answered." : message
         case .tooLarge(let message):
             message.isEmpty ? "That was too large to send." : message
+        case .chunkedNotAccepted(let message):
+            message.isEmpty ? "The Mac wouldn't read that request." : message
+        case .notFound(let message):
+            message.isEmpty ? "The Mac doesn't have that any more." : message
         case .routeUnavailable(let path):
             "This Mac doesn't have \(path) yet."
         case .badRequest(let message):
@@ -85,6 +95,7 @@ extension TransportError: LocalizedError {
         case .forbidden: "Pair again from the Mac with full control."
         case .conflict: "Wait for the answer, or start another conversation."
         case .tooLarge: "Send fewer or smaller pictures."
+        case .notFound: "It may have been deleted on the Mac."
         case .badRequest: "Load a model from the Models tab."
         default: nil
         }
@@ -94,6 +105,15 @@ extension TransportError: LocalizedError {
     public var isMissingRoute: Bool {
         if case .routeUnavailable = self { return true }
         return false
+    }
+
+    /// A 404 about a thing rather than a route: the same status, a different meaning,
+    /// and only the caller knows which it asked for.
+    public var asNotFound: TransportError {
+        if case .routeUnavailable(let path) = self {
+            return .notFound("The Mac has nothing at \(path) any more.")
+        }
+        return self
     }
 
     /// True when the Mac refused because of what this device is allowed to do, rather
@@ -147,6 +167,7 @@ extension TransportError {
         case 403: return .forbidden(message)
         case 404: return .routeUnavailable(path)
         case 409: return .conflict(message)
+        case 411: return .chunkedNotAccepted(message)
         case 413: return .tooLarge(message)
         case 400: return .badRequest(message.isEmpty ? "The Mac rejected the request." : message)
         case 429: return .busy(message.isEmpty ? "The Mac is busy." : message)

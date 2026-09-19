@@ -73,8 +73,8 @@ class ChatViewModel(
     private suspend fun loadConversationsNow(transport: ControlTransport?) {
             if (transport != null && (usesRemoteConversations || !askedAboutConversations)) {
                 askedAboutConversations = true
-                val remote = runCatching { transport.conversations() }.getOrNull()
-                if (remote != null) {
+                try {
+                    val remote = transport.conversations()
                     usesRemoteConversations = true
                     conversations.clear()
                     conversations.addAll(
@@ -88,8 +88,18 @@ class ChatViewModel(
                         },
                     )
                     return
+                } catch (failure: TransportError) {
+                    if (failure.isMissingRoute) {
+                        // This Mac has no /conversations at all; the device keeps them.
+                        usesRemoteConversations = false
+                    } else {
+                        // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still
+                        // owns these conversations — moving them to the device over a bad
+                        // minute would fork the transcript, and nothing would merge it back.
+                        error = failure.message
+                        if (usesRemoteConversations) return
+                    }
                 }
-                usesRemoteConversations = false
             }
             val stored = store.all()
             conversations.clear()
@@ -100,7 +110,29 @@ class ChatViewModel(
             }
     }
 
-    fun newConversation() {
+    fun newConversation(transport: ControlTransport? = null) {
+        if (usesRemoteConversations && transport != null) {
+            viewModelScope.launch {
+                try {
+                    val created = transport.createConversation(null)
+                    current = Conversation(id = created.id, title = created.title)
+                    loadConversationsNow(transport)
+                } catch (failure: TransportError) {
+                    if (failure.isMissingRoute) {
+                        usesRemoteConversations = false
+                        startLocalConversation()
+                    } else {
+                        // The Mac keeps these; a failure now is a failure to say so.
+                        error = failure.message
+                    }
+                }
+            }
+            return
+        }
+        startLocalConversation()
+    }
+
+    private fun startLocalConversation() {
         val fresh = Conversation()
         current = fresh
         conversations.add(0, fresh)
@@ -109,8 +141,8 @@ class ChatViewModel(
     fun open(id: String, transport: ControlTransport?) {
         viewModelScope.launch {
             if (usesRemoteConversations && transport != null) {
-                val detail = runCatching { transport.conversation(id) }.getOrNull()
-                if (detail != null) {
+                try {
+                    val detail = transport.conversation(id)
                     isConversationBusy = detail.isGenerating
                     current = Conversation(
                         id = detail.id,
@@ -125,8 +157,18 @@ class ChatViewModel(
                         },
                     )
                     return@launch
+                } catch (failure: TransportError) {
+                    if (failure.isMissingRoute) {
+                        // No /conversations on this Mac at all.
+                        usesRemoteConversations = false
+                    } else {
+                        // Including "no such conversation": the Mac still owns the rest.
+                        error = failure.message
+                        conversations.removeAll { it.id == id }
+                        current = null
+                        return@launch
+                    }
                 }
-                usesRemoteConversations = false
             }
             current = store.conversation(id) ?: conversations.firstOrNull { it.id == id }
                     ?: Conversation(id = id)

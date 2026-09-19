@@ -23,6 +23,7 @@ final class LoopbackServer: @unchecked Sendable {
         var path: String
         var headers: [String: String]
         var body: Data
+        var at: Date
     }
 
     private let listener: NWListener
@@ -62,6 +63,16 @@ final class LoopbackServer: @unchecked Sendable {
         lock.lock()
         repliesByPath[path] = Reply(status: status, body: body)
         lock.unlock()
+    }
+
+    /// How long passed between consecutive requests to a path.
+    func gaps(to path: String) -> [TimeInterval] {
+        let times = requests.filter { $0.path == path }.map(\.at)
+        return zip(times, times.dropFirst()).map { $1.timeIntervalSince($0) }
+    }
+
+    func requestCount(_ path: String) -> Int {
+        requests.filter { $0.path == path }.count
     }
 
     func events(_ path: String, _ body: String, chunked: Bool = true) {
@@ -124,7 +135,7 @@ final class LoopbackServer: @unchecked Sendable {
             self.receivedRequests.append(
                 Received(
                     method: requestLine.first.map(String.init) ?? "GET",
-                    path: path, headers: headers, body: body
+                    path: path, headers: headers, body: body, at: Date()
                 )
             )
             let reply = self.repliesByPath[path]

@@ -97,6 +97,46 @@ final class ControlClientTests: XCTestCase {
         }
     }
 
+    /// The same status, a different meaning: a conversation the Mac deleted is not a
+    /// Mac that is too old, and the difference decides whether the transcript moves.
+    func testAConversationThatIsGoneIsNotARouteThatIsMissing() async {
+        server.reply("/conversations/C9", 404, #"{"error":"No conversation with id C9."}"#)
+        do {
+            _ = try await client.conversation(id: "C9")
+            XCTFail("Expected a refusal")
+        } catch let error as TransportError {
+            guard case .notFound = error else {
+                return XCTFail("Expected .notFound, got \(error)")
+            }
+            XCTAssertFalse(error.isMissingRoute)
+        } catch {
+            XCTFail("Expected a TransportError, got \(error)")
+        }
+    }
+
+    func testAnIdGoesIntoThePathEncoded() async throws {
+        server.reply(
+            "/conversations/a%2Fb", 200,
+            #"{"id":"a/b","title":"t","updatedAt":"2026-09-18T09:41:12Z","isGenerating":false,"messages":[]}"#
+        )
+        let detail = try await client.conversation(id: "a/b")
+        XCTAssertEqual(detail.id, "a/b")
+        XCTAssertNotNil(server.request(to: "/conversations/a%2Fb"))
+    }
+
+    func testEveryRequestCarriesAContentLengthNeverAChunkedBody() async throws {
+        server.reply(
+            "/chat", 200,
+            #"{"content":"hi","promptTokens":1,"generatedTokens":1,"tokensPerSecond":1.0}"#
+        )
+        _ = try await client.chat(ControlAPI.ChatRequest(messages: [.init(role: "user", content: "hi")]))
+        let request = try XCTUnwrap(server.request(to: "/chat"))
+        XCTAssertNotNil(
+            request.headers["content-length"], "The Mac answers 411 without one"
+        )
+        XCTAssertNil(request.headers["transfer-encoding"])
+    }
+
     func testAConversationThatIsStillBeingAnsweredIsAConflict() async {
         server.reply("/conversations/C1/messages", 409, """
         {"error":"That conversation is still being answered."}
@@ -229,6 +269,48 @@ final class ControlClientTests: XCTestCase {
         } catch {
             XCTFail("Expected a TransportError, got \(error)")
         }
+    }
+
+    // MARK: - Reconnection
+
+    func testTheBackoffPolicyGrowsAndThenStopsGrowing() {
+        XCTAssertEqual(ControlClient.nextAttempt(after: 0, connectedFor: 40), 0)
+        XCTAssertEqual(ControlClient.nextAttempt(after: 0, connectedFor: 0.1), 1)
+        XCTAssertEqual(ControlClient.nextAttempt(after: 1, connectedFor: 0.1), 2)
+        // A stream that stayed up is what resets it — not an event, which a Mac can
+        // send once and then drop.
+        XCTAssertEqual(ControlClient.nextAttempt(after: 5, connectedFor: 30), 0)
+        XCTAssertEqual(ControlClient.nextAttempt(after: 6, connectedFor: 0.1), 6)
+
+        XCTAssertEqual(ControlClient.reconnectDelay(attempt: 0), 0)
+        XCTAssertEqual(ControlClient.reconnectDelay(attempt: 1), 1)
+        XCTAssertEqual(ControlClient.reconnectDelay(attempt: 2), 2)
+        XCTAssertEqual(ControlClient.reconnectDelay(attempt: 3), 4)
+        XCTAssertEqual(ControlClient.reconnectDelay(attempt: 6), 30)
+    }
+
+    /// A Mac that sends one event and drops is the case that used to pin the delay at
+    /// a second forever. The gaps between connections have to grow.
+    func testAStreamThatKeepsDroppingIsRetriedLessAndLessOften() async throws {
+        server.events("/events", "event: heartbeat\ndata: {}\n\n", chunked: false)
+        let stream = client.events()
+        let task = Task { [stream] in
+            for try await _ in stream {}
+        }
+        defer { task.cancel() }
+
+        let deadline = Date().addingTimeInterval(20)
+        while server.requestCount("/events") < 3, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        task.cancel()
+
+        let gaps = server.gaps(to: "/events")
+        XCTAssertGreaterThanOrEqual(gaps.count, 2, "Expected at least two reconnections")
+        XCTAssertGreaterThanOrEqual(gaps[0], 0.7, "The first wait should be about a second")
+        XCTAssertGreaterThanOrEqual(
+            gaps[1], gaps[0] + 0.5, "Each wait should be longer than the last"
+        )
     }
 
     // MARK: - The host rule, one layer down

@@ -43,6 +43,18 @@ sealed class TransportError(message: String) : Exception(message) {
     /** 413: more than a device may send — 4 MiB a body, about 1.5 MB an image. */
     data class TooLarge(val detail: String) : TransportError(detail)
 
+    /**
+     * 411: the Mac will not read a chunked body. This one is ours to fix, not the
+     * owner's: every request this app sends sets a Content-Length.
+     */
+    data class ChunkedNotAccepted(val detail: String) : TransportError(detail)
+
+    /**
+     * 404 on a route that exists, about a thing that does not — a conversation deleted
+     * on the Mac, say. Not the same as "this Mac is too old".
+     */
+    data class NotFound(val detail: String) : TransportError(detail)
+
     /** 404 on a route this app knows about: that Mac has not shipped it yet. */
     data class RouteUnavailable(val path: String) :
         TransportError("This Mac doesn't have $path yet.")
@@ -71,6 +83,15 @@ sealed class TransportError(message: String) : Exception(message) {
      */
     val isForbidden: Boolean get() = this is Forbidden
 
+    /**
+     * A 404 about a thing rather than a route: the same status, a different meaning,
+     * and only the caller knows which it asked for.
+     */
+    fun asNotFound(): TransportError = when (this) {
+        is RouteUnavailable -> NotFound("The Mac has nothing at $path any more.")
+        else -> this
+    }
+
     /** What to offer the person, when there is something to offer. */
     val recovery: String?
         get() = when (this) {
@@ -80,6 +101,7 @@ sealed class TransportError(message: String) : Exception(message) {
             is Forbidden -> "Pair again from the Mac with full control."
             is Conflict -> "Wait for the answer, or start another conversation."
             is TooLarge -> "Send fewer or smaller pictures."
+            is NotFound -> "It may have been deleted on the Mac."
             is BadRequest -> "Load a model from the Models tab."
             else -> null
         }
@@ -126,6 +148,7 @@ sealed class TransportError(message: String) : Exception(message) {
                 403 -> Forbidden(detail.ifBlank { "The Mac wouldn't allow that." })
                 404 -> RouteUnavailable(path)
                 409 -> Conflict(detail.ifBlank { "That conversation is still being answered." })
+                411 -> ChunkedNotAccepted(detail.ifBlank { "The Mac wouldn't read that request." })
                 413 -> TooLarge(detail.ifBlank { "That was too large to send." })
                 400 -> BadRequest(detail.ifBlank { "The Mac rejected the request." })
                 429 -> Busy(detail.ifBlank { "The Mac is busy." })

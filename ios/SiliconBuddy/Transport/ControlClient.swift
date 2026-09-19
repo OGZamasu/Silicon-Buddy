@@ -221,7 +221,7 @@ public struct ControlClient: ControlTransport {
         conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         chatEventStream(
-            path: "/conversations/\(conversationID)/messages",
+            path: "/conversations/\(Self.pathComponent(conversationID))/messages",
             body: BuddyAPI.NewMessageRequest(
                 content: message.content, images: message.images, maxTokens: maxTokens
             )
@@ -279,6 +279,11 @@ public struct ControlClient: ControlTransport {
                 var lastEventID: String?
                 var attempt = 0
                 while !Task.isCancelled {
+                    // How long this attempt stayed up decides the next delay. Counting
+                    // events instead would be worse than counting nothing: a Mac that
+                    // sends one heartbeat and drops would pin the delay at a second and
+                    // this client would knock twenty times a minute, forever.
+                    let openedAt = Date()
                     do {
                         var urlRequest = try makeRequest(
                             "GET", "/events", accept: "text/event-stream", timeout: 86_400
@@ -287,7 +292,6 @@ public struct ControlClient: ControlTransport {
                             urlRequest.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
                         }
                         for try await event in stream(urlRequest, path: "/events") {
-                            attempt = 0
                             if let id = event.id { lastEventID = id }
                             switch event.name {
                             case "status":
@@ -326,14 +330,32 @@ public struct ControlClient: ControlTransport {
                         }
                     }
                     guard !Task.isCancelled else { break }
-                    attempt = min(attempt + 1, 6)
-                    let delay = min(30, pow(2, Double(attempt - 1)))
-                    try? await Task.sleep(for: .seconds(delay))
+                    attempt = Self.nextAttempt(
+                        after: attempt, connectedFor: Date().timeIntervalSince(openedAt)
+                    )
+                    try? await Task.sleep(for: .seconds(Self.reconnectDelay(attempt: attempt)))
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    // MARK: - Reconnection
+
+    /// A connection that lasted this long counts as having worked, whatever it carried.
+    public static let steadyConnection: TimeInterval = 30
+
+    /// The delay before opening the stream again: 1, 2, 4… seconds, capped.
+    public static func reconnectDelay(attempt: Int) -> TimeInterval {
+        guard attempt > 0 else { return 0 }
+        return min(30, pow(2, Double(min(attempt, 6) - 1)))
+    }
+
+    /// The next attempt number. A stream that stayed up starts the count again; one
+    /// that dropped immediately does not, however many events it managed first.
+    public static func nextAttempt(after attempt: Int, connectedFor duration: TimeInterval) -> Int {
+        duration >= steadyConnection ? 0 : min(attempt + 1, 6)
     }
 
     /// The shared body of every SSE call: check the status line, then run the bytes
@@ -417,7 +439,22 @@ public struct ControlClient: ControlTransport {
     }
 
     public func conversation(id: String) async throws -> BuddyAPI.ConversationDetail {
-        try await get(BuddyAPI.ConversationDetail.self, "/conversations/\(id)", timeout: 20)
+        do {
+            return try await get(
+                BuddyAPI.ConversationDetail.self,
+                "/conversations/\(Self.pathComponent(id))", timeout: 20
+            )
+        } catch let error as TransportError where error.isMissingRoute {
+            // This route exists on any Mac that has conversations at all; a 404 here is
+            // about the conversation, not about the Mac.
+            throw error.asNotFound
+        }
+    }
+
+    /// An id is data, not a path: a conversation called `../status` must not become one.
+    static func pathComponent(_ id: String) -> String {
+        id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#")))
+            ?? id
     }
 }
 

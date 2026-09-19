@@ -1,5 +1,6 @@
 package dev.siliconoptimizer.buddy
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -59,19 +60,53 @@ import dev.siliconoptimizer.buddy.pairing.PairingScreen
 import dev.siliconoptimizer.buddy.ui.SiliconBuddyTheme
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * The link this activity was opened or resumed with, as either an invite to
+     * confirm or a refusal to explain. A link is a request, not an instruction: the
+     * app only ever gets as far as asking.
+     */
+    private val arriving = mutableStateOf<LinkArrival?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // The QR is a link too: opening it here pairs without a camera at all.
-        val invite = intent?.data?.let { runCatching { PairingInvite.parse(it) }.getOrNull() }
+        arriving.value = read(intent)
         setContent {
             SiliconBuddyTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    BuddyApp(initialInvite = invite)
+                    BuddyApp(arriving = arriving)
                 }
             }
         }
     }
+
+    /**
+     * A link tapped while the app is running arrives here rather than starting a second
+     * activity — which would mean a second AppState, a second event stream, and two
+     * screens disagreeing about which Mac is paired. The manifest's singleTop is the
+     * other half of that.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        arriving.value = read(intent)
+    }
+
+    private fun read(intent: Intent?): LinkArrival? {
+        val data = intent?.data ?: return null
+        return try {
+            LinkArrival.Invite(PairingInvite.parse(data))
+        } catch (error: PairingInvite.ParseError) {
+            LinkArrival.Refused(error.message ?: "That isn't a Silicon Buddy code.")
+        }
+    }
+}
+
+/** What arrived on a `siliconbuddy://` link. */
+sealed interface LinkArrival {
+    data class Invite(val invite: PairingInvite) : LinkArrival
+    data class Refused(val reason: String) : LinkArrival
 }
 
 private enum class Destination(val label: String) {
@@ -80,7 +115,7 @@ private enum class Destination(val label: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BuddyApp(initialInvite: PairingInvite? = null) {
+fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = remember { mutableStateOf(null) }) {
     val app: AppState = viewModel()
     val dashboard: DashboardViewModel = viewModel()
     val models: ModelsViewModel = viewModel()
@@ -89,14 +124,21 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
 
     var destination by remember { mutableStateOf(Destination.Dashboard) }
     var pairing by remember { mutableStateOf(false) }
+    var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by remember { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    LaunchedEffect(Unit) {
-        app.refreshReachability()
-        // A link is a request, not an instruction: anything on the device can open a
-        // URL in this app. It only ever gets as far as asking.
-        initialInvite?.let { app.pendingInvite = it }
+    LaunchedEffect(Unit) { app.refreshReachability() }
+
+    // A link is a request, not an instruction: anything on the device can open a URL in
+    // this app. It only ever gets as far as asking — or, when the host is not on the
+    // tailnet, explaining why not.
+    LaunchedEffect(arriving.value) {
+        when (val arrival = arriving.value) {
+            is LinkArrival.Invite -> app.pendingInvite = arrival.invite
+            is LinkArrival.Refused -> refusedLink = arrival.reason
+            null -> Unit
+        }
     }
 
     // Pairing happens over the dashboard, so the first reading has to be triggered by
@@ -224,13 +266,24 @@ fun BuddyApp(initialInvite: PairingInvite? = null) {
         }
     }
 
+    refusedLink?.let { reason ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { refusedLink = null; arriving.value = null },
+            title = { Text("That link isn't a pairing code") },
+            text = { Text(reason) },
+            confirmButton = {
+                TextButton(onClick = { refusedLink = null; arriving.value = null }) { Text("OK") }
+            },
+        )
+    }
+
     // A code that arrived from a QR or a link: named, and agreed to, before anything
     // is dialled — and twice over when it would replace the Mac already paired.
     app.pendingInvite?.let { invite ->
         PairingConfirmation(
             app = app,
             invite = invite,
-            onDismiss = { app.pendingInvite = null },
+            onDismiss = { app.pendingInvite = null; arriving.value = null },
             onNeedsAdvanced = {
                 app.pendingInvite = null
                 pairing = true

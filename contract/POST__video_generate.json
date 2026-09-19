@@ -1,6 +1,9 @@
 {
   "auth" : "device",
   "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
     "401" : {
       "error" : "Invalid or missing control token."
     },
@@ -12,6 +15,9 @@
     },
     "413" : {
       "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "429" : {
+      "error" : "Too many synchronous video requests. No clip was added. Use POST \/video\/queue to save work without holding a connection, then GET \/video\/queue to follow it."
     }
   },
   "method" : "POST",

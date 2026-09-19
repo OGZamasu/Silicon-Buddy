@@ -56,49 +56,22 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!--
-		  The control API is plain HTTP on a private address, and there is no
-		  certificate on a tailnet to validate. NSAllowsLocalNetworking covers
-		  loopback and the RFC1918 ranges, which is the Simulator and a LAN; the
-		  Mac's own listener binds 100.64/10 (Tailscale's range) or loopback and
-		  nothing else, and ATS has no way to spell a range, so the tailnet needs
-		  an exception of its own.
+		  The Mac's control API is plain HTTP on a tailnet address, and there is no
+		  certificate on a tailnet to validate. ATS cannot express that: it matches
+		  domains, not address ranges, and the Mac binds 100.64/10 or loopback and
+		  puts that raw address in the QR it shows. NSAllowsLocalNetworking covers
+		  loopback and RFC1918 but not 100.64/10 — measured: without this key a
+		  request to the Mac's tailnet address fails NSURLErrorDomain -1022 — and
+		  iOS ignores NSAllowsArbitraryLoads whenever NSAllowsLocalNetworking is
+		  present, so the two cannot be combined.
 
-		  NSAllowsArbitraryLoads is deliberately absent: everything this app dials
-		  is checked against TailnetHost first, and an HTTPS URL anywhere else in
-		  the app still has to be HTTPS.
-		-->
-		<!--
-		  Measured, not assumed: with only NSAllowsLocalNetworking, a request to the
-		  Mac's tailnet address fails with NSURLErrorDomain -1022 ("App Transport
-		  Security policy requires the use of a secure connection"), because
-		  local networking covers loopback and RFC1918 but not 100.64/10, and ATS
-		  has no syntax for an address range. The Mac binds its Silicon Buddy
-		  listener to a raw 100.64/10 address and puts that address in the QR, so
-		  without this the product's main path does not work at all.
-
-		  What keeps this narrow is not ATS: it is TailnetHost, which every request
-		  passes through, and which refuses any host that is not loopback, the
-		  emulator's 10.0.2.2, 100.64/10 or fd7a:115c:a1e0::/48. See
-		  PairingSecurityTests and ControlClientTests.
-		-->
-		<!--
-		  NSAllowsLocalNetworking is deliberately absent: when it is present, iOS
-		  ignores NSAllowsArbitraryLoads entirely, and the tailnet is refused again.
-		  Measured, both ways, on the Simulator against a real tailnet address.
+		  So ATS is open here and the narrowing is TailnetHost, which every request
+		  passes through and which accepts only loopback, the Android emulator's
+		  10.0.2.2, 100.64.0.0/10 and fd7a:115c:a1e0::/48. That gate is the security
+		  boundary; this key is not. See PairingSecurityTests and ControlClientTests.
 		-->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<!-- Tailscale's MagicDNS names, for a Mac reached by name. -->
-			<key>ts.net</key>
-			<dict>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-		</dict>
 	</dict>
 	<key>CFBundleURLTypes</key>
 	<array>

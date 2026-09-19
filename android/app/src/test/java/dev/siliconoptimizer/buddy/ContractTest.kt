@@ -237,6 +237,125 @@ class ContractTest {
         roundTrip<Heartbeat>("GET__events", "events.heartbeat")
     }
 
+
+    // MARK: - The export itself
+
+    companion object {
+        /**
+         * The contract is a copy of something generated elsewhere, and a copy goes
+         * stale quietly. This is the list that makes it loud: when it changes,
+         * `contract/refresh.sh` is the fix — not this list.
+         */
+        val EXPECTED_FIXTURES = setOf(
+            "DELETE__buddy_devices__id_",
+            "GET__buddy_devices",
+            "GET__catalog",
+            "GET__conversations",
+            "GET__conversations__id_",
+            "GET__events",
+            "GET__health",
+            "GET__image_models",
+            "GET__installed",
+            "GET__mesh_models",
+            "GET__metrics",
+            "GET__profile",
+            "GET__recommend",
+            "GET__status",
+            "GET__swarm",
+            "GET__v1_node",
+            "GET__video_models",
+            "GET__video_queue",
+            "POST__benchmark",
+            "POST__buddy_pair",
+            "POST__chat",
+            "POST__chat_stream",
+            "POST__conversations",
+            "POST__conversations__id__messages",
+            "POST__decide",
+            "POST__image_generate",
+            "POST__image_plan",
+            "POST__install",
+            "POST__load",
+            "POST__mesh_generate",
+            "POST__mesh_plan",
+            "POST__plan",
+            "POST__unload",
+            "POST__v1_systemone",
+            "POST__video_generate",
+            "POST__video_queue",
+            "POST__video_queue_control"
+        )
+    }
+
+    @Test
+    fun `the contract is the whole export and nothing else`() {
+        val directory = File(javaClass.classLoader!!.getResource("GET__health.json")!!.toURI())
+            .parentFile
+        val fixtures = directory.listFiles { file -> file.extension == "json" }!!
+            .map { it.nameWithoutExtension }.toSet()
+        val missing = (EXPECTED_FIXTURES - fixtures).sorted()
+        val extra = (fixtures - EXPECTED_FIXTURES).sorted()
+        assertTrue("The contract is missing $missing — run contract/refresh.sh", missing.isEmpty())
+        assertTrue("The Mac grew $extra — mirror them, then add them here", extra.isEmpty())
+        assertTrue(
+            "routes.md comes with the export",
+            File(directory, "routes.md").exists(),
+        )
+    }
+
+    /**
+     * Every status any route documents has a case of its own. A new one falling into
+     * `Server` would reach a person as a number.
+     */
+    @Test
+    fun `every documented status is mapped`() {
+        val seen = mutableSetOf<Int>()
+        for (name in EXPECTED_FIXTURES.sorted()) {
+            val errors = fixture(name)["errors"] as? JsonObject ?: continue
+            for ((status, body) in errors) {
+                val code = status.toInt()
+                seen.add(code)
+                val mapped = TransportError.from(code, body.toString(), "/x")
+                assertNotNull("$name documents $code; nothing maps it", mapped)
+                assertTrue(
+                    "$name documents $code and it falls through to Server",
+                    mapped !is TransportError.Server,
+                )
+                assertTrue(
+                    "$name $code reaches a person as nothing",
+                    !mapped!!.message.isNullOrBlank(),
+                )
+            }
+        }
+        assertEquals(
+            "The statuses the Mac documents changed — run contract/refresh.sh, then map them",
+            setOf(400, 401, 403, 404, 409, 411, 413, 429),
+            seen,
+        )
+    }
+
+    /**
+     * Three things the current export says that an older copy did not. A stale
+     * contract/ fails here rather than being discovered on a phone.
+     */
+    @Test
+    fun `the export is the current one`() {
+        for (name in EXPECTED_FIXTURES.filter { it.startsWith("POST__") }) {
+            if (name in setOf("POST__benchmark", "POST__unload")) continue
+            val errors = fixture(name)["errors"] as? JsonObject
+            assertNotNull("$name documents no errors at all", errors)
+            assertNotNull("$name should document a 400 — refresh the contract", errors!!["400"])
+        }
+        for (name in listOf("GET__recommend", "GET__conversations__id_", "DELETE__buddy_devices__id_")) {
+            val errors = fixture(name)["errors"] as? JsonObject ?: continue
+            assertNotNull("$name should document a 404 — refresh the contract", errors["404"])
+        }
+        for (name in listOf("POST__chat_stream", "POST__conversations__id__messages", "GET__events")) {
+            val errors = fixture(name)["errors"] as? JsonObject ?: continue
+            assertNotNull("$name should document a 429 — refresh the contract", errors["429"])
+        }
+    }
+
     // MARK: - Errors
 
     @Test

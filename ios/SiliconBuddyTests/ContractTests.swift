@@ -216,6 +216,134 @@ final class ContractTests: XCTestCase {
         try roundTrip(BuddyAPI.Heartbeat.self, "GET__events", "events.heartbeat")
     }
 
+
+    // MARK: - The export itself
+
+    /// The contract is a copy of something generated elsewhere, and a copy goes stale
+    /// quietly. This is the test that makes it loud: the set of routes, and the errors
+    /// each one documents, are the Mac's answers as of the last refresh. When they
+    /// change, `contract/refresh.sh` is the fix — not this list.
+    static let expectedFixtures: Set<String> = [
+        "DELETE__buddy_devices__id_",
+        "GET__buddy_devices",
+        "GET__catalog",
+        "GET__conversations",
+        "GET__conversations__id_",
+        "GET__events",
+        "GET__health",
+        "GET__image_models",
+        "GET__installed",
+        "GET__mesh_models",
+        "GET__metrics",
+        "GET__profile",
+        "GET__recommend",
+        "GET__status",
+        "GET__swarm",
+        "GET__v1_node",
+        "GET__video_models",
+        "GET__video_queue",
+        "POST__benchmark",
+        "POST__buddy_pair",
+        "POST__chat",
+        "POST__chat_stream",
+        "POST__conversations",
+        "POST__conversations__id__messages",
+        "POST__decide",
+        "POST__image_generate",
+        "POST__image_plan",
+        "POST__install",
+        "POST__load",
+        "POST__mesh_generate",
+        "POST__mesh_plan",
+        "POST__plan",
+        "POST__unload",
+        "POST__v1_systemone",
+        "POST__video_generate",
+        "POST__video_queue",
+        "POST__video_queue_control"
+    ]
+
+    func testTheContractIsTheWholeExportAndNothingElse() throws {
+        let bundle = Bundle(for: ContractTests.self)
+        let directory = try XCTUnwrap(
+            bundle.url(forResource: "contract", withExtension: nil) ?? bundle.resourceURL
+        )
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )
+        let fixtures = Set(
+            files.filter { $0.pathExtension == "json" }
+                .map { $0.deletingPathExtension().lastPathComponent }
+        )
+        let missing = Self.expectedFixtures.subtracting(fixtures).sorted()
+        let extra = fixtures.subtracting(Self.expectedFixtures).sorted()
+        XCTAssertTrue(
+            missing.isEmpty,
+            "The contract is missing \(missing.joined(separator: ", ")) — run contract/refresh.sh"
+        )
+        XCTAssertTrue(
+            extra.isEmpty,
+            "The Mac grew \(extra.joined(separator: ", ")) — mirror them, then add them here"
+        )
+        XCTAssertTrue(
+            files.contains { $0.lastPathComponent == "routes.md" },
+            "routes.md comes with the export"
+        )
+    }
+
+    /// Every status any route documents has a case of its own. A new one falling into
+    /// `.server` would reach a person as a number.
+    func testEveryDocumentedStatusIsMapped() throws {
+        var seen: Set<Int> = []
+        for name in Self.expectedFixtures.sorted() {
+            let fields = try fixture(name)
+            guard case .object(let errors)? = fields["errors"] else { continue }
+            for (status, body) in errors {
+                let code = try XCTUnwrap(Int(status))
+                seen.insert(code)
+                let mapped = TransportError.from(
+                    status: code, body: try JSONEncoder().encode(body), path: "/x"
+                )
+                let error = try XCTUnwrap(mapped, "\(name) documents \(code); nothing maps it")
+                if case .server(let number, _) = error {
+                    XCTFail("\(name) documents \(number) and it falls through to .server")
+                }
+                XCTAssertFalse(
+                    (error.errorDescription ?? "").isEmpty,
+                    "\(name) \(code) reaches a person as nothing"
+                )
+            }
+        }
+        XCTAssertEqual(
+            seen, [400, 401, 403, 404, 409, 411, 413, 429],
+            "The statuses the Mac documents changed — run contract/refresh.sh, then map them"
+        )
+    }
+
+    /// Three things the current export says that an older copy did not. A stale
+    /// contract/ fails here rather than being discovered on a phone.
+    func testTheExportIsTheCurrentOne() throws {
+        for name in Self.expectedFixtures.sorted() where name.hasPrefix("POST__") {
+            // Every POST but the two that take no body documents a 400.
+            guard !["POST__benchmark", "POST__unload"].contains(name) else { continue }
+            let fields = try fixture(name)
+            guard case .object(let errors)? = fields["errors"] else {
+                return XCTFail("\(name) documents no errors at all")
+            }
+            XCTAssertNotNil(errors["400"], "\(name) should document a 400 — refresh the contract")
+        }
+        for name in ["GET__recommend", "GET__conversations__id_", "DELETE__buddy_devices__id_"] {
+            let fields = try fixture(name)
+            guard case .object(let errors)? = fields["errors"] else { continue }
+            XCTAssertNotNil(errors["404"], "\(name) should document a 404 — refresh the contract")
+        }
+        for name in ["POST__chat_stream", "POST__conversations__id__messages", "GET__events"] {
+            let fields = try fixture(name)
+            guard case .object(let errors)? = fields["errors"] else { continue }
+            XCTAssertNotNil(errors["429"], "\(name) should document a 429 — refresh the contract")
+        }
+    }
+
     // MARK: - Errors
 
     func testEveryErrorBodyInTheContractDecodes() throws {

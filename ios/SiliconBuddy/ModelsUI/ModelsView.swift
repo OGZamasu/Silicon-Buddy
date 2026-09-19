@@ -214,8 +214,9 @@ struct InstalledRow: View {
             "\(entry.name), \(entry.quantization), \(Format.bytes(entry.sizeOnDiskBytes))"
                 + (entry.supportsVision ? ", vision" : "")
                 + (isLoaded ? ", loaded" : "")
+                + (canControl ? "" : ", this device may not load models")
         )
-        .accessibilityAction(named: "Load") { if !isLoaded { load() } }
+        .accessibilityAction(named: "Load") { if !isLoaded, canControl { load() } }
     }
 }
 

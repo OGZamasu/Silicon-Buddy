@@ -8,14 +8,14 @@
 #
 #   ./contract/refresh.sh                      # uses the default checkout below
 #   ./contract/refresh.sh ~/src/silicon-optimizer
-#   ./contract/refresh.sh ~/src/silicon-optimizer feat/buddy-remote-access
+#   ./contract/refresh.sh ~/src/silicon-optimizer origin/some-branch
 #
 # The Mac checkout is never modified: the export runs in a detached worktree in
 # a temporary directory, which is removed afterwards.
 set -euo pipefail
 
 checkout="${1:-/Volumes/T9/Apple Silicon AI Optimizer}"
-ref="${2:-origin/feat/buddy-remote-access}"
+ref="${2:-origin/main}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ ! -d "$checkout/.git" ]; then

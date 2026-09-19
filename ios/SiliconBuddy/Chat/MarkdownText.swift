@@ -154,8 +154,13 @@ public enum Markdown {
     }
 
     /// Inline markup, with the source text as the fallback when it does not parse.
+    ///
+    /// Links are rendered as their text and stripped of their destination. A model's
+    /// answer is not a place to be sent: a tap that opens Safari at a URL the model
+    /// invented — or was talked into — is a decision the person did not make. The URL
+    /// is still readable when the model writes it out, which is the honest form.
     public static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(
+        var attributed = (try? AttributedString(
             markdown: text,
             options: .init(
                 allowsExtendedAttributes: true,
@@ -163,6 +168,10 @@ public enum Markdown {
                 failurePolicy: .returnPartiallyParsedIfPossible
             )
         )) ?? AttributedString(text)
+        for run in attributed.runs where run.link != nil {
+            attributed[run.range].link = nil
+        }
+        return attributed
     }
 }
 

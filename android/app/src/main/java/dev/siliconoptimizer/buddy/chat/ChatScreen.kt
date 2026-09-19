@@ -62,6 +62,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.ui.Format
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import android.graphics.Bitmap
 import android.util.Base64
@@ -226,7 +228,7 @@ fun ChatScreen(
 
 @Composable
 private fun AttachmentThumb(dataUrl: String, onRemove: () -> Unit) {
-    val bitmap = remember(dataUrl) { bitmapFrom(dataUrl) }
+    val bitmap = rememberBitmap(dataUrl, maxEdge = 128)
     Box {
         bitmap?.let {
             androidx.compose.foundation.Image(
@@ -269,7 +271,7 @@ private fun MessageBubble(
         if (message.images.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.images.forEach { dataUrl ->
-                    bitmapFrom(dataUrl)?.let {
+                    rememberBitmap(dataUrl)?.let {
                         androidx.compose.foundation.Image(
                             bitmap = it.asImageBitmap(),
                             contentDescription = "Attached picture",
@@ -489,13 +491,42 @@ private fun share(context: Context, text: String) {
     context.startActivity(Intent.createChooser(intent, null))
 }
 
-private fun bitmapFrom(dataUrl: String): Bitmap? {
+/**
+ * Decodes a `data:` URL for display, at the size it will be displayed.
+ *
+ * Two passes, like the outgoing path: a 4000-pixel picture drawn into a 96dp box is
+ * 60 MB of Bitmap for no visible difference, and doing that inside composition means
+ * doing it on the main thread on every recomposition.
+ */
+private fun bitmapFrom(dataUrl: String, maxEdge: Int = 256): Bitmap? {
     val comma = dataUrl.indexOf(',')
     if (comma < 0) return null
     return runCatching {
         val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (
+            bounds.outWidth / (sample * 2) >= maxEdge || bounds.outHeight / (sample * 2) >= maxEdge
+        ) {
+            sample *= 2
+        }
+        BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        )
     }.getOrNull()
+}
+
+/** The same, off the composition thread, remembered per picture. */
+@Composable
+private fun rememberBitmap(dataUrl: String, maxEdge: Int = 256): Bitmap? {
+    var bitmap by remember(dataUrl) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(dataUrl) {
+        bitmap = withContext(Dispatchers.Default) { bitmapFrom(dataUrl, maxEdge) }
+    }
+    return bitmap
 }
 
 /**
