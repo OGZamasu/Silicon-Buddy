@@ -24,6 +24,12 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     var streamEvents: [BuddyAPI.ChatStreamEvent]?
     var streamError: Error?
 
+    /// Set to make a call hang for ever instead of answering. A Mac that is awake,
+    /// reachable and thinking is not the same as one that is down, and a widget has to
+    /// survive it.
+    var statusHangs = false
+    var chatHangs = false
+
     private(set) var chatCallCount = 0
     private(set) var streamCallCount = 0
     private(set) var lastChatRequest: ControlAPI.ChatRequest?
@@ -36,7 +42,10 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     var conversationDetail: BuddyAPI.ConversationDetail?
 
     func health() async throws -> ControlAPI.Health { try healthResult.get() }
-    func status() async throws -> ControlAPI.Status { try statusResult.get() }
+    func status() async throws -> ControlAPI.Status {
+        if statusHangs { try await Task.sleep(for: .seconds(3600)) }
+        return try statusResult.get()
+    }
     func profile() async throws -> ControlAPI.Profile { try profileResult.get() }
     func metrics() async throws -> ControlAPI.Metrics { try metricsResult.get() }
     func installed() async throws -> [ControlAPI.InstalledModel] { try installedResult.get() }
@@ -56,6 +65,7 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     func chat(_ request: ControlAPI.ChatRequest) async throws -> ControlAPI.ChatResponse {
         chatCallCount += 1
         lastChatRequest = request
+        if chatHangs { try await Task.sleep(for: .seconds(3600)) }
         return try chatResult.get()
     }
 

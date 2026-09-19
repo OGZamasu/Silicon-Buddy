@@ -7,6 +7,7 @@ import dev.siliconoptimizer.buddy.reach.QuickPrompt
 import dev.siliconoptimizer.buddy.reach.WidgetTimeline
 import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.ServerConfig
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -46,7 +47,7 @@ class WidgetTimelineTest {
     // MARK: - Drawing what the Mac says
 
     @Test
-    fun `an entry names the model the Mac has loaded`() = runTest {
+    fun `an entry names the model the Mac has loaded`() = runBlocking {
         server.reply("/status", 200, status)
         val entry = WidgetTimeline.entry(client, stored = null, quickPrompt = QuickPrompt.DEFAULT)
         assertTrue(entry.isPaired)
@@ -56,7 +57,7 @@ class WidgetTimelineTest {
     }
 
     @Test
-    fun `the last answer survives a refresh`() = runTest {
+    fun `the last answer survives a refresh`() = runBlocking {
         server.reply("/status", 200, status)
         val stored = BuddySnapshot(lastQuestion = "Hello?", lastAnswer = "Hello yourself.")
         val entry = WidgetTimeline.entry(client, stored, QuickPrompt.DEFAULT)
@@ -71,7 +72,7 @@ class WidgetTimelineTest {
      * off the tailnet. The last snapshot is still the best thing anybody knows.
      */
     @Test
-    fun `a Mac that does not answer keeps the last snapshot and says why`() = runTest {
+    fun `a Mac that does not answer keeps the last snapshot and says why`() = runBlocking {
         server.reply("/status", 503, """{"error":"busy"}""")
         val stored = BuddySnapshot(loadedModelName = "Gemma 3 12B", lastAnswer = "Earlier.")
         val entry = WidgetTimeline.entry(client, stored, QuickPrompt.DEFAULT)
@@ -81,14 +82,14 @@ class WidgetTimelineTest {
     }
 
     @Test
-    fun `a revoked device is told it is no longer paired`() = runTest {
+    fun `a revoked device is told it is no longer paired`() = runBlocking {
         server.reply("/status", 401, """{"error":"Invalid or missing control token."}""")
         val entry = WidgetTimeline.entry(client, null, QuickPrompt.DEFAULT)
         assertEquals("This device is no longer paired with your Mac.", entry.problem)
     }
 
     @Test
-    fun `no Mac at all asks to pair rather than showing an error`() = runTest {
+    fun `no Mac at all asks to pair rather than showing an error`() = runBlocking {
         val entry = WidgetTimeline.entry(null, null, QuickPrompt.DEFAULT)
         assertFalse(entry.isPaired)
         assertEquals("Not paired", entry.headline)
@@ -98,7 +99,7 @@ class WidgetTimelineTest {
     // MARK: - The button
 
     @Test
-    fun `the quick prompt asks once with no history`() = runTest {
+    fun `the quick prompt asks once with no history`() = runBlocking {
         server.reply(
             "/chat", 200,
             """{"content":"Take a walk.","promptTokens":9,"generatedTokens":4,"tokensPerSecond":30.0}""",
@@ -113,7 +114,7 @@ class WidgetTimelineTest {
     }
 
     @Test
-    fun `a button press against an unreachable Mac shows a sentence rather than nothing`() = runTest {
+    fun `a button press against an unreachable Mac shows a sentence rather than nothing`() = runBlocking {
         server.reply("/chat", 500, """{"error":"boom"}""")
         val result = WidgetTimeline.ask("Anything?", client)
         assertTrue(result is AskResult.Problem)
@@ -121,8 +122,33 @@ class WidgetTimelineTest {
     }
 
     @Test
-    fun `a button press with no Mac says so`() = runTest {
+    fun `a button press with no Mac says so`() = runBlocking {
         assertEquals(AskResult.Problem("Not paired with a Mac."), WidgetTimeline.ask("Anything?", null))
+    }
+
+    // MARK: - A widget has seconds, not minutes
+
+    /**
+     * The transport's own ceilings are sized for a person watching a model think. A
+     * Glance worker is killed long before that, and a killed worker leaves the last
+     * content on screen — a button that looks like it does nothing. So the widget puts
+     * its own deadline on the call.
+     *
+     * `runTest`'s virtual clock is what makes this instant rather than twenty seconds.
+     */
+    @Test
+    fun `the button gives up rather than overrunning the widget's budget`() = runTest {
+        val result = WidgetTimeline.ask("Anything?", HangingTransport())
+        assertEquals(AskResult.Problem(WidgetTimeline.TOO_SLOW), result)
+    }
+
+    /** The same for the content refresh, which runs on every redraw. */
+    @Test
+    fun `a refresh gives up too and keeps the last snapshot`() = runTest {
+        val stored = BuddySnapshot(loadedModelName = "Gemma 3 12B")
+        val entry = WidgetTimeline.entry(HangingTransport(), stored, QuickPrompt.DEFAULT)
+        assertEquals("Gemma 3 12B", entry.headline)
+        assertEquals(WidgetTimeline.TOO_SLOW, entry.problem)
     }
 
     // MARK: - Trimming for a small surface

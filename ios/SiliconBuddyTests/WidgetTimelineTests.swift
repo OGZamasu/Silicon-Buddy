@@ -144,6 +144,61 @@ final class WidgetTimelineTests: XCTestCase {
         XCTAssertEqual(result, .problem("Not paired with a Mac."))
     }
 
+    // MARK: - A widget has seconds, not minutes
+
+    /// The transport's own ceiling on `/chat` is nine hundred seconds, sized for a
+    /// person watching a model think. A widget extension is killed long before that,
+    /// and a killed widget leaves the previous entry on screen — a button that looks
+    /// like it does nothing. So the widget puts its own deadline on the call.
+    func testTheButtonGivesUpRatherThanOverrunningTheWidgetsBudget() async {
+        let hanging = StubTransport()
+        hanging.chatHangs = true
+        let started = Date()
+        let result = await WidgetTimeline.ask(
+            "Anything?", using: hanging, defaults: defaults, deadline: 0.2
+        )
+        XCTAssertEqual(result, .problem(WidgetTimeline.tooSlow))
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 5,
+            "it gave up on its own deadline rather than the transport's"
+        )
+        XCTAssertNil(
+            SnapshotStore.read(from: defaults)?.lastAnswer,
+            "and nothing was written as though it had answered"
+        )
+    }
+
+    /// The same for the timeline's own refresh, which runs on every redraw.
+    func testARefreshGivesUpTooAndKeepsTheLastSnapshot() async {
+        let hanging = StubTransport()
+        hanging.statusHangs = true
+        let stored = BuddySnapshot(loadedModelName: "Gemma 3 12B")
+        let entry = await WidgetTimeline.entry(
+            using: hanging, stored: stored, quickPrompt: QuickPrompt.default, deadline: 0.2
+        )
+        XCTAssertEqual(entry.headline, "Gemma 3 12B")
+        XCTAssertEqual(entry.problem, WidgetTimeline.tooSlow)
+    }
+
+    /// The default is the one the widget actually ships with; the tests above shorten
+    /// it, so this is what stops that shortening from hiding a change to it.
+    func testTheShippedDeadlineIsWellInsideAWidgetsBudget() {
+        XCTAssertEqual(QuickPrompt.timeout, 20)
+    }
+
+    func testTheDeadlineLetsAFastAnswerThrough() async throws {
+        let value = try await WidgetTimeline.withDeadline(5) { "quick" }
+        XCTAssertEqual(value, "quick")
+    }
+
+    func testTheDeadlineAnswersNilRatherThanThrowing() async throws {
+        let value = try await WidgetTimeline.withDeadline(0.2) {
+            try? await Task.sleep(for: .seconds(30))
+            return "slow"
+        }
+        XCTAssertNil(value)
+    }
+
     // MARK: - Trimming for a small surface
 
     func testAnAnswerIsCutOnAWordBoundary() {
@@ -157,6 +212,14 @@ final class WidgetTimelineTests: XCTestCase {
 
     func testNewlinesAreFlattenedSoAWidgetDoesNotShowOneWordPerLine() {
         XCTAssertEqual(BuddySnapshot.trim("a\nb\nc", to: 40), "a b c")
+    }
+
+    /// "Qwen3 4B (…" reads like the model's name is broken. The qualifier goes instead.
+    func testALongModelNameLosesItsQualifierRatherThanBreakingMidBracket() {
+        XCTAssertEqual(BuddySnapshot.headline("Qwen3-Coder 30B A3B (MLX)"), "Qwen3-Coder 30B A3B")
+        XCTAssertEqual(BuddySnapshot.headline("Qwen3 4B (MLX)"), "Qwen3 4B (MLX)", "short enough to keep it")
+        XCTAssertEqual(BuddySnapshot.headline("Gemma 3 27B instruction tuned"), "Gemma 3 27B instruction tuned", "nothing to drop")
+        XCTAssertEqual(BuddySnapshot.headline(nil), "Nothing loaded")
     }
 
     // MARK: - What the snapshot keeps
@@ -180,5 +243,24 @@ final class WidgetTimelineTests: XCTestCase {
         SnapshotStore.note(question: "Q", answer: "A", to: defaults)
         SnapshotStore.clear(from: defaults)
         XCTAssertNil(SnapshotStore.read(from: defaults))
+    }
+
+    /// "Forget this Mac" has to mean it. The widget's own answer is a reply from that
+    /// Mac sitting on the Home Screen, and the preset is a setting about it — leaving
+    /// either would show the last Mac's words under the next one's name.
+    func testForgettingAMacTakesTheWidgetsOwnAnswerAndQuestionWithIt() {
+        SnapshotStore.note(question: "Q", answer: "A", to: defaults)
+        QuickPrompt.store("Summarise my day", in: defaults)
+        QuickPrompt.store(answer: "Something that Mac said.", in: defaults)
+        XCTAssertNotNil(QuickPrompt.answer(in: defaults))
+
+        SnapshotStore.clear(from: defaults)
+
+        XCTAssertNil(SnapshotStore.read(from: defaults))
+        XCTAssertNil(QuickPrompt.answer(in: defaults), "the answer went with it")
+        XCTAssertEqual(
+            QuickPrompt.stored(in: defaults), QuickPrompt.default,
+            "and the preset went back to the default rather than staying the last Mac's"
+        )
     }
 }

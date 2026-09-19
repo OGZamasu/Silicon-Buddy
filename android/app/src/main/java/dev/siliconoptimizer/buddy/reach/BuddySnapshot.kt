@@ -25,11 +25,28 @@ data class BuddySnapshot(
     val updatedAt: Long = 0L,
 ) {
     /** What the widget puts on its one line when nothing is loaded. */
-    val modelLine: String get() = loadedModelName ?: "Nothing loaded"
+    val modelLine: String get() = headline(loadedModelName)
 
     fun answerPreview(limit: Int): String? = lastAnswer?.let { trim(it, limit) }
 
     companion object {
+        /**
+         * A model name that fits on one line of a small widget.
+         *
+         * Names carry a parenthesised qualifier — "Qwen3 4B (MLX)", "Gemma 3 12B (it)"
+         * — and a widget two cells wide truncates mid-bracket to "Qwen3 4B (…", which
+         * reads like the name itself is broken. The qualifier is the least load-bearing
+         * part, so it is what goes first, and only when keeping it would not have
+         * fitted anyway.
+         */
+        fun headline(name: String?, limit: Int = 18): String {
+            if (name.isNullOrEmpty()) return "Nothing loaded"
+            if (name.length <= limit) return name
+            val bracket = name.lastIndexOf('(')
+            if (bracket <= 0) return name
+            return name.take(bracket).trim().ifEmpty { name }
+        }
+
         /**
          * An answer cut to what a widget can show. On a word boundary rather than
          * mid-syllable: the difference between a summary and a glitch.
@@ -95,9 +112,20 @@ class SnapshotStore(context: Context) {
         )
     }
 
-    /** A widget showing the last Mac's model after a re-pair is the wrong machine. */
+    /**
+     * Forgets everything about a Mac, the widget's own answer included.
+     *
+     * "Forget this Mac" has to mean it. The snapshot alone is not the whole of what
+     * this Mac left behind: the widget's preset answer is a reply from that Mac sitting
+     * on the home screen, and the preset question is a setting about it. A re-pair that
+     * left either in place would show the last Mac's words under the new one's name.
+     */
     fun clear() {
-        preferences.edit().remove(KEY).apply()
+        preferences.edit()
+            .remove(KEY)
+            .remove(KEY_ANSWER)
+            .remove(KEY_PROMPT)
+            .apply()
     }
 
     /** The preset question the widget's button asks. */
@@ -136,6 +164,16 @@ class SnapshotStore(context: Context) {
 /** The preset question a widget can fire without opening the app. */
 object QuickPrompt {
     const val DEFAULT = "What should I do next?"
+
+    /**
+     * How long a widget may wait.
+     *
+     * Well under the Glance callback's own budget, and nothing like the transport's own
+     * minutes: a widget whose worker is killed for overrunning leaves the last content
+     * on screen, which looks like a button that does nothing. Twenty seconds, then a
+     * sentence saying the Mac was slow.
+     */
+    const val TIMEOUT_MS = 20_000L
 
     /**
      * The handful offered in Settings. Short, because the answer has to fit in a

@@ -15,14 +15,17 @@ public struct BuddyWidgetEntry: Sendable, Equatable {
     /// The preset question this widget's button fires, as configured.
     public var quickPrompt: String
     /// The answer to that preset, when the widget has run it.
+    ///
+    /// There is no "asking" state to go with it, and there cannot be a useful one: an
+    /// interactive widget redraws when its intent *returns*, so a spinner set on the
+    /// way in is never rendered. The deadline is what stands in for it — the button
+    /// either produces an answer or produces a sentence, within twenty seconds.
     public var quickAnswer: String?
-    /// True while the preset is being asked, so the widget can say so.
-    public var isAsking: Bool
 
     public init(
         date: Date = Date(), snapshot: BuddySnapshot? = nil, isPaired: Bool = false,
         problem: String? = nil, quickPrompt: String = QuickPrompt.default,
-        quickAnswer: String? = nil, isAsking: Bool = false
+        quickAnswer: String? = nil
     ) {
         self.date = date
         self.snapshot = snapshot
@@ -30,7 +33,6 @@ public struct BuddyWidgetEntry: Sendable, Equatable {
         self.problem = problem
         self.quickPrompt = quickPrompt
         self.quickAnswer = quickAnswer
-        self.isAsking = isAsking
     }
 
     /// The model line, or the reason there isn't one.
@@ -62,9 +64,12 @@ public enum QuickPrompt {
         "What is on your mind?",
     ]
 
-    /// How long a widget may wait. Well under the extension's own budget: a widget that
-    /// is killed for overrunning shows the last entry, which is worse than showing that
-    /// the Mac was slow.
+    /// How long a widget may wait.
+    ///
+    /// Well under the extension's own budget, and nothing like the transport's own 900
+    /// seconds: a widget process that is killed for overrunning leaves the last entry
+    /// on screen, which looks like a button that does nothing. Twenty seconds, then a
+    /// sentence saying the Mac was slow.
     public static let timeout: TimeInterval = 20
 
     public static func stored(in defaults: UserDefaults = BuddyShared.defaults) -> String {
@@ -124,7 +129,10 @@ public enum WidgetTimeline {
         stored: BuddySnapshot?,
         quickPrompt: String,
         quickAnswer: String? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        // Injected so a test can prove the deadline without spending it. Twenty
+        // seconds of real waiting, twice, is forty seconds on every run of the suite.
+        deadline: TimeInterval = QuickPrompt.timeout
     ) async -> BuddyWidgetEntry {
         guard let transport else {
             return BuddyWidgetEntry(
@@ -134,7 +142,14 @@ public enum WidgetTimeline {
             )
         }
         do {
-            let status = try await transport.status()
+            guard let status = try await Self.withDeadline(deadline, {
+                try await transport.status()
+            }) else {
+                return BuddyWidgetEntry(
+                    date: now, snapshot: stored, isPaired: true,
+                    problem: Self.tooSlow, quickPrompt: quickPrompt, quickAnswer: quickAnswer
+                )
+            }
             var snapshot = stored ?? BuddySnapshot()
             snapshot.state = status.state
             snapshot.loadedModelID = status.loadedModelID
@@ -161,6 +176,34 @@ public enum WidgetTimeline {
         now.addingTimeInterval(succeeded ? refreshInterval : retryInterval)
     }
 
+    /// What a widget says when the Mac is there but not answering in time. Its own
+    /// sentence, because "not reachable" would be a lie: it answered, eventually.
+    public static let tooSlow = "Your Mac is taking too long to answer."
+
+    /// Runs `operation`, giving up after `seconds` and answering nil.
+    ///
+    /// The transport's own timeouts are sized for a person watching a model think —
+    /// nine hundred seconds on `/chat`. A widget has a few. Rather than give the
+    /// transport a second set of timeouts for one caller, the caller puts a deadline on
+    /// the call it makes.
+    static func withDeadline<T: Sendable>(
+        _ seconds: TimeInterval,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T? {
+        try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return nil
+            }
+            // Whichever finishes first decides; the loser is cancelled, which for the
+            // request means the socket closes rather than the widget waiting on it.
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
     static func problem(for error: Error) -> String {
         guard let transport = error as? TransportError else { return "Your Mac didn't answer." }
         switch transport {
@@ -182,14 +225,19 @@ public enum WidgetTimeline {
     public static func ask(
         _ prompt: String,
         using transport: (any ControlTransport)?,
-        defaults: UserDefaults = BuddyShared.defaults
+        defaults: UserDefaults = BuddyShared.defaults,
+        deadline: TimeInterval = QuickPrompt.timeout
     ) async -> AskResult {
         guard let transport else { return .problem("Not paired with a Mac.") }
         do {
             let request = try IntentMapping.chatRequest(
                 prompt: prompt, maxTokens: IntentMapping.spokenMaxTokens
             )
-            let response = try await transport.chat(request)
+            guard let response = try await withDeadline(deadline, {
+                try await transport.chat(request)
+            }) else {
+                return .problem(tooSlow)
+            }
             let answer = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !answer.isEmpty else { return .problem("Your Mac answered with nothing.") }
             SnapshotStore.note(question: prompt, answer: answer, to: defaults)

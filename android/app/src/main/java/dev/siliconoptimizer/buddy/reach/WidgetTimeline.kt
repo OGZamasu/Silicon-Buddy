@@ -2,6 +2,7 @@ package dev.siliconoptimizer.buddy.reach
 
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.TransportError
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * What a widget draws, and where it came from.
@@ -64,7 +65,14 @@ object WidgetTimeline {
             )
         }
         return try {
-            val status = transport.status()
+            val status = withTimeoutOrNull(QuickPrompt.TIMEOUT_MS) { transport.status() }
+                ?: return BuddyWidgetEntry(
+                    snapshot = stored,
+                    isPaired = true,
+                    problem = TOO_SLOW,
+                    quickPrompt = quickPrompt,
+                    quickAnswer = quickAnswer,
+                )
             BuddyWidgetEntry(
                 snapshot = (stored ?: BuddySnapshot()).copy(
                     state = status.state,
@@ -90,6 +98,12 @@ object WidgetTimeline {
         }
     }
 
+    /**
+     * What a widget says when the Mac is there but not answering in time. Its own
+     * sentence, because "not reachable" would be a lie: it answered, eventually.
+     */
+    const val TOO_SLOW = "Your Mac is taking too long to answer."
+
     fun problem(error: Throwable): String = when (error) {
         is TransportError.Unauthorized -> "This device is no longer paired with your Mac."
         is TransportError.Forbidden -> "Your Mac refused the request."
@@ -111,7 +125,9 @@ object WidgetTimeline {
         if (transport == null) return AskResult.Problem("Not paired with a Mac.")
         return try {
             val request = IntentMapping.chatRequest(prompt, maxTokens = IntentMapping.SPOKEN_MAX_TOKENS)
-            val answer = transport.chat(request).content.trim()
+            val answer = withTimeoutOrNull(QuickPrompt.TIMEOUT_MS) {
+                transport.chat(request).content.trim()
+            } ?: return AskResult.Problem(TOO_SLOW)
             if (answer.isEmpty()) {
                 AskResult.Problem("Your Mac answered with nothing.")
             } else {
