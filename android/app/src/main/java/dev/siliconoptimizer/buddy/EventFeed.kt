@@ -46,6 +46,20 @@ class EventFeed : ViewModel() {
     var mustPoll by mutableStateOf(false)
         private set
 
+    /**
+     * How long until the next attempt, while the stream is down. Null when it is up.
+     *
+     * The client reconnects by itself, so nothing here has to act on this — but a screen
+     * that says "Streaming from /events" during an outage is telling the owner the one
+     * thing they would check it for, wrongly.
+     */
+    var retryInMillis by mutableStateOf<Long?>(null)
+        private set
+
+    /** The backoff step the client has reached; 0 while connected. */
+    var reconnectAttempt by mutableStateOf(0)
+        private set
+
     private var job: Job? = null
 
     fun start(transport: ControlTransport?) {
@@ -58,7 +72,15 @@ class EventFeed : ViewModel() {
         job = viewModelScope.launch {
             try {
                 transport.events().collect { event ->
+                    if (event is ServerEvent.Disconnected) {
+                        isLive = false
+                        reconnectAttempt = event.attempt
+                        retryInMillis = event.retryInMillis
+                        return@collect
+                    }
                     isLive = true
+                    reconnectAttempt = 0
+                    retryInMillis = null
                     lastEvent = System.currentTimeMillis()
                     when (event) {
                         is ServerEvent.StatusChanged -> status = event.status
@@ -83,6 +105,8 @@ class EventFeed : ViewModel() {
                             verdicts[event.verdict.conversationID.orEmpty()] = event.verdict
                         }
                         is ServerEvent.Beat -> Unit
+                        // Handled above, before the stream is called live.
+                        is ServerEvent.Disconnected -> Unit
                     }
                 }
                 isLive = false
@@ -99,6 +123,8 @@ class EventFeed : ViewModel() {
         job?.cancel()
         job = null
         isLive = false
+        retryInMillis = null
+        reconnectAttempt = 0
     }
 
     fun clear() {

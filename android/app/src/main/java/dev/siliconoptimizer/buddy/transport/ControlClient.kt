@@ -83,6 +83,9 @@ interface ControlTransport {
 class ControlClient(private val config: ServerConfig) : ControlTransport {
 
     companion object {
+        /** One tag for everything this client says, so `logcat -s SiliconBuddy` is enough. */
+        const val LOG = "SiliconBuddy"
+
         /** A connection that lasted this long counts as having worked. */
         const val STEADY_CONNECTION_MS = 30_000L
 
@@ -122,6 +125,10 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         // The one place every request passes through. A host that got into a
         // ServerConfig some other way still never gets dialled.
         if (!TailnetHost.isAllowed(config.host)) {
+            // Worth a line: this is the gate that makes a scanned QR safe, and "the app
+            // refused to dial that host" and "the host did not answer" look identical
+            // from the outside.
+            android.util.Log.w(LOG, "refusing $method $path: host is not on the tailnet")
             throw TransportError.Forbidden(TailnetHost.EXPLANATION)
         }
         if (authorized && config.token.isEmpty()) throw TransportError.NotConfigured
@@ -300,6 +307,7 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             // heartbeat and drops would pin the delay at a second and this client would
             // knock twenty times a minute, forever.
             val openedAt = System.currentTimeMillis()
+            var reason: String? = null
             try {
                 stream(
                     "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
@@ -326,9 +334,21 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                 }
             } catch (error: TransportError) {
                 if (error.isMissingRoute || error is TransportError.Unauthorized) throw error
+                reason = error.message
             }
             attempt = nextAttempt(attempt, System.currentTimeMillis() - openedAt)
-            kotlinx.coroutines.delay(reconnectDelayMillis(attempt))
+            val retryIn = reconnectDelayMillis(attempt)
+            // Logged as well as emitted: when the question is "did the stream come back
+            // after the tunnel flapped", the answer has to be findable in logcat
+            // afterwards, not only on a screen nobody was watching at the time.
+            android.util.Log.i(
+                LOG,
+                "/events dropped after ${System.currentTimeMillis() - openedAt}ms " +
+                    "(attempt $attempt, retrying in ${retryIn}ms)" +
+                    (reason?.let { ": $it" } ?: ""),
+            )
+            emit(ServerEvent.Disconnected(attempt, retryIn, reason))
+            kotlinx.coroutines.delay(retryIn)
         }
     }
 

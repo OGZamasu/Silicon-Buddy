@@ -285,4 +285,34 @@ class ControlClientTest {
         assertTrue("First gap should be about a second, was ${gaps[0]}ms", gaps[0] >= 700)
         assertTrue("Second gap should be longer, was ${gaps[1]}ms", gaps[1] >= gaps[0] + 500)
     }
+
+    /**
+     * A drop has to be visible to the caller, not only to the client that heals it.
+     *
+     * Without this the stream reconnects silently and `EventFeed.isLive` stays true
+     * forever after the first event — so Settings says "Streaming from /events" while
+     * the phone is in aeroplane mode, which is precisely when someone would look.
+     */
+    @Test
+    fun `a dropped stream is announced with the delay before the next attempt`() = runBlocking {
+        server.events("/events", "event: heartbeat\ndata: {}\n\n")
+        val events = withTimeout(20_000) { client.events().take(2).toList() }
+        assertTrue("First should be the heartbeat", events[0] is ServerEvent.Beat)
+        val dropped = events[1] as ServerEvent.Disconnected
+        // The stream carried one heartbeat and died well inside STEADY_CONNECTION_MS, so
+        // this is the first backoff step rather than a reset.
+        assertEquals(1, dropped.attempt)
+        assertEquals(ControlClient.reconnectDelayMillis(1), dropped.retryInMillis)
+    }
+
+    /** Announcing the drop must not stop the client healing it. */
+    @Test
+    fun `the stream still reopens after announcing that it dropped`() = runBlocking {
+        server.events("/events", "event: heartbeat\ndata: {}\n\n")
+        val events = withTimeout(30_000) { client.events().take(4).toList() }
+        assertTrue(events[1] is ServerEvent.Disconnected)
+        assertTrue("The stream should have delivered again", events[2] is ServerEvent.Beat)
+        assertTrue(events[3] is ServerEvent.Disconnected)
+        assertEquals(2, (events[3] as ServerEvent.Disconnected).attempt)
+    }
 }

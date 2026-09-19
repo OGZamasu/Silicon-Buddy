@@ -454,6 +454,10 @@ private fun SettingsScreen(
                 when {
                     events.isLive -> "Streaming from /events"
                     events.mustPoll -> "Polling — this Mac has no /events"
+                    events.retryInMillis != null -> {
+                        val seconds = ((events.retryInMillis ?: 0L) + 999) / 1000
+                        "Reconnecting — next try in ${seconds}s"
+                    }
                     else -> "Not started"
                 },
             )
