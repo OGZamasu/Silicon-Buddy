@@ -4,6 +4,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+      A render takes minutes. The request has to outlive the screen that started it, so
+      it runs in a foreground service — which needs a notification, and on Android 13
+      and later that needs asking. The app works without it: the result is still on the
+      Create tab when you come back, you are simply not told.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
@@ -101,6 +110,15 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <!--
+          Where a long render actually runs. Not exported: nothing outside this app may
+          start work on somebody's Mac.
+        -->
+        <service
+            android:name=".media.MediaJobService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".widget.BuddyWidgetReceiver"

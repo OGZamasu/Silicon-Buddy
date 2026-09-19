@@ -10,6 +10,9 @@
     "403" : {
       "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
     },
+    "404" : {
+      "error" : "That uploadID or mediaID does not name a file on this Mac any more. Uploads are kept for seven days; send the picture again."
+    },
     "411" : {
       "error" : "This server needs a Content-Length. Chunked bodies are not read."
     },
@@ -24,14 +27,19 @@
   "path" : "\/video\/generate",
   "request" : {
     "modelID" : "hailuo-h3",
+    "negativePrompt" : "blurry, watermark, text overlay",
     "prompt" : "A tram climbing Alfama at dawn",
-    "seconds" : 5
+    "seconds" : 5,
+    "uploadID" : "0B7D4C2A-5E31-4F08-9A6B-1C2D3E4F5061"
   },
   "response" : {
     "elapsedSeconds" : 244.09999999999999,
     "file" : "\/Users\/you\/Movies\/Silicon\/lisbon-0001.mp4",
+    "mediaID" : "bWVkaWEtY2xpcC1leGFt",
+    "mediaURL" : "\/media\/bWVkaWEtY2xpcC1leGFt",
     "model" : "hailuo-h3",
-    "node" : "silicon-node"
+    "node" : "silicon-node",
+    "thumbnailMediaID" : "bWVkaWEtcG9zdGVyLWV4"
   },
   "scopes" : [
     "full"

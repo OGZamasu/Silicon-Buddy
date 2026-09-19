@@ -1,0 +1,32 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only, so it may fetch preview images but not the renders themselves. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No file with that media id. Ids are issued by this Mac with each result and stop working when the file is deleted."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "416" : {
+      "error" : "That byte range is not inside this file."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/media\/{id}",
+  "request" : null,
+  "response" : null,
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The file itself. Answers bytes, not JSON: the content type of the result, `Accept-Ranges: bytes`, an `ETag`, 206 for a `Range` and 304 for a matching `If-None-Match`. A chat-only device may fetch preview images but not the renders themselves."
+}

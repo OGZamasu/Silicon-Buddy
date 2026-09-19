@@ -62,6 +62,15 @@ sealed class TransportError(message: String) : Exception(message) {
     /** 400 with the Mac's own explanation; most often "no model is loaded". */
     data class BadRequest(val detail: String) : TransportError(detail)
 
+    /**
+     * 416: a `Range` outside the file. Only `GET /media/{id}` answers this, and only to
+     * a client resuming a download of something that has since changed.
+     */
+    data class RangeNotSatisfiable(val detail: String) : TransportError(detail)
+
+    /** 415: not a picture or a clip this Mac will keep. */
+    data class UnsupportedMedia(val detail: String) : TransportError(detail)
+
     /** 429: the Mac is already doing as much of this as it will do at once. */
     data class Busy(val detail: String) : TransportError(detail)
 
@@ -115,6 +124,8 @@ sealed class TransportError(message: String) : Exception(message) {
             is Forbidden -> "forbidden"
             is Conflict -> "conflict"
             is TooLarge -> "too large"
+            is UnsupportedMedia -> "unsupported media"
+            is RangeNotSatisfiable -> "range not satisfiable"
             is ChunkedNotAccepted -> "chunked not accepted"
             is NotFound -> "not found"
             is RouteUnavailable -> "route unavailable"
@@ -135,6 +146,8 @@ sealed class TransportError(message: String) : Exception(message) {
             is Forbidden -> "Pair again from the Mac with full control."
             is Conflict -> "Wait for the answer, or start another conversation."
             is TooLarge -> "Send fewer or smaller pictures."
+            is UnsupportedMedia -> "Send a PNG, JPEG, GIF, WebP, MP4, MOV or WebM."
+            is RangeNotSatisfiable -> "Fetch it again from the beginning."
             is NotFound -> "It may have been deleted on the Mac."
             is BadRequest -> "Load a model from the Models tab."
             else -> null
@@ -185,7 +198,14 @@ sealed class TransportError(message: String) : Exception(message) {
                 411 -> ChunkedNotAccepted(detail.ifBlank { "The Mac wouldn't read that request." })
                 413 -> TooLarge(detail.ifBlank { "That was too large to send." })
                 400 -> BadRequest(detail.ifBlank { "The Mac rejected the request." })
+                415 -> UnsupportedMedia(
+                    detail.ifBlank { "That file is not one this Mac will keep." },
+                )
+                416 -> RangeNotSatisfiable(
+                    detail.ifBlank { "That part of the file is not there any more." },
+                )
                 429 -> Busy(detail.ifBlank { "The Mac is busy." })
+                500 -> Server(500, detail.ifBlank { "The Mac could not finish that." })
                 else -> Server(status, detail)
             }
         }

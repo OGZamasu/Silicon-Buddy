@@ -43,6 +43,77 @@ device scope, and with any token. A minted code carries the tailnet listener's
 address and port, lives five minutes and is spent once; with that listener down
 the mint is a 409 rather than a code pointing nowhere.
 
+## Results, uploads and the queue's verbs
+
+`GET /media/{id}` is the only route that answers bytes. The id is opaque and
+issued by the Mac: it arrives as `mediaID` or `thumbnailMediaID` on a result,
+and a client never builds one. Ids only ever name files inside the app's own
+output folders, so there is no path to send and no traversal to attempt. The
+route carries the file's content type, `Accept-Ranges: bytes` and an `ETag`;
+send `Range` for a 206 and `If-None-Match` for a 304. A multi-range `Range` is
+ignored and the whole file sent, because this server does not write
+`multipart/byteranges`. Media is the one family of responses that is cacheable
+— `Cache-Control: private, max-age=3600` — and everything else stays
+`no-store`. Anything that is not an image or a video also carries
+`Content-Disposition: attachment`, and all of it carries `nosniff`.
+
+**Scope is per id, not per route.** A full-control device may fetch anything it
+has an id for. A chat-only device may fetch the preview images —
+`thumbnailMediaID` — and gets a 403 on the renders themselves: a device paired
+for chat is one that was lent out, and pulling a clip onto it is the permission
+the owner withheld. Both scopes see both ids in `GET /video/queue`.
+
+An id stops working when its file is deleted, moved out of the app's output
+folders, or replaced by a link pointing outside them — the roots are rechecked
+on every fetch, not remembered from when the id was issued. All of those are
+the same 404, and so is another device's upload id: "that is not yours" and
+"that does not exist" have to look alike, or the route is an oracle.
+
+`POST /uploads` is how a device names a picture without naming a path. Send the
+bytes with a `Content-Type` and an `X-Filename`, or a `multipart/form-data`
+body; both are read, and neither is believed — the type is decided from the
+file's own first bytes, and anything that is not a PNG, JPEG, GIF, WebP, MP4,
+MOV or WebM is a 415. The ceiling is 24 MiB for this route alone; every other
+route a device can reach keeps its 4 MiB. Uploads land in a folder per device
+and are deleted after seven days — swept on every upload and on every queue
+poll — so `uploadID` and `mediaID` both stop resolving then. An upload belongs
+to the device that sent it: another device's id resolves to nothing, by either
+name. `POST /mesh/plan`, `POST /mesh/generate`, `POST /image/plan`,
+`POST /image/generate` and `POST /video/generate` each take `uploadID` or
+`mediaID` in place of a path, and a device may only use those: a path in a
+request from a paired phone is refused, because a device that could name a file
+could name any file. Full scope only — uploading spends this Mac's disk, and
+the 24 MiB ceiling is granted to an identified full-scope device rather than to
+the path, so an unknown bearer gets the ordinary 4 MiB.
+
+`GET /swarm` says what the Mac's last poll saw, which is why every field beyond
+name, address and reachability is optional there. `GET /swarm/peers/{name}/status`
+asks one node now, and is the only place the adapter riding on its loaded GGUF
+appears. The Mac's credential for that node goes out in a header and is never
+in the answer. Full scope only.
+
+`POST /video/queue/control` takes one of six verbs, and the fixture has an
+example of each. `pause` and `resume` and `clear_finished` take no `id`;
+`retry`, `remove` and `stop_following` need one. There is no `cancel`: a clip
+already handed to a node keeps rendering there, and `stop_following` says what
+actually happens — this Mac stops following it and the queue pauses.
+`confirmNewRender` matters on `retry` alone. A failed clip the Mac can
+reconnect to is reconnected; one whose submission is uncertain is refused until
+the caller passes `confirmNewRender: true`, which is the caller saying it has
+checked the node and accepts that a second render may start. A verb that is not
+one of the six is a 400 saying exactly which six there are.
+
+Two constants the phone should stop guessing. A batch is at most 20 variations
+per prompt, at most 200 unfinished clips at once and at most 2,000 items of
+history — over any of those, `POST /video/queue` is a 400 naming all three. And
+the length rule: `seconds` must be one of the chosen model's
+`supportedSeconds` on `POST /video/generate`, which refuses anything else by
+name; an omitted `seconds` falls back to the Mac's current setting snapped to
+the nearest value that model supports. `GET /video/models` carries
+`supportedSeconds`, `supportedResolutions` and `supportsNegativePrompt` per
+lane, so a picker never has to offer a size or a field the renderer would
+quietly ignore.
+
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/buddy/pair` | none | Spend the six-digit code on screen for a device token of your own. |
@@ -88,5 +159,8 @@ the mint is a 409 rather than a code pointing nowhere.
 | `GET` | `/video/models` | device | The video models, and which machine can run each. |
 | `GET` | `/video/queue` | device | The render queue and what is running. |
 | `POST` | `/video/queue` | device | Add prompts to the queue without holding a connection. |
-| `POST` | `/video/queue/control` | device | Pause, resume, skip or cancel queued work. |
+| `POST` | `/video/queue/control` | device | One of six verbs on the queue: pause, resume, retry, remove, stop_following, clear_finished. There is no cancel. |
 | `POST` | `/video/generate` | device | Render one clip and wait for it. At most eight of these at once. |
+| `GET` | `/media/{id}` | device | The file itself. Answers bytes, not JSON: the content type of the result, `Accept-Ranges: bytes`, an `ETag`, 206 for a `Range` and 304 for a matching `If-None-Match`. A chat-only device may fetch preview images but not the renders themselves. |
+| `POST` | `/uploads` | device | Send a picture or a short clip, and get back the two ids that let a render start from it. Raw bytes or multipart; at most 24 MiB; kept for seven days. |
+| `GET` | `/swarm/peers/{name}/status` | device | One peer asked now rather than remembered: its `/v1/node` and `/v1/gguf`, fetched with this Mac's credential for it. The credential is never in the answer. |

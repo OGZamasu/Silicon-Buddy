@@ -48,6 +48,9 @@ object Format {
 
     fun gigabytes(value: Double): String = String.format(Locale.US, "%.1f GB", value)
 
+    fun megabytes(value: Long): String =
+        String.format(Locale.US, "%.1f MB", value / 1024.0 / 1024.0)
+
     fun percent(fraction: Double): String = "${Math.round(fraction * 100)}%"
 
     fun rate(tokensPerSecond: Double?): String =

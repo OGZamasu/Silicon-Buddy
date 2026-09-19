@@ -22,7 +22,8 @@
   "request" : {
     "imagePath" : "\/Users\/you\/Pictures\/kettle.png",
     "modelID" : "hunyuan3d-2",
-    "textureSize" : 2048
+    "textureSize" : 2048,
+    "uploadID" : "0B7D4C2A-5E31-4F08-9A6B-1C2D3E4F5061"
   },
   "response" : {
     "budgetBytes" : 29200000000,

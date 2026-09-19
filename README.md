@@ -10,7 +10,8 @@ over your own tailnet. Nothing public, no relay, no account.
   a Home and Lock Screen widget, a share extension, camera mode, push-to-talk and three
   App Intents for Siri and Shortcuts.
 - `android/` — Kotlin and Jetpack Compose, phone and tablet. The same, with a Glance
-  widget, a Quick Settings tile, a share target and launcher shortcuts.
+  widget, a Quick Settings tile, a share target and launcher shortcuts, plus the
+  Create tab (video, image and 3D, and the Mac's render queue) and the Machines page.
 - `contract/` — the control API as JSON fixtures exported by the Mac app's own
   `ContractExportTests`, plus `routes.md`. Both apps round-trip every type against these,
   so a change on the Mac fails a build here before it fails a user. Re-export with
@@ -50,6 +51,34 @@ cloud backup and device transfer. The token is stored device-only on both and so
 never restored anywhere, and a backup that carried the address without it would restore
 half a pairing that cannot work. The last answer is a piece of a conversation and stays
 on the phone that heard it.
+
+## Making things
+
+The Create tab starts a render on the owner's machines: a clip through the Mac's
+queue, an image, or a mesh from a picture the Mac already has. The queue screen is
+`GET /video/queue` and the `job` events on `/events` read together — the queue knows
+what the work is and why it failed, the events know how far along it is — and its
+buttons are the Mac's own words: pause, resume, retry, remove, stop following, clear
+finished. There is no cancel, because a clip already handed to a node keeps rendering
+there, and the Mac will not claim otherwise.
+
+A render takes minutes, so a request that has to be waited for runs in a foreground
+service behind an ongoing notification, and a local notification says when the work is
+done or has failed. Tapping it opens the queue.
+
+Results come back as ids, and `GET /media/{id}` answers the bytes — so a finished clip
+or picture is saved into the phone's own photo library, and a picture on the phone goes
+the other way through `POST /uploads` to become the mesh the Mac makes or the still it
+animates. Neither direction names a path: a request from a paired device that names a
+file on the Mac is refused, because a device that could name one could name any of them.
+A chat-only device may fetch the preview images and not the renders, which is the Mac's
+rule and is what the buttons follow.
+
+The Machines page is this Mac and every machine it can hand work to, one card each:
+chip and cores, what is loaded, memory and pressure, GPU and CPU, the lanes each one
+advertises. A peer's card is what the Mac's last poll saw, and "Ask it now" replaces it
+with what the node says this second — including the adapter riding on its loaded GGUF,
+which a poll cannot carry.
 
 ## Building
 

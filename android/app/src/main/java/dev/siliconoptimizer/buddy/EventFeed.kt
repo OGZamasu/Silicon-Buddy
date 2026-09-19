@@ -13,6 +13,9 @@ import dev.siliconoptimizer.buddy.transport.ServerEvent
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -29,6 +32,18 @@ class EventFeed : ViewModel() {
         private set
     val downloads = mutableStateMapOf<String, DownloadProgress>()
     val jobs = mutableStateMapOf<String, JobProgress>()
+
+    /**
+     * Every `job` event, terminal ones included.
+     *
+     * The map above is "what is running now", which is what the dashboard wants; the
+     * queue and the notifications want the moment a render finished or failed, and that
+     * is exactly the event the map drops. One stream for the app, two shapes of it.
+     */
+    private val _jobEvents = MutableSharedFlow<JobProgress>(
+        replay = 0, extraBufferCapacity = 64,
+    )
+    val jobEvents: SharedFlow<JobProgress> = _jobEvents.asSharedFlow()
 
     /**
      * The last answer check the Mac published, by conversation. Kept rather than
@@ -108,10 +123,15 @@ class EventFeed : ViewModel() {
                             }
                         }
                         is ServerEvent.Job -> {
-                            val done = event.progress.status.lowercase() in
-                                setOf("finished", "failed", "cancelled")
+                            // One vocabulary for "over", shared with the queue screen:
+                            // two lists of the Mac's status words would drift apart,
+                            // and a render would be finished in one place and running
+                            // in the other.
+                            val done = dev.siliconoptimizer.buddy.media.JobState
+                                .of(event.progress.status).isTerminal
                             if (done) jobs.remove(event.progress.id)
                             else jobs[event.progress.id] = event.progress
+                            _jobEvents.tryEmit(event.progress)
                         }
                         is ServerEvent.Checked -> {
                             // Keyed by conversation, because that is the only key the

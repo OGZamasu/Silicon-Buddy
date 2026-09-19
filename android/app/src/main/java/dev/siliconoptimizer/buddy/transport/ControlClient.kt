@@ -1,13 +1,16 @@
 package dev.siliconoptimizer.buddy.transport
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import dev.siliconoptimizer.buddy.ui.Format
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -77,14 +80,83 @@ interface ControlTransport {
         message: ChatMessageWire,
         maxTokens: Int? = null,
     ): Flow<ChatStreamEvent>
+
+    // M3: the media routes and the render queue. Defaulted rather than abstract, so a
+    // transport written for one surface — the widget's, a test's — does not have to
+    // answer for routes it will never call.
+    suspend fun meshModels(): List<MeshModel> = unsupported("/mesh/models")
+    suspend fun videoQueue(): VideoQueueView = unsupported("/video/queue")
+    suspend fun enqueueVideos(request: VideoQueueRequest): VideoQueueView =
+        unsupported("/video/queue")
+
+    suspend fun controlVideoQueue(request: VideoQueueControlRequest): VideoQueueView =
+        unsupported("/video/queue/control")
+
+    suspend fun generateVideo(request: VideoGenerateRequest): VideoResponse =
+        unsupported("/video/generate")
+
+    suspend fun planImage(request: ImageRequest): ImagePlan = unsupported("/image/plan")
+    suspend fun generateImage(request: ImageRequest): ImageResponse =
+        unsupported("/image/generate")
+
+    suspend fun planMesh(request: MeshRequest): MeshPlan = unsupported("/mesh/plan")
+    suspend fun generateMesh(request: MeshRequest): MeshResponse = unsupported("/mesh/generate")
+
+    /** `GET /jev`, read for one fact: whether this Mac routes media requests itself. */
+    suspend fun jev(): JevView = unsupported("/jev")
+
+    /**
+     * `POST /uploads`: a picture this phone has, given to the Mac so a render can start
+     * from it. Answers the two ids that stand in for a path.
+     */
+    suspend fun upload(bytes: ByteArray, contentType: String, filename: String?): UploadResponse =
+        unsupported("/uploads")
+
+    /**
+     * `GET /media/{id}`, the one route that answers bytes rather than JSON. Written
+     * into [sink] as it arrives — a clip is not something to hold in memory — and the
+     * content type the Mac put on it is returned.
+     */
+    suspend fun media(id: String, sink: java.io.OutputStream): String? = unsupported("/media")
+
+    /** `GET /swarm/peers/{name}/status`: one node asked now, adapter and all. */
+    suspend fun peerStatus(name: String): PeerNodeStatus = unsupported("/swarm/peers")
+
+    private fun unsupported(path: String): Nothing = throw TransportError.RouteUnavailable(path)
 }
 
 /** The real thing: HttpURLConnection against the Mac's tiny HTTP server. */
-class ControlClient(private val config: ServerConfig) : ControlTransport {
+class ControlClient(
+    private val config: ServerConfig,
+    /**
+     * What to do with a connection whose caller has given up.
+     *
+     * On Android this is OkHttp behind the `HttpURLConnection` name, where closing the
+     * connection from another thread is what makes a blocked read return. A test on the
+     * JVM gets the platform's own implementation, which ignores it — so this is a seam,
+     * and what the tests check is that it is reached the moment the caller gives up
+     * rather than after the read it is meant to interrupt.
+     */
+    private val abandon: (HttpURLConnection) -> Unit = { runCatching { it.disconnect() } },
+) : ControlTransport {
 
     companion object {
         /** One tag for everything this client says, so `logcat -s SiliconBuddy` is enough. */
         const val LOG = "SiliconBuddy"
+
+        /**
+         * How long `/events` may say nothing at all before this phone stops believing
+         * in it.
+         *
+         * The Mac heartbeats every fifteen seconds, so silence is not a quiet Mac — it
+         * is a socket that is no longer there. It happens: a Mac restarts while the
+         * phone is asleep, a tailnet address moves, a NAT drops a mapping it has not
+         * seen traffic on. Read with no timeout at all, the phone waits forever on a
+         * half-open connection, saying "streaming from /events" while nothing arrives
+         * and never reconnecting — which is how a render that finished an hour ago is
+         * still "rendering" on the screen. Three heartbeats' grace, then reconnect.
+         */
+        const val SILENT_STREAM_MS = 45_000
 
         /** A connection that lasted this long counts as having worked. */
         const val STEADY_CONNECTION_MS = 30_000L
@@ -121,6 +193,7 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         authorized: Boolean = true,
         accept: String = "application/json",
         readTimeoutMs: Int = 30_000,
+        contentType: String? = null,
     ): HttpURLConnection {
         // The one place every request passes through. A host that got into a
         // ServerConfig some other way still never gets dialled.
@@ -147,9 +220,10 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         if (authorized) {
             connection.setRequestProperty("Authorization", "Bearer ${config.token}")
         }
+        contentType?.let { connection.setRequestProperty("Content-Type", it) }
         if (body != null) {
             connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Content-Type", contentType ?: "application/json")
             connection.outputStream.use { it.write(body.toByteArray()) }
         }
         return connection
@@ -163,18 +237,45 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         authorized: Boolean = true,
         readTimeoutMs: Int = 30_000,
     ): String = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
+        // A render holds this connection open for minutes, and reading from a socket
+        // blocks in the kernel, where a cancelled coroutine cannot reach it. A child
+        // suspended in `awaitCancellation` is cancelled at once, on another thread, and
+        // closing the connection from there is what makes the read return.
+        //
+        // `invokeOnCompletion` is no good for this: a job that is cancelling but still
+        // inside a blocking read has not *completed*, so the handler would run after
+        // the read it was meant to interrupt. And the watcher has to exist before the
+        // connection does — a child started in a scope that is already cancelled never
+        // runs at all, which is what happens when the caller gives up while the request
+        // is still being opened.
+        val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+        val watcher = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                socket.get()?.let(abandon)
+            }
+        }
         try {
-            connection = open(method, path, query, body, authorized, readTimeoutMs = readTimeoutMs)
+            val connection = open(
+                method, path, query, body, authorized, readTimeoutMs = readTimeoutMs,
+            )
+            socket.set(connection)
+            // Given up on while it was connecting: do not start a read that nothing is
+            // waiting for and that only a timeout would end.
+            coroutineContext.ensureActive()
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+            coroutineContext.ensureActive()
             TransportError.from(status, text, path)?.let { throw it }
             text
         } catch (error: IOException) {
+            coroutineContext.ensureActive()
             throw TransportError.from(error, config.host)
         } finally {
-            connection?.disconnect()
+            watcher.cancel()
+            socket.get()?.disconnect()
         }
     }
 
@@ -218,6 +319,180 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
 
     override suspend fun imageModels(): List<ImageModel> =
         decode(send("GET", "/image/models", readTimeoutMs = 45_000), "/image/models")
+
+    // MARK: - The media routes
+
+    override suspend fun meshModels(): List<MeshModel> =
+        decode(send("GET", "/mesh/models", readTimeoutMs = 45_000), "/mesh/models")
+
+    override suspend fun videoQueue(): VideoQueueView =
+        decode(send("GET", "/video/queue", readTimeoutMs = 20_000), "/video/queue")
+
+    override suspend fun enqueueVideos(request: VideoQueueRequest): VideoQueueView = decode(
+        send("POST", "/video/queue", body = json.encodeToString(request), readTimeoutMs = 30_000),
+        "/video/queue",
+    )
+
+    override suspend fun controlVideoQueue(request: VideoQueueControlRequest): VideoQueueView =
+        decode(
+            send(
+                "POST", "/video/queue/control",
+                body = json.encodeToString(request), readTimeoutMs = 30_000,
+            ),
+            "/video/queue/control",
+        )
+
+    /**
+     * The one route that holds a connection open for the length of a render. The
+     * queue is the better path for anything real; this exists for a single short clip,
+     * and the Mac answers 429 rather than making a ninth caller wait.
+     */
+    override suspend fun generateVideo(request: VideoGenerateRequest): VideoResponse = decode(
+        send(
+            "POST", "/video/generate",
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+        ),
+        "/video/generate",
+    )
+
+    override suspend fun planImage(request: ImageRequest): ImagePlan = decode(
+        send("POST", "/image/plan", body = json.encodeToString(request), readTimeoutMs = 60_000),
+        "/image/plan",
+    )
+
+    override suspend fun generateImage(request: ImageRequest): ImageResponse = decode(
+        send(
+            "POST", "/image/generate",
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+        ),
+        "/image/generate",
+    )
+
+    override suspend fun planMesh(request: MeshRequest): MeshPlan = decode(
+        send("POST", "/mesh/plan", body = json.encodeToString(request), readTimeoutMs = 60_000),
+        "/mesh/plan",
+    )
+
+    override suspend fun generateMesh(request: MeshRequest): MeshResponse = decode(
+        send(
+            "POST", "/mesh/generate",
+            body = json.encodeToString(request),
+            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+        ),
+        "/mesh/generate",
+    )
+
+    override suspend fun jev(): JevView = decode(send("GET", "/jev", readTimeoutMs = 20_000), "/jev")
+
+    override suspend fun peerStatus(name: String): PeerNodeStatus {
+        val path = "/swarm/peers/${pathComponent(name)}/status"
+        return decode(send("GET", path, readTimeoutMs = 30_000), path)
+    }
+
+    /**
+     * Sends the bytes themselves.
+     *
+     * Raw rather than multipart: the Mac reads both, and the type it records is the one
+     * it reads off the first bytes either way, so the envelope buys nothing. The
+     * filename rides in `X-Filename` because a name is worth keeping and is not worth
+     * believing.
+     */
+    override suspend fun upload(
+        bytes: ByteArray,
+        contentType: String,
+        filename: String?,
+    ): UploadResponse = withContext(Dispatchers.IO) {
+        if (bytes.size > Uploads.MAXIMUM_BYTES) {
+            throw TransportError.TooLarge(
+                "That picture is ${Format.megabytes(bytes.size.toLong())}. This Mac takes " +
+                    "${Format.megabytes(Uploads.MAXIMUM_BYTES)} at most.",
+            )
+        }
+        val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+        val watcher = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                socket.get()?.let(abandon)
+            }
+        }
+        var connection: HttpURLConnection? = null
+        try {
+            connection = open(
+                "POST", "/uploads", readTimeoutMs = 120_000, contentType = contentType,
+            ).also { socket.set(it) }
+            filename?.let { connection.setRequestProperty("X-Filename", it) }
+            connection.setFixedLengthStreamingMode(bytes.size)
+            connection.doOutput = true
+            connection.outputStream.use { it.write(bytes) }
+            coroutineContext.ensureActive()
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+            TransportError.from(status, text, "/uploads")?.let { throw it }
+            decode<UploadResponse>(text, "/uploads")
+        } catch (error: IOException) {
+            coroutineContext.ensureActive()
+            throw TransportError.from(error, config.host)
+        } finally {
+            watcher.cancel()
+            socket.get()?.disconnect()
+        }
+    }
+
+    /**
+     * Copies a result out of the Mac.
+     *
+     * The only route that answers bytes, so the only one that does not decode: it is
+     * written straight into whatever the caller opened — a row in the phone's own
+     * photo library, usually — because a clip is megabytes and holding it in memory to
+     * hand it on would be a second copy for nothing.
+     */
+    override suspend fun media(id: String, sink: java.io.OutputStream): String? =
+        withContext(Dispatchers.IO) {
+            val path = "/media/${pathComponent(id)}"
+            val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+            val watcher = launch {
+                try {
+                    awaitCancellation()
+                } finally {
+                    socket.get()?.let(abandon)
+                }
+            }
+            var connection: HttpURLConnection? = null
+            try {
+                connection = open("GET", path, accept = "*/*", readTimeoutMs = 120_000)
+                    .also { socket.set(it) }
+                coroutineContext.ensureActive()
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val text = connection.errorStream?.bufferedReader()
+                        ?.use(BufferedReader::readText).orEmpty()
+                    throw TransportError.from(status, text, path)
+                        ?: TransportError.Server(status, text)
+                }
+                val type = connection.contentType
+                connection.inputStream.use { source ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        sink.write(buffer, 0, read)
+                    }
+                }
+                sink.flush()
+                type
+            } catch (error: IOException) {
+                coroutineContext.ensureActive()
+                throw TransportError.from(error, config.host)
+            } finally {
+                watcher.cancel()
+                socket.get()?.disconnect()
+            }
+        }
 
     override suspend fun load(request: LoadRequest): Status = decode(
         send("POST", "/load", body = json.encodeToString(request), readTimeoutMs = 900_000),
@@ -328,7 +603,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             )
             try {
                 stream(
-                    "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
+                    "GET", "/events", null,
+                    readTimeoutMs = SILENT_STREAM_MS, lastEventID = lastEventID,
                 ).collect { event ->
                     event.id?.let { lastEventID = it }
                     when (event.name) {

@@ -35,6 +35,10 @@ public enum TransportError: Error, Equatable, Sendable {
     case routeUnavailable(String)
     /// 400 with the Mac's own explanation; the most common one is "no model is loaded".
     case badRequest(String)
+    /// 415: not a picture or a clip the Mac will keep. Only `POST /uploads` answers it.
+    case unsupportedMedia(String)
+    /// 416: a `Range` outside the file. Only `GET /media/{id}` answers it.
+    case rangeNotSatisfiable(String)
     /// 429: the Mac is already doing as much of this as it will do at once.
     case busy(String)
     /// Any other HTTP status, with whatever the Mac said.
@@ -73,6 +77,10 @@ extension TransportError: LocalizedError {
             "This Mac doesn't have \(path) yet."
         case .badRequest(let message):
             message
+        case .unsupportedMedia(let message):
+            message.isEmpty ? "That file is not one this Mac will keep." : message
+        case .rangeNotSatisfiable(let message):
+            message.isEmpty ? "That part of the file is not there any more." : message
         case .busy(let message):
             message
         case .server(let status, let message):
@@ -170,6 +178,8 @@ extension TransportError {
         case 411: return .chunkedNotAccepted(message)
         case 413: return .tooLarge(message)
         case 400: return .badRequest(message.isEmpty ? "The Mac rejected the request." : message)
+        case 415: return .unsupportedMedia(message)
+        case 416: return .rangeNotSatisfiable(message)
         case 429: return .busy(message.isEmpty ? "The Mac is busy." : message)
         default: return .server(status: status, message: message)
         }

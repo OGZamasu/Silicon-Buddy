@@ -113,7 +113,37 @@ final class ContractTests: XCTestCase {
     }
 
     func testSwarm() throws {
-        try roundTrip(ControlAPI.SwarmView.self, "GET__swarm")
+        let swarm = try roundTrip(ControlAPI.SwarmView.self, "GET__swarm")
+        let peer = try XCTUnwrap(swarm.peers.first)
+        XCTAssertEqual(peer.hardware, "NVIDIA GeForce RTX 3090 Ti")
+        XCTAssertNotNil(peer.loadedModel)
+        XCTAssertNotNil(peer.lanes)
+    }
+
+    /// One node asked now: the only place the adapter on its loaded GGUF appears.
+    func testPeerStatus() throws {
+        let peer = try roundTrip(ControlAPI.PeerNodeStatus.self, "GET__swarm_peers__name__status")
+        XCTAssertEqual(peer.gguf?.adapter, "bonsai-27b-v3.lora.gguf")
+        XCTAssertFalse(peer.gguf?.installedModels.isEmpty ?? true)
+    }
+
+    /// A picture sent from a device comes back as the ids a render starts from.
+    func testUpload() throws {
+        let upload = try roundTrip(ControlAPI.UploadResponse.self, "POST__uploads")
+        XCTAssertEqual(upload.mediaURL, "/media/\(upload.mediaID)")
+        XCTAssertFalse(upload.uploadID.isEmpty)
+    }
+
+    /// `GET /media/{id}` answers bytes, so there is no response to round-trip — only
+    /// the scopes and the errors, which the export-wide tests below account for.
+    func testMediaAnswersBytes() throws {
+        let fields = try fixture("GET__media__id_")
+        XCTAssertEqual(fields["response"], JSONValue.null)
+        guard case .object(let errors)? = fields["errors"] else {
+            return XCTFail("GET /media/{id} documents no errors")
+        }
+        XCTAssertNotNil(errors["403"], "a chat-only device is refused the renders themselves")
+        XCTAssertNotNil(errors["416"])
     }
 
     func testNodeAdvertisement() throws {
@@ -122,11 +152,18 @@ final class ContractTests: XCTestCase {
     }
 
     func testVideoModels() throws {
-        try roundTrip([ControlAPI.VideoModel].self, "GET__video_models")
+        let lane = try XCTUnwrap(
+            try roundTrip([ControlAPI.VideoModel].self, "GET__video_models").first
+        )
+        XCTAssertEqual(lane.supportedResolutions, ["480p", "720p", "1080p"])
+        XCTAssertEqual(lane.supportsNegativePrompt, true)
     }
 
     func testVideoQueue() throws {
-        try roundTrip(ControlAPI.VideoQueueView.self, "GET__video_queue")
+        let queue = try roundTrip(ControlAPI.VideoQueueView.self, "GET__video_queue")
+        let done = try XCTUnwrap(queue.items.first { $0.status == "completed" })
+        XCTAssertNotNil(done.mediaID)
+        XCTAssertNotNil(done.thumbnailMediaID)
     }
 
     func testImageModels() throws {
@@ -212,6 +249,7 @@ final class ContractTests: XCTestCase {
         let download = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "events.download")
         XCTAssertEqual(download.progress, 0.42)
         let job = try roundTrip(BuddyAPI.JobProgress.self, "GET__events", "events.job")
+        XCTAssertEqual(job.stage, "video-denoise 18/30")
         XCTAssertEqual(job.status, "running")
         try roundTrip(BuddyAPI.Heartbeat.self, "GET__events", "events.heartbeat")
     }
@@ -230,13 +268,12 @@ final class ContractTests: XCTestCase {
         // — this app included, whatever it is holding. Listed because the export is
         // the whole export; deliberately not mirrored, because a type for a route
         // this app is forbidden to call would be a type nothing can ever use.
-        // The last six are routes the Mac grew for Jev's own settings, its
-        // calibration, the guardrail's recent screenings and the task-shaped
-        // `POST /recommend`. Listed so the export is accounted for; no type here
-        // mirrors them yet, because nothing in this app speaks them — the Jev
-        // settings are the Mac's own business and the pages that would use the
-        // other two arrive in M3. Mirroring a type nothing calls is a guess that
-        // rots.
+        // The Jev routes and the task-shaped `POST /recommend` are listed so the
+        // export is accounted for; no type here mirrors them yet, because nothing in
+        // this app speaks them. The three media routes M3 added are mirrored as
+        // types — `POST /uploads` and `GET /swarm/peers/{name}/status` answer JSON,
+        // and `GET /media/{id}` answers bytes, so it has none — ahead of the iOS
+        // screens that will call them.
         "DELETE__buddy_devices__id_",
         "DELETE__buddy_invitations",
         "GET__buddy_devices",
@@ -250,12 +287,14 @@ final class ContractTests: XCTestCase {
         "GET__jev",
         "GET__jev_calibration",
         "GET__jev_guardrails_recent",
+        "GET__media__id_",
         "GET__mesh_models",
         "GET__metrics",
         "GET__profile",
         "GET__recommend",
         "GET__status",
         "GET__swarm",
+        "GET__swarm_peers__name__status",
         "GET__v1_node",
         "GET__video_models",
         "GET__video_queue",
@@ -278,6 +317,7 @@ final class ContractTests: XCTestCase {
         "POST__plan",
         "POST__recommend",
         "POST__unload",
+        "POST__uploads",
         "POST__v1_systemone",
         "POST__video_generate",
         "POST__video_queue",
@@ -326,7 +366,11 @@ final class ContractTests: XCTestCase {
                     status: code, body: try JSONEncoder().encode(body), path: "/x"
                 )
                 let error = try XCTUnwrap(mapped, "\(name) documents \(code); nothing maps it")
-                if case .server(let number, _) = error {
+                // A 500 is a server error and `.server` is what it is; what matters is
+                // that it reaches a person as the Mac's own sentence rather than a
+                // number, which the next assertion checks. Every other status needs a
+                // case of its own.
+                if case .server(let number, _) = error, number != 500 {
                     XCTFail("\(name) documents \(number) and it falls through to .server")
                 }
                 XCTAssertFalse(
@@ -336,7 +380,7 @@ final class ContractTests: XCTestCase {
             }
         }
         XCTAssertEqual(
-            seen, [400, 401, 403, 404, 409, 411, 413, 429],
+            seen, [400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500],
             "The statuses the Mac documents changed — run contract/refresh.sh, then map them"
         )
     }

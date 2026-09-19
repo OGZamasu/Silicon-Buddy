@@ -1,0 +1,66 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No peer named silicon-node in this Mac's swarm registry."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/swarm\/peers\/{name}\/status",
+  "request" : null,
+  "response" : {
+    "baseURL" : "http:\/\/silicon-node:8790",
+    "capabilities" : [
+      {
+        "id" : "text-to-video",
+        "kind" : "video",
+        "ready" : true
+      },
+      {
+        "id" : "image-to-mesh",
+        "kind" : "mesh",
+        "ready" : true
+      }
+    ],
+    "gguf" : {
+      "adapter" : "bonsai-27b-v3.lora.gguf",
+      "adapters" : [
+        "bonsai-27b-v3.lora.gguf"
+      ],
+      "contextLength" : 65536,
+      "engine" : "stock",
+      "installedModels" : [
+        "qwen3.8-27b-q4_k_m.gguf",
+        "qwen3-coder-30b-q4_k_m.gguf"
+      ],
+      "model" : "qwen3.8-27b-q4_k_m.gguf",
+      "running" : true,
+      "uptimeSeconds" : 4281
+    },
+    "gpuUtilization" : 0.38,
+    "hardware" : "NVIDIA GeForce RTX 3090 Ti",
+    "headroomGB" : 14.6,
+    "name" : "silicon-node",
+    "platform" : "windows-cuda",
+    "queueDepth" : 1,
+    "reachable" : true,
+    "totalMemoryGB" : 24,
+    "usedMemoryGB" : 9.4000000000000004
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "One peer asked now rather than remembered: its `\/v1\/node` and `\/v1\/gguf`, fetched with this Mac's credential for it. The credential is never in the answer."
+}
