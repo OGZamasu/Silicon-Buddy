@@ -5,7 +5,11 @@ import UIKit
 ///
 /// A share extension is a `UIViewController` whatever the UI is written in, so this is
 /// the two dozen lines that host SwiftUI and hand back control when the sheet closes.
-@objc(ShareViewController)
+///
+/// Deliberately not `@objc(ShareViewController)`: that renames the class in the
+/// Objective-C runtime to a bare `ShareViewController`, and the Info.plist names it
+/// `$(PRODUCT_MODULE_NAME).ShareViewController`. The two have to agree or the extension
+/// registers with pluginkit and is then never offered by anything.
 final class ShareViewController: UIViewController {
 
     private let model = ShareModel()

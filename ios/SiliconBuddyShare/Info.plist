@@ -28,20 +28,33 @@
 		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<!--
-			  The dictionary form rather than a predicate: the three things worth
-			  sending to a model are a selection of text, a page, and a picture,
-			  and a hand-written NSPredicate is a well-known way to end up with an
-			  extension that never appears in the share sheet at all.
-			-->
-			<key>NSExtensionActivationSupportsText</key>
-			<true/>
-			<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-			<integer>1</integer>
-			<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
-			<integer>1</integer>
-			<key>NSExtensionActivationSupportsImageWithMaxCount</key>
-			<integer>8</integer>
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<!--
+				  The dictionary form rather than a predicate: the three things worth
+				  sending to a model are a selection of text, a page, and a picture,
+				  and a hand-written NSPredicate is a well-known way to end up with an
+				  extension that never appears in the share sheet at all.
+
+				  These keys belong inside NSExtensionActivationRule, not beside it.
+				  Put directly under NSExtensionAttributes they parse, install and
+				  register with PlugInKit — `pluginkit -mAv` lists the extension and
+				  the log shows it elected — and no app ever offers it, because the
+				  rule the share sheet actually reads is absent and so matches nothing.
+
+				  Deliberately no NSExtensionActivationSupportsWebPageWithMaxCount:
+				  that one asks Safari to run a JavaScript preprocessing file inside
+				  the page, which needs NSExtensionJavaScriptPreprocessingFile. The
+				  URL is what we want anyway — the model is asked about the page, not
+				  about its DOM.
+				-->
+				<key>NSExtensionActivationSupportsText</key>
+				<true/>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
+				<integer>8</integer>
+			</dict>
 		</dict>
 	</dict>
 	<key>NSAppTransportSecurity</key>
