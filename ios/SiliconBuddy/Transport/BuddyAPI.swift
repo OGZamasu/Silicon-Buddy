@@ -80,10 +80,13 @@ public enum BuddyAPI {
         public var scope: String
         public var pairedAt: Date
         public var lastSeen: Date?
+        /// True when this device's token predates something the Mac now requires and
+        /// it has to pair again.
+        public var needsRepair: Bool?
 
         public init(
             id: String, name: String, platform: String, scope: String,
-            pairedAt: Date, lastSeen: Date?
+            pairedAt: Date, lastSeen: Date?, needsRepair: Bool? = nil
         ) {
             self.id = id
             self.name = name
@@ -91,6 +94,7 @@ public enum BuddyAPI {
             self.scope = scope
             self.pairedAt = pairedAt
             self.lastSeen = lastSeen
+            self.needsRepair = needsRepair
         }
     }
 
@@ -116,6 +120,9 @@ public enum BuddyAPI {
     }
 
     public struct StoredMessage: Codable, Sendable, Equatable {
+        /// The Mac's id for this message. What makes a `verdict` event land on the
+        /// reply it is about rather than on the newest one.
+        public var id: String?
         public var role: String
         public var content: String
         public var createdAt: Date
@@ -124,16 +131,21 @@ public enum BuddyAPI {
         public var images: [String]?
         /// The model's thinking, when it produced any.
         public var reasoning: String?
+        /// What the Mac's answer checking made of this reply, kept with it.
+        public var verification: Verdict?
 
         public init(
-            role: String, content: String, createdAt: Date,
-            images: [String]? = nil, reasoning: String? = nil
+            id: String? = nil, role: String, content: String, createdAt: Date,
+            images: [String]? = nil, reasoning: String? = nil,
+            verification: Verdict? = nil
         ) {
+            self.id = id
             self.role = role
             self.content = content
             self.createdAt = createdAt
             self.images = images
             self.reasoning = reasoning
+            self.verification = verification
         }
     }
 
@@ -181,6 +193,11 @@ public enum BuddyAPI {
     // MARK: - Streams
 
     /// The events `POST /chat/stream` sends, one per SSE `event:` name.
+    ///
+    /// Not a closed set. The Mac grows event names — `verdict` arrived with Jev's
+    /// answer checking — and a client that treated an unknown name as an error would
+    /// break on the upgrade rather than on the downgrade. Anything not listed here is
+    /// skipped, and `finished` ends the reply whatever follows it.
     public enum ChatStreamEvent: Sendable, Equatable {
         /// A piece of the answer.
         case token(String)
@@ -190,6 +207,53 @@ public enum BuddyAPI {
         case finished(ChatMetrics)
         /// The Mac gave up on this generation.
         case failed(String)
+    }
+
+    /// `verdict`: what the Mac's answer checking made of a reply once it was written.
+    ///
+    /// It arrives after the answer, on `GET /events` and sometimes on the chat stream
+    /// too, so it is never something to wait for — the reply is finished at `finished`
+    /// and this decorates it afterwards, or never.
+    public struct Verdict: Codable, Sendable, Equatable {
+        public var conversationID: String?
+        public var messageID: String?
+        /// The Mac's own word: `annotate`, `escalate`… Rendered, not interpreted: the
+        /// vocabulary is Jev's and it is not frozen.
+        public var verdict: String
+        /// Why, in the Mac's sentences.
+        public var reasons: [String]?
+        /// What to do about it, when the Mac has advice — usually which model to send
+        /// the question to instead. Absent on `/events`, present on the chat streams.
+        public var suggestion: String?
+        /// The model the Mac handed it to instead, when it re-ran the answer itself.
+        public var escalatedTo: String?
+
+        public init(
+            conversationID: String? = nil, messageID: String? = nil,
+            verdict: String, reasons: [String]? = nil,
+            suggestion: String? = nil, escalatedTo: String? = nil
+        ) {
+            self.conversationID = conversationID
+            self.messageID = messageID
+            self.verdict = verdict
+            self.reasons = reasons
+            self.suggestion = suggestion
+            self.escalatedTo = escalatedTo
+        }
+
+        /// One line for the message footer. An unrecognised verdict is shown as itself
+        /// rather than swallowed, because the Mac will grow more of them.
+        public var summary: String {
+            if let escalatedTo, !escalatedTo.isEmpty {
+                return "Checked — asked \(escalatedTo) instead"
+            }
+            switch verdict.lowercased() {
+            case "ok", "pass", "answered": return "Checked — answers the question"
+            case "annotate": return "Checked — worth a second look"
+            case "escalate": return "Checked — worth asking a stronger model"
+            default: return "Checked — \(verdict)"
+            }
+        }
     }
 
     /// A `token` or `reasoning` event: one piece of text.
@@ -222,6 +286,8 @@ public enum BuddyAPI {
         case status(ControlAPI.Status)
         case download(DownloadProgress)
         case job(JobProgress)
+        /// An answer the Mac has since checked.
+        case verdict(Verdict)
         /// The keep-alive, with the Mac's clock when it sent one.
         case heartbeat(Date?)
     }

@@ -29,7 +29,15 @@
       {
         "content" : "Start in Alfama, early.",
         "createdAt" : "2026-09-18T09:41:12Z",
-        "role" : "assistant"
+        "id" : "6B2A9D14-40F7-4E85-9C33-2E5A7B1C0D9E",
+        "role" : "assistant",
+        "verification" : {
+          "reasons" : [
+            "The reply stops mid-thought and the token budget ran out."
+          ],
+          "suggestion" : "Send this again on cloud\/openai\/gpt-5.5 for a stronger answer — or use POST \/chat, which re-runs flagged answers itself.",
+          "verdict" : "escalate"
+        }
       }
     ],
     "title" : "Weekend in Lisbon",

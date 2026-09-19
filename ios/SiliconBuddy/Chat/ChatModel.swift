@@ -2,29 +2,6 @@ import Foundation
 import Observation
 import UIKit
 
-/// What a device may send, from the Mac's own contract: 4 MiB a body, about 1.5 MB an
-/// image, eight images a message. Checked before sending rather than discovered as a 413
-/// after a slow upload over a tailnet.
-public enum SendLimits {
-    public static let maximumAttachments = 8
-    public static let maximumImageBytes = 1_500_000
-    public static let maximumBodyBytes = 4 * 1024 * 1024
-}
-
-/// A picture on its way to a vision model.
-public struct ChatAttachment: Identifiable, Sendable, Equatable {
-    public let id = UUID()
-    /// JPEG bytes, already scaled down.
-    public let jpeg: Data
-
-    public init(jpeg: Data) { self.jpeg = jpeg }
-
-    /// The form the control API wants: a base64 `data:` URL.
-    public var dataURL: String {
-        "data:image/jpeg;base64," + jpeg.base64EncodedString()
-    }
-}
-
 /// The chat screen's state and the one piece of logic worth testing here: how a reply
 /// arrives, whether it streams or not.
 @MainActor
@@ -134,11 +111,15 @@ public final class ChatModel {
                     updatedAt: Date(),
                     messages: detail.messages.map {
                         ChatMessage(
+                            // The Mac's own id where it gives one, so a `verdict`
+                            // event lands on the reply it is about.
+                            id: $0.id ?? UUID().uuidString,
                             role: ChatMessage.Role(rawValue: $0.role) ?? .assistant,
                             content: $0.content,
                             reasoning: $0.reasoning,
                             images: $0.images ?? [],
-                            createdAt: $0.createdAt
+                            createdAt: $0.createdAt,
+                            verdict: $0.verification
                         )
                     }
                 )
@@ -202,6 +183,7 @@ public final class ChatModel {
             await self?.run(replyTo: placeholder.id, using: transport)
             self?.isSending = false
             self?.sendingSince = nil
+            self?.noteLastExchange(question: text)
         }
     }
 
@@ -335,6 +317,11 @@ public final class ChatModel {
             for try await event in stream {
                 sawAnything = true
                 apply(event, to: messageID)
+                // `finished` is the end of the reply, whatever else the Mac sends after
+                // it. Jev's answer checking appends a `verdict` frame, and a client that
+                // kept the composer closed until the socket closed would sit on a
+                // finished answer waiting for a check it can get from `/events` instead.
+                if case .finished = event { return .answered }
             }
             // A stream that ends without one event is not an answer; try the next thing.
             return sawAnything ? .answered : .missingRoute
@@ -448,6 +435,47 @@ public final class ChatModel {
         }
     }
 
+    /// Attaches an answer check to the reply it belongs to.
+    ///
+    /// By the Mac's message id when it names one, so a check that arrives after the
+    /// person has sent something else still lands on the right reply.
+    ///
+    /// A named id that matches nothing here is dropped rather than guessed at. It means
+    /// the check is about a message this screen does not have — an older one scrolled
+    /// out of a transcript the device kept, or a reply in a conversation that was
+    /// reopened since — and stamping it on the newest reply would put the Mac's words
+    /// under an answer it never read.
+    ///
+    /// Only an unnamed check falls back to the newest finished reply, which is right
+    /// whenever the Mac checks a reply as it finishes, and is the only thing a
+    /// device-kept transcript can do: its ids are its own and the Mac has never seen
+    /// them.
+    public func apply(verdict: BuddyAPI.Verdict) {
+        guard var conversation = current else { return }
+        if let id = verdict.conversationID, !id.isEmpty, id != conversation.id { return }
+        let index: Int?
+        if let messageID = verdict.messageID, !messageID.isEmpty {
+            index = conversation.messages.firstIndex { $0.id == messageID }
+        } else {
+            index = conversation.messages.lastIndex {
+                $0.role == .assistant && !$0.isStreaming && !$0.content.isEmpty
+            }
+        }
+        guard let index else { return }
+        conversation.messages[index].verdict = verdict
+        current = conversation
+    }
+
+    /// Leaves the exchange where the widget and the Lock Screen can find it. Only the
+    /// text: a picture is not something a widget has room for, and the snapshot is
+    /// shared with other processes, so the less it carries the better.
+    private func noteLastExchange(question: String) {
+        guard let answer = current?.messages.last(where: {
+            $0.role == .assistant && !$0.content.isEmpty
+        })?.content else { return }
+        SnapshotStore.note(question: question, answer: answer)
+    }
+
     public func clearError() { error = nil }
 
     /// Called when the paired Mac changes. What this Mac supports is a fact about that
@@ -472,47 +500,5 @@ public final class ChatModel {
         usesRemoteConversations
             ? "Synced with the Mac."
             : "Kept on this device — the Mac doesn't store conversations yet."
-    }
-}
-
-// MARK: - Attachments
-
-public enum ImagePreparation {
-    /// Scales a picture down and re-encodes it as JPEG.
-    ///
-    /// A 12-megapixel photo as a base64 data URL is about 15 MB of JSON, which is both
-    /// slower to send than the model is to answer and larger than most vision encoders
-    /// can use. 1024 on the long edge is what they actually look at.
-    public static func attachment(
-        from image: UIImage, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8
-    ) -> ChatAttachment? {
-        var edge = maxEdge
-        var compression = quality
-        // Four tries at most: a 12-megapixel photo of a page of text can still beat the
-        // Mac's per-image limit at 1024px, and a picture that is refused on arrival is
-        // worse than one that was made smaller before it left.
-        for _ in 0..<4 {
-            let scaled = resize(image, maxEdge: edge)
-            guard let data = scaled.jpegData(compressionQuality: compression) else { return nil }
-            if data.count <= SendLimits.maximumImageBytes {
-                return ChatAttachment(jpeg: data)
-            }
-            edge *= 0.75
-            compression = max(0.4, compression - 0.15)
-        }
-        return resize(image, maxEdge: edge).jpegData(compressionQuality: 0.4)
-            .map(ChatAttachment.init(jpeg:))
-    }
-
-    static func resize(_ image: UIImage, maxEdge: CGFloat) -> UIImage {
-        let longest = max(image.size.width, image.size.height)
-        guard longest > maxEdge, longest > 0 else { return image }
-        let scale = maxEdge / longest
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
     }
 }

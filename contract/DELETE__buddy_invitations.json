@@ -1,0 +1,27 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can cancel a pairing code."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "DELETE",
+  "path" : "\/buddy\/invitations",
+  "request" : null,
+  "response" : {
+    "status" : "cancelled"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Cancel the code on screen. Succeeds whether or not one was open."
+}

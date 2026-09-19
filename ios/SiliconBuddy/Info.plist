@@ -51,6 +51,10 @@
 	<string>To attach a picture to a message for a vision model.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>To reach Silicon Optimizer on your Mac when it is on the same network rather than the tailnet.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>To turn what you say into a question for the model on your Mac. Recognised on this device where the phone can do it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>To hear the question you hold the microphone button to ask.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>To unlock Silicon Buddy without typing your passcode.</string>
 	<key>NSAppTransportSecurity</key>

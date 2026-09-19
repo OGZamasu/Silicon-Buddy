@@ -39,10 +39,23 @@ Decided 2026-09-18 with the owner.
 - Chat with streaming, conversations synced with the Mac, images from camera or photos, markdown rendering.
 - Verified: iOS Simulator (iPhone and iPad) and Android emulator.
 
-### M2 — Reach in: widgets, share, camera, voice, intents
-- iOS: interactive Home/Lock Screen widget for a one-tap prompt and the last answer; Control Center control; share extension; App Intents ("Ask my Mac…", "Load…", "Start a video…").
-- Android: Glance app widget, Quick Settings tile, share target, App Actions / Assistant shortcuts.
-- Camera mode (ask the vision model what it sees). Push-to-talk with on-device speech recognition; spoken replies with the platform TTS.
+### M2 — Reach in: widgets, share, camera, voice, intents — **done**
+- iOS: interactive Home Screen widget (small and medium) with a configurable preset
+  question it fires itself, a Lock Screen accessory for the loaded model, a share
+  extension, and App Intents ("Ask my Mac", "Load a model", "What is loaded on my Mac").
+- Android: Glance app widget with the same content and button, a Quick Settings tile
+  that opens the composer, a share target, and static and dynamic launcher shortcuts
+  the Assistant binds to.
+- Camera mode on both: the question is typed first and the shutter sends it.
+- Push-to-talk on both, recognised on the device where the phone can do it, with the
+  reply read back and a toggle for that.
+- Not done: the Control Center control, and "Start a video…" — the video routes are
+  M3's, and an intent that starts a render before the queue view exists would be a
+  button with nowhere to look at the result. Six routes the Mac grew alongside this —
+  `GET`/`POST /jev`, `GET /jev/calibration`, `POST /jev/calibrate`,
+  `GET /jev/guardrails/recent` and the task-shaped `POST /recommend` — are in
+  `contract/` but are not mirrored by either app yet; they belong to M3's node and
+  recommend pages.
 
 ### M3 — Media jobs and machines
 - Image, video, 3D from the phone on the Mac or the node; queue view; progress (Live Activity on iOS, ongoing notification on Android); results saved to the phone.

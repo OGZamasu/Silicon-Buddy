@@ -3,6 +3,7 @@ import SwiftUI
 /// The connection, what this Mac can do, and the honest list of what is still stubbed.
 public struct SettingsView: View {
     @Environment(AppModel.self) private var app
+    @State private var quickPrompt = QuickPrompt.stored()
     /// The chat model itself, because "does this Mac stream?" is something only the
     /// thing that has tried to stream can answer.
     let chat: ChatModel
@@ -19,8 +20,13 @@ public struct SettingsView: View {
                 LabeledContent("Name", value: app.macDisplayName)
                 if let config = app.config {
                     LabeledContent("Address", value: config.displayAddress)
-                    LabeledContent("Token", value: "Stored in the Keychain")
-                        .foregroundStyle(.secondary)
+                    LabeledContent(
+                        "Token",
+                        value: SharedKeychain.accessGroup == nil
+                            ? "Stored in this app's Keychain"
+                            : "Stored in the Keychain, shared with the widget"
+                    )
+                    .foregroundStyle(.secondary)
                     if let deviceID = config.deviceID {
                         LabeledContent("Device id", value: deviceID)
                             .font(.caption)
@@ -62,6 +68,33 @@ public struct SettingsView: View {
                         ? "Silicon Buddy asks for the newer routes and falls back quietly when a "
                             + "Mac doesn't have them yet. Nothing here needs configuring."
                         : app.scope.explanation
+                )
+            }
+
+            Section {
+                Toggle("Read answers out loud", isOn: Binding(
+                    get: { app.speaksReplies },
+                    set: { app.speaksReplies = $0 }
+                ))
+                Picker("Widget question", selection: $quickPrompt) {
+                    ForEach(QuickPrompt.presets, id: \.self) { preset in
+                        Text(preset).tag(preset)
+                    }
+                    if !QuickPrompt.presets.contains(quickPrompt) {
+                        Text(quickPrompt).tag(quickPrompt)
+                    }
+                }
+                .onChange(of: quickPrompt) { _, value in QuickPrompt.store(value) }
+            } header: {
+                Text("Reaching in")
+            } footer: {
+                Text(
+                    "The widget's button asks this question with one tap. Hold the "
+                        + "microphone in a conversation to ask out loud; let go to send. "
+                        + "Where this phone can recognise speech itself the audio never "
+                        + "leaves it; where it cannot, the recording goes to Apple to be "
+                        + "turned into text, and the composer says which is happening "
+                        + "while you hold the button."
                 )
             }
 

@@ -15,6 +15,12 @@
   "path" : "\/swarm",
   "request" : null,
   "response" : {
+    "exposure" : {
+      "address" : "100.64.0.9",
+      "listening" : true,
+      "port" : 8788,
+      "requested" : true
+    },
     "peers" : [
       {
         "baseURL" : "http:\/\/silicon-node:8790",

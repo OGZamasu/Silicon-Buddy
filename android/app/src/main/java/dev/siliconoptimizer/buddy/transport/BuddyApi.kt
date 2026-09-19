@@ -62,6 +62,11 @@ data class PairedDevice(
     val scope: String,
     val pairedAt: String,
     val lastSeen: String? = null,
+    /**
+     * True when this device's token predates something the Mac now requires and it has
+     * to pair again.
+     */
+    val needsRepair: Boolean? = null,
 )
 
 @Serializable
@@ -78,11 +83,18 @@ data class NewConversation(val title: String? = null)
 
 @Serializable
 data class StoredMessage(
+    /**
+     * The Mac's id for this message. What makes a `verdict` event land on the reply it
+     * is about rather than on the newest one.
+     */
+    val id: String? = null,
     val role: String,
     val content: String,
     val createdAt: String,
     val images: List<String>? = null,
     val reasoning: String? = null,
+    /** What the Mac's answer checking made of this reply, kept with it. */
+    val verification: Verdict? = null,
 )
 
 @Serializable
@@ -123,7 +135,56 @@ data class ChatMetrics(
 @Serializable
 data class TokenEvent(val text: String)
 
-/** What `POST /chat/stream` sends, one per SSE `event:` name. */
+/**
+ * What the Mac's answer checking made of a reply once it was written.
+ *
+ * It arrives after the answer — on `GET /events`, and sometimes on the chat stream too
+ * — so it is never something to wait for: the reply is finished at `finished` and this
+ * decorates it afterwards, or never.
+ */
+@Serializable
+data class Verdict(
+    val conversationID: String? = null,
+    val messageID: String? = null,
+    /**
+     * The Mac's own word: `annotate`, `escalate`. Rendered, not interpreted: the
+     * vocabulary is Jev's and it is not frozen.
+     */
+    val verdict: String,
+    /** Why, in the Mac's sentences. */
+    val reasons: List<String>? = null,
+    /**
+     * What to do about it, when the Mac has advice — usually which model to send the
+     * question to instead. Absent on `/events`, present on the chat streams.
+     */
+    val suggestion: String? = null,
+    /** The model the Mac handed it to instead, when it re-ran the answer itself. */
+    val escalatedTo: String? = null,
+) {
+    /**
+     * One line for the message footer. An unrecognised verdict is shown as itself
+     * rather than swallowed, because the Mac will grow more of them.
+     */
+    val summary: String
+        get() = when {
+            !escalatedTo.isNullOrEmpty() -> "Checked — asked $escalatedTo instead"
+            else -> when (verdict.lowercase()) {
+                "ok", "pass", "answered" -> "Checked — answers the question"
+                "annotate" -> "Checked — worth a second look"
+                "escalate" -> "Checked — worth asking a stronger model"
+                else -> "Checked — $verdict"
+            }
+        }
+}
+
+/**
+ * What `POST /chat/stream` sends, one per SSE `event:` name.
+ *
+ * Not a closed set. The Mac grows event names — `verdict` arrived with Jev's answer
+ * checking — and a client that treated an unknown one as an error would break on the
+ * upgrade rather than on the downgrade. Anything not listed here is skipped, and
+ * `finished` ends the reply whatever follows it.
+ */
 sealed interface ChatStreamEvent {
     data class Token(val text: String) : ChatStreamEvent
     data class Reasoning(val text: String) : ChatStreamEvent
@@ -169,5 +230,8 @@ sealed interface ServerEvent {
     data class StatusChanged(val status: Status) : ServerEvent
     data class Download(val progress: DownloadProgress) : ServerEvent
     data class Job(val progress: JobProgress) : ServerEvent
+
+    /** An answer the Mac has since checked. */
+    data class Checked(val verdict: Verdict) : ServerEvent
     data class Beat(val at: String?) : ServerEvent
 }

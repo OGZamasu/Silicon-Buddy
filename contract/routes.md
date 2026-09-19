@@ -22,17 +22,34 @@ route needs no token at all.
 
 `full` and `chat` are the two device scopes. A `chat` device may use the routes
 that only read or advise — `/health`, `/status`, `/profile`, `/metrics`,
-`/catalog`, `/installed`, `/recommend`, `/plan`, `/swarm`, `/v1/node`,
+`/catalog`, `/installed`, `GET /recommend`, `/plan`, `/swarm`, `/v1/node`,
 `/image/models`, `/mesh/models`, `/video/models`, `/video/queue`, `/events` —
 plus `/chat`, `/chat/stream`, `/decide`, `/v1/systemone` and every
 `/conversations` route. Everything else answers 403: installing, loading,
-unloading, benchmarking, rendering, queue control and the device list.
+unloading, benchmarking, rendering, queue control, the device list and the
+Jev settings — and `POST /recommend`, which ranks the catalogue against a
+described job by asking Jev and so spends the owner's money.
+`POST /jev` and `POST /jev/calibrate` go further and take the Mac's own control
+token: they govern what this Mac spends, so a paired phone may read both, and
+the matching `GET /jev` and `GET /jev/calibration`, without being able to
+change either.
+
+`POST /buddy/invitations` and `DELETE /buddy/invitations` take that same control
+token, and for a stronger reason: minting a pairing code admits the *next*
+device to this Mac. A phone that could mint one could pair the phone after it
+without the owner ever seeing a code, so these two are answered on the Mac's own
+loopback listener only and are not reachable from the tailnet at all — at any
+device scope, and with any token. A minted code carries the tailnet listener's
+address and port, lives five minutes and is spent once; with that listener down
+the mint is a 409 rather than a code pointing nowhere.
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/buddy/pair` | none | Spend the six-digit code on screen for a device token of your own. |
 | `GET` | `/buddy/devices` | control | The paired devices, without their token hashes. |
 | `DELETE` | `/buddy/devices/{id}` | control | Revoke one device. Its token stops working at once, streams included. |
+| `POST` | `/buddy/invitations` | control | Mint the pairing code the Mac's own Settings window would show. |
+| `DELETE` | `/buddy/invitations` | control | Cancel the code on screen. Succeeds whether or not one was open. |
 | `POST` | `/chat/stream` | device | The same body as /chat, answered token by token. _(SSE)_ |
 | `GET` | `/events` | device | What the Mac is doing: loaded model, downloads, render jobs. _(SSE)_ |
 | `GET` | `/conversations` | device | Every conversation on the Mac, newest first. |
@@ -46,6 +63,7 @@ unloading, benchmarking, rendering, queue control and the device list.
 | `GET` | `/installed` | device | The models on this Mac's disk. |
 | `GET` | `/catalog` | device | The catalogue, each entry judged against this Mac. |
 | `GET` | `/recommend` | device | The strongest model this machine can actually run. |
+| `POST` | `/recommend` | device | The best model for a described job, with the runners-up and why. Asks Jev, so it costs the owner money and takes full control. |
 | `POST` | `/plan` | device | Will this fit at this context, and what would you change? |
 | `POST` | `/install` | device | Download a model. Progress arrives on /events. |
 | `POST` | `/load` | device | Load a model into memory. |
@@ -53,6 +71,11 @@ unloading, benchmarking, rendering, queue control and the device list.
 | `POST` | `/chat` | device | Ask the loaded model and wait for the whole answer. |
 | `POST` | `/decide` | device | Typed probabilistic decisions, in the TypeSafe/Jev shape. |
 | `POST` | `/v1/systemone` | device | The same route as /decide, at the path TypeSafe's own clients use. |
+| `GET` | `/jev` | device | How the TypeSafe (Jev) lane is set up, and what it has cost this month. |
+| `GET` | `/jev/guardrails/recent` | device | The last screenings the tool-call guardrail made: verdicts, the question ids that fired, and how long each took. |
+| `POST` | `/jev` | control | Change what Jev is allowed to do. Only sent fields change. |
+| `GET` | `/jev/calibration` | device | The last calibration of the local decision lane against Jev. |
+| `POST` | `/jev/calibrate` | control | Measure the local decision lane against Jev and retune the cascade. |
 | `POST` | `/benchmark` | device | Measure the loaded model here, and recalibrate its estimates. |
 | `GET` | `/swarm` | device | The other machines this Mac can delegate to. |
 | `GET` | `/v1/node` | device | What this Mac advertises to its peers. |

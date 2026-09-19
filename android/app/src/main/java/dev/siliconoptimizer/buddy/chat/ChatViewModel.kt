@@ -11,6 +11,8 @@ import dev.siliconoptimizer.buddy.transport.ChatMetrics
 import dev.siliconoptimizer.buddy.transport.ChatRequest
 import dev.siliconoptimizer.buddy.transport.ChatStreamEvent
 import dev.siliconoptimizer.buddy.transport.ControlTransport
+import dev.siliconoptimizer.buddy.reach.SnapshotStore
+import dev.siliconoptimizer.buddy.reach.VerdictMatching
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -149,10 +151,14 @@ class ChatViewModel(
                         title = detail.title,
                         messages = detail.messages.map {
                             ChatMessage(
+                                // The Mac's own id where it gives one, so a `verdict`
+                                // event lands on the reply it is about.
+                                id = it.id ?: java.util.UUID.randomUUID().toString(),
                                 role = it.role,
                                 content = it.content,
                                 reasoning = it.reasoning,
                                 images = it.images.orEmpty(),
+                                verdict = it.verification,
                             )
                         },
                     )
@@ -223,7 +229,19 @@ class ChatViewModel(
             run(placeholderID, transport)
             isSending = false
             sendingSince = null
+            noteLastExchange(text)
         }
+    }
+
+    /**
+     * Leaves the exchange where the widget, the tile and the Assistant find it. Only
+     * the text: a picture is not something a widget has room for.
+     */
+    private fun noteLastExchange(question: String) {
+        val answer = current?.messages?.lastOrNull {
+            it.role == ChatMessage.ROLE_ASSISTANT && it.content.isNotEmpty()
+        }?.content ?: return
+        SnapshotStore(getApplication()).note(question, answer)
     }
 
     fun cancel() {
@@ -319,6 +337,7 @@ class ChatViewModel(
     /** Drains one SSE stream into the placeholder message. */
     private suspend fun consume(stream: Flow<ChatStreamEvent>, messageID: String): Outcome {
         var sawAnything = false
+        var finished = false
         try {
             stream.collect { event ->
                 sawAnything = true
@@ -329,14 +348,23 @@ class ChatViewModel(
                     is ChatStreamEvent.Reasoning -> update(messageID) {
                         it.copy(reasoning = (it.reasoning ?: "") + event.text)
                     }
-                    is ChatStreamEvent.Finished -> update(messageID) {
-                        it.copy(
-                            metrics = event.metrics,
-                            isStreaming = false,
-                            failure = truncationNote(
-                                it.content, event.metrics.generatedTokens, maxTokens,
-                            ),
-                        )
+                    is ChatStreamEvent.Finished -> {
+                        update(messageID) {
+                            it.copy(
+                                metrics = event.metrics,
+                                isStreaming = false,
+                                failure = truncationNote(
+                                    it.content, event.metrics.generatedTokens, maxTokens,
+                                ),
+                            )
+                        }
+                        // `finished` is the end of the reply, whatever else the Mac
+                        // sends after it. Jev's answer checking appends a `verdict`
+                        // frame, and a client that kept the composer closed until the
+                        // socket closed would sit on a finished answer waiting for a
+                        // check it can get from `/events` instead.
+                        finished = true
+                        throw StreamFinished
                     }
                     is ChatStreamEvent.Failed -> {
                         update(messageID) { it.copy(failure = event.message, isStreaming = false) }
@@ -344,6 +372,8 @@ class ChatViewModel(
                     }
                 }
             }
+        } catch (failure: StreamFinished) {
+            return Outcome.Answered
         } catch (failure: TransportError) {
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
@@ -363,7 +393,39 @@ class ChatViewModel(
             return Outcome.Failed
         }
         // A stream that ends without one event is not an answer; try the next thing.
-        return if (sawAnything) Outcome.Answered else Outcome.MissingRoute
+        return if (sawAnything || finished) Outcome.Answered else Outcome.MissingRoute
+    }
+
+    /**
+     * Thrown to leave `collect` the moment `finished` arrives. A flow has no `break`,
+     * and cancelling the collector is the documented way to stop one early.
+     */
+    private object StreamFinished : kotlinx.coroutines.CancellationException("finished")
+
+    /**
+     * Attaches an answer check to the reply it belongs to.
+     *
+     * By the Mac's message id when it names one, so a check that arrives after the
+     * person has sent something else still lands on the right reply.
+     *
+     * A named id that matches nothing here is dropped rather than guessed at. It means
+     * the check is about a message this screen does not have — an older one scrolled
+     * out of a transcript the device kept, or a reply in a conversation that was
+     * reopened since — and stamping it on the newest reply would put the Mac's words
+     * under an answer it never read.
+     *
+     * Only an unnamed check falls back to the newest finished reply, which is right
+     * whenever the Mac checks a reply as it finishes, and is the only thing a
+     * device-kept transcript can do: its ids are its own and the Mac has never seen them.
+     */
+    fun apply(verdict: dev.siliconoptimizer.buddy.transport.Verdict) {
+        val conversation = current ?: return
+        if (!VerdictMatching.belongs(verdict, conversation.id)) return
+        val index = VerdictMatching.index(verdict, conversation.messages)
+        if (index < 0) return
+        val messages = conversation.messages.toMutableList()
+        messages[index] = messages[index].copy(verdict = verdict)
+        current = conversation.copy(messages = messages)
     }
 
     private fun update(messageID: String, change: (ChatMessage) -> ChatMessage) {

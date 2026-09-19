@@ -175,6 +175,11 @@ data class ChatResponse(
     val promptTokens: Int,
     val generatedTokens: Int,
     val tokensPerSecond: Double,
+    /**
+     * What the Mac's answer checking made of this reply, when it checked it. On the
+     * buffered route it comes back with the answer rather than afterwards.
+     */
+    val verification: Verdict? = null,
 )
 
 @Serializable
@@ -291,7 +296,22 @@ data class SwarmPeer(
 @Serializable
 data class SwarmView(
     val peers: List<SwarmPeer>,
+    /**
+     * Whether this Mac is listening on its tailnet address, and where. The phone is on
+     * the other end of exactly that socket, so "requested but not listening" is the
+     * difference between a Mac that is off and one that is broken.
+     */
+    val exposure: TailnetExposure? = null,
     val polledSecondsAgo: Double? = null,
+)
+
+@Serializable
+data class TailnetExposure(
+    val requested: Boolean,
+    val listening: Boolean,
+    val address: String? = null,
+    val port: Int? = null,
+    val problem: String? = null,
 )
 
 /** `GET /v1/node` — snake_case on the wire, the shape silicon-node speaks too. */

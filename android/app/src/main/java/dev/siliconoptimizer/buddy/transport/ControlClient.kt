@@ -273,6 +273,9 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                             ),
                         )
                         "error" -> emit(ChatStreamEvent.Failed(textOf(event)))
+                        // A name this build has never heard of — `verdict` is the first.
+                        // The Mac adds them, and an upgrade there must not break a phone
+                        // that has not been rebuilt.
                         else -> Unit
                     }
                 }
@@ -308,6 +311,8 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                         "download" -> runCatching {
                             json.decodeFromString<DownloadProgress>(event.data)
                         }.getOrNull()?.let { emit(ServerEvent.Download(it)) }
+                        "verdict" -> runCatching { json.decodeFromString<Verdict>(event.data) }
+                            .getOrNull()?.let { emit(ServerEvent.Checked(it)) }
                         "job" -> runCatching { json.decodeFromString<JobProgress>(event.data) }
                             .getOrNull()?.let { emit(ServerEvent.Job(it)) }
                         "heartbeat", "ping" -> emit(

@@ -224,7 +224,21 @@ final class ContractTests: XCTestCase {
     /// each one documents, are the Mac's answers as of the last refresh. When they
     /// change, `contract/refresh.sh` is the fix — not this list.
     static let expectedFixtures: Set<String> = [
+        // Two routes the Mac grew so that tests and CLIs can pair at all: pairing
+        // codes used to be mintable only from its own Settings window. They are
+        // loopback-and-control-token only, which means no device can ever reach them
+        // — this app included, whatever it is holding. Listed because the export is
+        // the whole export; deliberately not mirrored, because a type for a route
+        // this app is forbidden to call would be a type nothing can ever use.
+        // The last six are routes the Mac grew for Jev's own settings, its
+        // calibration, the guardrail's recent screenings and the task-shaped
+        // `POST /recommend`. Listed so the export is accounted for; no type here
+        // mirrors them yet, because nothing in this app speaks them — the Jev
+        // settings are the Mac's own business and the pages that would use the
+        // other two arrive in M3. Mirroring a type nothing calls is a guess that
+        // rots.
         "DELETE__buddy_devices__id_",
+        "DELETE__buddy_invitations",
         "GET__buddy_devices",
         "GET__catalog",
         "GET__conversations",
@@ -233,6 +247,9 @@ final class ContractTests: XCTestCase {
         "GET__health",
         "GET__image_models",
         "GET__installed",
+        "GET__jev",
+        "GET__jev_calibration",
+        "GET__jev_guardrails_recent",
         "GET__mesh_models",
         "GET__metrics",
         "GET__profile",
@@ -243,6 +260,7 @@ final class ContractTests: XCTestCase {
         "GET__video_models",
         "GET__video_queue",
         "POST__benchmark",
+        "POST__buddy_invitations",
         "POST__buddy_pair",
         "POST__chat",
         "POST__chat_stream",
@@ -252,10 +270,13 @@ final class ContractTests: XCTestCase {
         "POST__image_generate",
         "POST__image_plan",
         "POST__install",
+        "POST__jev",
+        "POST__jev_calibrate",
         "POST__load",
         "POST__mesh_generate",
         "POST__mesh_plan",
         "POST__plan",
+        "POST__recommend",
         "POST__unload",
         "POST__v1_systemone",
         "POST__video_generate",
@@ -324,8 +345,9 @@ final class ContractTests: XCTestCase {
     /// contract/ fails here rather than being discovered on a phone.
     func testTheExportIsTheCurrentOne() throws {
         for name in Self.expectedFixtures.sorted() where name.hasPrefix("POST__") {
-            // Every POST but the two that take no body documents a 400.
-            guard !["POST__benchmark", "POST__unload"].contains(name) else { continue }
+            // Every POST but the three that take no body at all documents a 400.
+            guard !["POST__benchmark", "POST__unload", "POST__jev_calibrate"].contains(name)
+            else { continue }
             let fields = try fixture(name)
             guard case .object(let errors)? = fields["errors"] else {
                 return XCTFail("\(name) documents no errors at all")

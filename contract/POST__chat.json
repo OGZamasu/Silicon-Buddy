@@ -31,9 +31,16 @@
   },
   "response" : {
     "content" : "Start in Alfama, early.",
-    "generatedTokens" : 96,
-    "promptTokens" : 412,
-    "tokensPerSecond" : 89.400000000000006
+    "generatedTokens" : 0,
+    "promptTokens" : 0,
+    "tokensPerSecond" : 0,
+    "verification" : {
+      "escalatedTo" : "node\/studio\/qwen3.8-27b",
+      "reasons" : [
+        "The reply does not answer what was asked."
+      ],
+      "verdict" : "escalate"
+    }
   },
   "scopes" : [
     "full",

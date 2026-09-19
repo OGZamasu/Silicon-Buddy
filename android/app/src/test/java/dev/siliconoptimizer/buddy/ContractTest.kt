@@ -247,7 +247,20 @@ class ContractTest {
          * `contract/refresh.sh` is the fix — not this list.
          */
         val EXPECTED_FIXTURES = setOf(
+            // Two routes the Mac grew so that tests and CLIs can pair at all:
+            // pairing codes used to be mintable only from its own Settings window.
+            // They are loopback-and-control-token only, which means no device can
+            // ever reach them — this app included, whatever it is holding. Listed
+            // because the export is the whole export; deliberately not mirrored,
+            // because a type for a route this app is forbidden to call would be a
+            // type nothing can ever use.
+            //
+            // The six Jev and recommend routes below are unmirrored for the softer
+            // reason: nothing in this app speaks them yet. The Jev settings are the
+            // Mac's own business and the pages that would use the other two arrive
+            // in M3. Mirroring a type nothing calls is a guess that rots.
             "DELETE__buddy_devices__id_",
+            "DELETE__buddy_invitations",
             "GET__buddy_devices",
             "GET__catalog",
             "GET__conversations",
@@ -256,6 +269,9 @@ class ContractTest {
             "GET__health",
             "GET__image_models",
             "GET__installed",
+            "GET__jev",
+            "GET__jev_calibration",
+            "GET__jev_guardrails_recent",
             "GET__mesh_models",
             "GET__metrics",
             "GET__profile",
@@ -266,6 +282,7 @@ class ContractTest {
             "GET__video_models",
             "GET__video_queue",
             "POST__benchmark",
+            "POST__buddy_invitations",
             "POST__buddy_pair",
             "POST__chat",
             "POST__chat_stream",
@@ -275,10 +292,13 @@ class ContractTest {
             "POST__image_generate",
             "POST__image_plan",
             "POST__install",
+            "POST__jev",
+            "POST__jev_calibrate",
             "POST__load",
             "POST__mesh_generate",
             "POST__mesh_plan",
             "POST__plan",
+            "POST__recommend",
             "POST__unload",
             "POST__v1_systemone",
             "POST__video_generate",
@@ -341,7 +361,8 @@ class ContractTest {
     @Test
     fun `the export is the current one`() {
         for (name in EXPECTED_FIXTURES.filter { it.startsWith("POST__") }) {
-            if (name in setOf("POST__benchmark", "POST__unload")) continue
+            // The three POSTs that take no body at all, and so have no 400 to give.
+            if (name in setOf("POST__benchmark", "POST__unload", "POST__jev_calibrate")) continue
             val errors = fixture(name)["errors"] as? JsonObject
             assertNotNull("$name documents no errors at all", errors)
             assertNotNull("$name should document a 400 — refresh the contract", errors!!["400"])

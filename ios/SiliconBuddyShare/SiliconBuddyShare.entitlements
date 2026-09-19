@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The app and its two extensions are three processes with three sandboxes. These
+	  two groups are what lets them agree on which Mac is paired: the container holds
+	  the address and the last answer, the Keychain group holds the token — which stays
+	  in the Keychain rather than being copied into the container, because a bearer for
+	  somebody's Mac is a credential wherever it is written.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.siliconoptimizer.buddy</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.siliconoptimizer.buddy</string>
+	</array>
+</dict>
+</plist>

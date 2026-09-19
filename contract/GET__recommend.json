@@ -1,6 +1,9 @@
 {
   "auth" : "device",
   "errors" : {
+    "400" : {
+      "error" : "Send the task in the body of POST \/recommend, not in the URL. GET \/recommend takes only a category."
+    },
     "401" : {
       "error" : "Invalid or missing control token."
     },

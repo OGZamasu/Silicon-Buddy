@@ -1,0 +1,39 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "400" : {
+      "error" : "A pairing code grants either \"full\" or \"chat\". Leave the scope out for full control, which is what the Mac's own Settings window offers by default."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can mint a pairing code."
+    },
+    "409" : {
+      "error" : "Silicon Buddy's tailnet listener is not up, so a pairing code would have nowhere to dial. Turn Silicon Buddy on in Settings → Silicon Buddy on the Mac and wait for it to report an address."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/buddy\/invitations",
+  "request" : {
+    "scope" : "chat"
+  },
+  "response" : {
+    "code" : "000000",
+    "expiresAt" : "2026-09-18T09:17:44Z",
+    "host" : "100.64.0.9",
+    "port" : 8788,
+    "scope" : "chat"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Mint the pairing code the Mac's own Settings window would show."
+}

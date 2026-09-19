@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The static half of the launcher's long-press menu, and what the Assistant can be
+  taught to run. Both open the composer; neither sends anything, because a shortcut
+  that fired a prompt off without showing it would be a shortcut nobody could check.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="ask-static"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_ask_short"
+        android:shortcutLongLabel="@string/shortcut_ask_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="siliconbuddy://ask"
+            android:targetPackage="dev.siliconoptimizer.buddy"
+            android:targetClass="dev.siliconoptimizer.buddy.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+        <capability-binding android:key="actions.intent.OPEN_APP_FEATURE" />
+    </shortcut>
+</shortcuts>

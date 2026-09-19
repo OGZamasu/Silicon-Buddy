@@ -4,7 +4,21 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.core.content.ContextCompat
+import dev.siliconoptimizer.buddy.camera.CameraModeSheet
+import dev.siliconoptimizer.buddy.camera.CameraModeViewModel
+import dev.siliconoptimizer.buddy.reach.VoiceState
+import dev.siliconoptimizer.buddy.voice.VoiceController
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -96,6 +110,70 @@ fun ChatScreen(
         }
     }
 
+    // MARK: - Camera mode and push-to-talk
+
+    val voice: VoiceController = androidx.lifecycle.viewmodel.compose.viewModel()
+    val camera: CameraModeViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    var showCamera by remember { mutableStateOf(false) }
+    var hasCamera by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var hasMicrophone by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCamera = granted
+        if (granted) showCamera = true
+    }
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasMicrophone = granted
+        if (granted) voice.permissionGranted() else voice.permissionRefused()
+    }
+
+    // A spoken question goes through the ordinary composer, so it lands in the same
+    // transcript and the same conversation as a typed one.
+    LaunchedEffect(Unit) {
+        voice.onAsk = { text ->
+            model.draft = text
+            model.send(app.transport)
+        }
+    }
+    // The reply is read out only when the person asked out loud and is still waiting:
+    // `VoiceSession` decides, not this.
+    var wasSending by remember { mutableStateOf(false) }
+    LaunchedEffect(model.isSending) {
+        if (wasSending && !model.isSending) {
+            voice.answered(
+                model.current?.messages?.lastOrNull {
+                    it.role == ChatMessage.ROLE_ASSISTANT
+                }?.content.orEmpty(),
+            )
+        }
+        wasSending = model.isSending
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { voice.interrupt() }
+    }
+
+    if (showCamera) {
+        CameraModeSheet(
+            transport = app.transport,
+            model = camera,
+            supportsVision = null,
+            onDismiss = { showCamera = false; camera.retake() },
+        )
+    }
+
     LaunchedEffect(model.current?.messages?.size, model.current?.messages?.lastOrNull()?.content) {
         val count = model.current?.messages?.size ?: 0
         if (count > 0) listState.animateScrollToItem(count - 1)
@@ -156,6 +234,38 @@ fun ChatScreen(
 
         HorizontalDivider()
 
+        if (voice.state is VoiceState.Listening) {
+            voice.partial?.takeIf { it.isNotEmpty() }?.let { heard ->
+                Text(
+                    heard,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            // Said every time the button is down, not once in Settings: where the
+            // recording of a question goes is worth knowing while you are speaking it.
+            Text(
+                voice.recognitionNote,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (voice.isOnDevice) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            )
+        }
+        voice.problem?.let { problem ->
+            Text(
+                problem,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
         if (model.isConversationBusy && !model.isSending) {
             Text(
                 "The Mac is still answering this conversation.",
@@ -195,6 +305,20 @@ fun ChatScreen(
             ) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "Attach a picture")
             }
+            IconButton(
+                onClick = {
+                    if (hasCamera) {
+                        showCamera = true
+                    } else {
+                        cameraPermission.launch(android.Manifest.permission.CAMERA)
+                    }
+                },
+            ) {
+                Icon(
+                    Icons.Filled.CameraAlt,
+                    contentDescription = "Camera mode — point at something and ask about it",
+                )
+            }
             OutlinedTextField(
                 value = model.draft,
                 onValueChange = { model.draft = it },
@@ -202,6 +326,9 @@ fun ChatScreen(
                 modifier = Modifier.weight(1f),
                 maxLines = 6,
             )
+            PushToTalkButton(voice, hasMicrophone) {
+                microphonePermission.launch(android.Manifest.permission.RECORD_AUDIO)
+            }
             if (model.isSending) {
                 IconButton(onClick = { model.cancel() }) {
                     Icon(Icons.Filled.Stop, contentDescription = "Stop generating")
@@ -383,6 +510,30 @@ private fun MessageBubble(
                     "  $it",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
+        message.verdict?.let { verdict ->
+            // Three lines rather than one run-on sentence, the same shape iOS draws:
+            // the Mac's word, then its reasons, then what it suggests doing about it.
+            Text(
+                verdict.summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            verdict.reasons?.takeIf { it.isNotEmpty() }?.let { reasons ->
+                Text(
+                    reasons.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            verdict.suggestion?.takeIf { it.isNotEmpty() }?.let { suggestion ->
+                Text(
+                    suggestion,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
             }
         }
@@ -592,3 +743,54 @@ fun attachmentFrom(context: Context, uri: android.net.Uri, maxEdge: Int = 1024):
         }
         "data:image/jpeg;base64," + Base64.encodeToString(data, Base64.NO_WRAP)
     }.getOrNull()
+
+
+/**
+ * Hold to talk, let go to ask.
+ *
+ * A hold rather than a toggle: it is the gesture people already know from every other
+ * push-to-talk button, it cannot be left on by accident, and letting go is an
+ * unambiguous "I have finished the sentence" that no silence detector gets right.
+ */
+@Composable
+private fun PushToTalkButton(
+    voice: VoiceController,
+    hasMicrophone: Boolean,
+    requestPermission: () -> Unit,
+) {
+    val listening = voice.state is VoiceState.Listening
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .pointerInput(hasMicrophone) {
+                detectTapGestures(
+                    onPress = {
+                        if (!hasMicrophone) {
+                            requestPermission()
+                            return@detectTapGestures
+                        }
+                        voice.press()
+                        // `awaitRelease` is the whole gesture: the question is whatever
+                        // was heard between the finger going down and coming up.
+                        tryAwaitRelease()
+                        voice.release()
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            when (voice.state) {
+                is VoiceState.Listening -> Icons.Filled.GraphicEq
+                is VoiceState.Speaking -> Icons.AutoMirrored.Filled.VolumeUp
+                else -> Icons.Filled.Mic
+            },
+            contentDescription = voice.buttonLabel,
+            tint = if (listening) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.primary
+            },
+        )
+    }
+}
