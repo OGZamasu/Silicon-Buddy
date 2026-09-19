@@ -247,6 +247,15 @@ sealed interface ServerEvent {
 
     /** An answer the Mac has since checked. */
     data class Checked(val verdict: Verdict) : ServerEvent
+
+    /** Something moved in one of the Mac's agent sessions. */
+    data class Agent(val event: AgentEvent) : ServerEvent
+
+    /**
+     * This phone fell behind and the Mac dropped [dropped] frames for it rather than wait.
+     * Whatever those frames said has to be read again.
+     */
+    data class Resync(val dropped: Int?) : ServerEvent
     data class Beat(val at: String?) : ServerEvent
 
     /**

@@ -1,6 +1,16 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.chat.SendLimits
+import dev.siliconoptimizer.buddy.transport.AgentApprovalDecision
+import dev.siliconoptimizer.buddy.transport.AgentApprovalResult
+import dev.siliconoptimizer.buddy.transport.AgentEvent
+import dev.siliconoptimizer.buddy.transport.AgentMessageAccepted
+import dev.siliconoptimizer.buddy.transport.AgentMessageRequest
+import dev.siliconoptimizer.buddy.transport.AgentScreening
+import dev.siliconoptimizer.buddy.transport.ResyncEvent
+import dev.siliconoptimizer.buddy.transport.AgentSessionDetail
+import dev.siliconoptimizer.buddy.transport.AgentSessionList
+import dev.siliconoptimizer.buddy.transport.AgentSessionSummary
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.ChatMessageWire
 import dev.siliconoptimizer.buddy.transport.ChatMetrics
@@ -97,6 +107,16 @@ class ContractTest {
                 (fields["events"] as JsonObject).getValue(part.removePrefix("events."))
             part.startsWith("errors.") ->
                 (fields["errors"] as JsonObject).getValue(part.removePrefix("errors."))
+            // `eventVariants.agent.approval answered`: one named variant of one event.
+            part.startsWith("eventVariants.") -> {
+                val (event, variant) = part.removePrefix("eventVariants.").split(".", limit = 2)
+                ((fields["eventVariants"] as JsonObject).getValue(event) as JsonObject).getValue(variant)
+            }
+            // `errorVariants.409.still screening`: one more refusal a status can carry.
+            part.startsWith("errorVariants.") -> {
+                val (status, label) = part.removePrefix("errorVariants.").split(".", limit = 2)
+                ((fields["errorVariants"] as JsonObject).getValue(status) as JsonObject).getValue(label)
+            }
             else -> fields.getValue(part)
         }
     }
@@ -401,9 +421,196 @@ class ContractTest {
         assertNotNull(jev.features.firstOrNull { it.id == JevView.MEDIA_ROUTING })
     }
 
+    // MARK: - The M4 routes: the Mac's agent sessions
+
+    @Test
+    fun `the session list carries both engines, stopped ones included`() {
+        val list = roundTrip<AgentSessionList>("GET__agent_sessions")
+        assertEquals(listOf("codex", "pi"), list.sessions.map { it.engine })
+        val codex = list.sessions.first()
+        assertTrue(codex.turnActive)
+        assertEquals(1, codex.pendingApprovals)
+        assertEquals(2, codex.modelChoices.size)
+        assertNotNull("Codex mints a thread id", codex.threadID)
+        assertEquals(AgentSessionSummary.APPROVALS_SCREENED, codex.approvalMode)
+        assertEquals("workspace-write", codex.sandbox)
+        assertTrue("never the home folder's absolute path", codex.cwd!!.startsWith("~/"))
+        val pi = list.sessions.last()
+        assertNull("Pi has none to give", pi.threadID)
+        assertEquals("stopped", pi.state)
+        assertTrue("Pi with the guardrail off asks nobody", pi.runsWithoutAsking)
+        assertEquals(AgentSessionSummary.SANDBOX_NONE, pi.sandbox)
+        assertEquals("a stopped engine is asking nobody anything", 0, pi.pendingApprovals)
+        assertTrue("each transcript has its own epoch", codex.epoch != pi.epoch)
+    }
+
+    @Test
+    fun `a session carries its transcript, what is waiting, and the watermark`() {
+        val detail = roundTrip<AgentSessionDetail>("GET__agent_sessions__engine_")
+        assertTrue(detail.complete)
+        assertEquals(41L, detail.seq)
+        assertEquals("the cursor's two halves agree", detail.session.epoch, detail.epoch)
+        assertEquals(0, detail.omitted)
+        assertEquals(
+            listOf("user", "reasoning", "assistant", "command", "fileChange"),
+            detail.items.map { it.kind },
+        )
+        val command = detail.items.first { it.kind == "command" }
+        assertNotNull("a command keeps what it printed apart", command.output)
+        assertEquals("completed", command.status)
+        assertEquals("only the tail of a long log travels, and it says so", true, command.truncated)
+        assertEquals("the sending row carries the model it was sent with", "local/qwen3-coder-30b", detail.items.first().model)
+        val waiting = detail.approvals.single()
+        assertEquals("command", waiting.kind)
+        assertEquals("rm -rf .build", waiting.summary)
+        assertNotNull(waiting.reason)
+        assertEquals("a card carries the guardrail's verdict", AgentScreening.CONFIRM, waiting.screening.verdict)
+        assertTrue(waiting.screening.summary.startsWith("Jev"))
+    }
+
+    @Test
+    fun `the verbs answer the session's summary`() {
+        assertEquals("running", roundTrip<AgentSessionSummary>("POST__agent_sessions__engine__start").state)
+        assertEquals(0, roundTrip<AgentSessionSummary>("POST__agent_sessions__engine__new").itemCount)
+        roundTrip<AgentSessionSummary>("POST__agent_sessions__engine__interrupt")
+        assertEquals("stopped", roundTrip<AgentSessionSummary>("DELETE__agent_sessions__engine_").state)
+        for (name in listOf(
+            "POST__agent_sessions__engine__start", "POST__agent_sessions__engine__new",
+            "POST__agent_sessions__engine__interrupt", "DELETE__agent_sessions__engine_",
+        )) {
+            assertEquals("$name takes no body", JsonNull, fixture(name)["request"])
+        }
+    }
+
+    @Test
+    fun `sending a turn is text and a model, and answers the row it became`() {
+        val request = roundTrip<AgentMessageRequest>("POST__agent_sessions__engine__messages", "request")
+        assertTrue(request.text.isNotBlank())
+        assertEquals("local/qwen3-coder-30b", request.model)
+        assertTrue(roundTrip<AgentMessageAccepted>("POST__agent_sessions__engine__messages").itemID.isNotEmpty())
+    }
+
+    @Test
+    fun `answering an approval is accept or decline, and says how it was applied`() {
+        val request = roundTrip<AgentApprovalDecision>("POST__agent_sessions__engine__approvals__id_", "request")
+        assertEquals(AgentApprovalDecision.ACCEPT, request.decision)
+        val result = roundTrip<AgentApprovalResult>("POST__agent_sessions__engine__approvals__id_")
+        assertEquals("accepted", result.decision)
+        assertEquals(0, result.session.pendingApprovals)
+    }
+
+    /** The four kinds of `agent` frame, and the answered form of an approval. */
+    @Test
+    fun `agent frames on the event stream`() {
+        val item = roundTrip<AgentEvent>("GET__events", "events.agent")
+        assertEquals(AgentEvent.ITEM, item.kind)
+        assertNotNull(item.item)
+        assertEquals("running", roundTrip<AgentEvent>("GET__events", "eventVariants.agent.state").state)
+        assertEquals(true, roundTrip<AgentEvent>("GET__events", "eventVariants.agent.turn").turnActive)
+        val asked = roundTrip<AgentEvent>("GET__events", "eventVariants.agent.approval")
+        assertEquals(AgentEvent.PENDING, asked.state)
+        val answered = roundTrip<AgentEvent>("GET__events", "eventVariants.agent.approval answered")
+        assertEquals(AgentEvent.ACCEPTED, answered.state)
+        assertEquals(asked.approval!!.id, answered.approval!!.id)
+        assertTrue("an answered frame comes after the one that asked", answered.seq > asked.seq)
+        val reset = roundTrip<AgentEvent>("GET__events", "eventVariants.agent.reset")
+        assertEquals(AgentEvent.RESET, reset.kind)
+        assertTrue("a reset names the transcript that replaced the old one", reset.epoch != item.epoch)
+        assertEquals(false, reset.turnActive)
+        assertNotNull(reset.state)
+    }
+
+    /** Frames the Mac had to drop for a phone that fell behind are said, not hidden. */
+    @Test
+    fun `a resync says how many frames were dropped`() {
+        assertEquals(7, roundTrip<ResyncEvent>("GET__events", "events.resync").dropped)
+    }
+
+    /**
+     * The refusals a status can carry beyond the one in `errors`, each strictly: every one
+     * decodes, maps to the case a screen can act on, and the set is pinned, so a new one
+     * fails here rather than reaching a person as a number.
+     */
+    @Test
+    fun `every error variant decodes and maps to the case a screen acts on`() {
+        val seen = mutableSetOf<String>()
+        for (name in EXPECTED_FIXTURES.sorted()) {
+            val variants = fixture(name)["errorVariants"] ?: continue
+            assertTrue("$name: errorVariants is {status: {label: {error}}}", variants is JsonObject)
+            for ((status, labels) in variants as JsonObject) {
+                val code = status.toIntOrNull()
+                assertNotNull("$name: $status is not a status", code)
+                assertTrue("$name $status: labels are an object", labels is JsonObject)
+                for ((label, body) in labels as JsonObject) {
+                    assertTrue("$name $status $label: a body is {error}", body is JsonObject && body.keys == setOf("error"))
+                    val decoded = json.decodeFromString<ErrorResponse>(body.toString())
+                    assertTrue("$name $status $label says nothing", decoded.error.isNotBlank())
+                    val mapped = TransportError.from(code!!, body.toString(), "/x")
+                    assertNotNull(mapped)
+                    assertTrue("$name $status $label falls through to Server", mapped !is TransportError.Server)
+                    assertEquals("$name $status $label reaches a person in the Mac's words", decoded.error, mapped!!.message)
+                    seen += "$name $status $label"
+                }
+            }
+        }
+        assertEquals(
+            "The Mac documents different refusals now — refresh, map them, then list them here",
+            EXPECTED_ERROR_VARIANTS, seen,
+        )
+        // The ones the Agents tab acts on, by case.
+        val approvals = "POST__agent_sessions__engine__approvals__id_"
+        for (label in listOf("still screening", "engine stopped")) {
+            assertTrue(TransportError.from(409, part(approvals, "errorVariants.409.$label").toString(), "/x") is TransportError.Conflict)
+        }
+        assertTrue(
+            TransportError.from(409, part("POST__agent_sessions__engine__messages", "errorVariants.409.turn in progress").toString(), "/x")
+                is TransportError.Conflict,
+        )
+        assertTrue(
+            TransportError.from(403, part("GET__agent_sessions", "errorVariants.403.swarm").toString(), "/x")
+                is TransportError.Forbidden,
+        )
+    }
+
+    /** Every refusal an agent route documents reaches a screen as a case it can act on. */
+    @Test
+    fun `the agent routes' refusals map to what a screen can do about them`() {
+        val approvals = "POST__agent_sessions__engine__approvals__id_"
+        assertTrue(TransportError.from(403, part(approvals, "errors.403").toString(), "/x") is TransportError.Forbidden)
+        assertTrue(TransportError.from(409, part(approvals, "errors.409").toString(), "/x") is TransportError.Conflict)
+        assertTrue(
+            TransportError.from(409, part(approvals, "errors.409").toString(), "/x")!!.message!!
+                .contains("answered at the Mac"),
+        )
+        assertTrue(TransportError.from(400, part(approvals, "errors.400").toString(), "/x") is TransportError.BadRequest)
+        for (name in listOf("GET__agent_sessions", "GET__agent_sessions__engine_", approvals)) {
+            assertEquals(listOf("full"), fixture(name)["scopes"].toString()
+                .removeSurrounding("[", "]").split(",").map { it.trim().removeSurrounding("\"") })
+        }
+    }
+
     // MARK: - The export itself
 
     companion object {
+        /**
+         * Every `errorVariants` entry the export carries, as "fixture status label". Pinned
+         * like the fixtures, and for the same reason: a refusal the Mac grows fails here.
+         */
+        val EXPECTED_ERROR_VARIANTS = setOf(
+            "DELETE__agent_sessions__engine_ 403 swarm",
+            "GET__agent_sessions 403 swarm",
+            "GET__agent_sessions__engine_ 403 swarm",
+            "POST__agent_sessions__engine__approvals__id_ 403 swarm",
+            "POST__agent_sessions__engine__approvals__id_ 409 engine stopped",
+            "POST__agent_sessions__engine__approvals__id_ 409 still screening",
+            "POST__agent_sessions__engine__interrupt 403 swarm",
+            "POST__agent_sessions__engine__messages 403 swarm",
+            "POST__agent_sessions__engine__messages 409 turn in progress",
+            "POST__agent_sessions__engine__new 403 swarm",
+            "POST__agent_sessions__engine__start 403 swarm",
+            "POST__agent_sessions__engine__start 409 stopping",
+        )
+
         /**
          * The contract is a copy of something generated elsewhere, and a copy goes
          * stale quietly. This is the list that makes it loud: when it changes,
@@ -423,8 +630,11 @@ class ContractTest {
             // in M3 — the Create tab reads it to know whether this Mac routes media
             // itself — but the calibration, guardrail and recommend shapes are still
             // types nothing would call, and a type nothing calls is a guess that rots.
+            "DELETE__agent_sessions__engine_",
             "DELETE__buddy_devices__id_",
             "DELETE__buddy_invitations",
+            "GET__agent_sessions",
+            "GET__agent_sessions__engine_",
             "GET__buddy_devices",
             "GET__catalog",
             "GET__conversations",
@@ -447,6 +657,11 @@ class ContractTest {
             "GET__v1_node",
             "GET__video_models",
             "GET__video_queue",
+            "POST__agent_sessions__engine__approvals__id_",
+            "POST__agent_sessions__engine__interrupt",
+            "POST__agent_sessions__engine__messages",
+            "POST__agent_sessions__engine__new",
+            "POST__agent_sessions__engine__start",
             "POST__benchmark",
             "POST__buddy_invitations",
             "POST__buddy_pair",
@@ -532,8 +747,17 @@ class ContractTest {
     @Test
     fun `the export is the current one`() {
         for (name in EXPECTED_FIXTURES.filter { it.startsWith("POST__") }) {
-            // The three POSTs that take no body at all, and so have no 400 to give.
-            if (name in setOf("POST__benchmark", "POST__unload", "POST__jev_calibrate")) continue
+            // The POSTs that take no body at all, and so have no 400 to give — three from
+            // before, and the three agent verbs, whose fixtures say `"request": null`.
+            if (name in setOf(
+                    "POST__benchmark", "POST__unload", "POST__jev_calibrate",
+                    "POST__agent_sessions__engine__start", "POST__agent_sessions__engine__new",
+                    "POST__agent_sessions__engine__interrupt",
+                )
+            ) {
+                assertEquals("$name takes no body", JsonNull, fixture(name)["request"])
+                continue
+            }
             val errors = fixture(name)["errors"] as? JsonObject
             assertNotNull("$name documents no errors at all", errors)
             assertNotNull("$name should document a 400 — refresh the contract", errors!!["400"])

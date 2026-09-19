@@ -34,6 +34,8 @@ class LoopbackServer : AutoCloseable {
         val headers: Map<String, String>,
         val body: String,
         val atMillis: Long,
+        /** What followed the `?`, undecoded — so a test can see exactly what was sent. */
+        val query: String = "",
     )
 
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
@@ -160,6 +162,7 @@ class LoopbackServer : AutoCloseable {
                     headers = headers,
                     body = String(body, Charsets.UTF_8),
                     atMillis = System.currentTimeMillis(),
+                    query = target.substringAfter('?', ""),
                 ),
             )
 

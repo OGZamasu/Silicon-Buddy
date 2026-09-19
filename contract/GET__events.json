@@ -16,6 +16,22 @@
     }
   },
   "events" : {
+    "agent" : {
+      "engine" : "codex",
+      "epoch" : "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827",
+      "item" : {
+        "at" : "2026-09-19T10:12:38Z",
+        "id" : "item_command_1",
+        "kind" : "command",
+        "output" : "…\nTest Suite 'LisbonTests' failed.\n1 test failed: itineraryFitsInThreeDays",
+        "status" : "completed",
+        "text" : "swift test --filter Lisbon",
+        "truncated" : true
+      },
+      "kind" : "item",
+      "seq" : 39,
+      "threadID" : "0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F"
+    },
     "download" : {
       "bytesExpected" : 20401094656,
       "bytesPerSecond" : 41943040,
@@ -35,6 +51,9 @@
       "status" : "running",
       "title" : "Opening shot"
     },
+    "resync" : {
+      "dropped" : 7
+    },
     "status" : {
       "contextLength" : 16384,
       "expertStreaming" : false,
@@ -53,6 +72,69 @@
     }
   },
   "eventVariants" : {
+    "agent" : {
+      "approval" : {
+        "approval" : {
+          "id" : "5D8B2F01-9A3C-4E67-8B21-0C4D5E6F7A81",
+          "kind" : "command",
+          "reason" : "Codex asks before running a command in this folder.",
+          "requestedAt" : "2026-09-19T10:12:36Z",
+          "screening" : {
+            "summary" : "Jev: review: destructive",
+            "verdict" : "confirm"
+          },
+          "summary" : "rm -rf .build"
+        },
+        "engine" : "codex",
+        "epoch" : "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827",
+        "kind" : "approval",
+        "seq" : 37,
+        "state" : "pending",
+        "threadID" : "0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F"
+      },
+      "approval answered" : {
+        "approval" : {
+          "id" : "5D8B2F01-9A3C-4E67-8B21-0C4D5E6F7A81",
+          "kind" : "command",
+          "reason" : "Codex asks before running a command in this folder.",
+          "requestedAt" : "2026-09-19T10:12:36Z",
+          "screening" : {
+            "summary" : "Jev: review: destructive",
+            "verdict" : "confirm"
+          },
+          "summary" : "rm -rf .build"
+        },
+        "engine" : "codex",
+        "epoch" : "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827",
+        "kind" : "approval",
+        "seq" : 40,
+        "state" : "accepted",
+        "threadID" : "0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F"
+      },
+      "reset" : {
+        "engine" : "codex",
+        "epoch" : "9E2F7A10-3C4B-4D58-A6E1-0B2C3D4E5F60",
+        "kind" : "reset",
+        "seq" : 41,
+        "state" : "running",
+        "turnActive" : false
+      },
+      "state" : {
+        "engine" : "pi",
+        "epoch" : "1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9",
+        "kind" : "state",
+        "seq" : 12,
+        "state" : "running"
+      },
+      "turn" : {
+        "engine" : "codex",
+        "epoch" : "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827",
+        "kind" : "turn",
+        "seq" : 34,
+        "threadID" : "0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F",
+        "turnActive" : true
+      }
+    },
     "job" : {
       "failed" : {
         "id" : "9C2F-0003",
@@ -78,5 +160,5 @@
     "full",
     "chat"
   ],
-  "summary" : "What the Mac is doing: loaded model, downloads, render jobs."
+  "summary" : "What the Mac is doing: loaded model, downloads, render jobs — and, for full control, the agent sessions."
 }

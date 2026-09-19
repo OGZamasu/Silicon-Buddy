@@ -56,12 +56,22 @@ jobs:
             fi
           done
 
+          # 48 after M2.1, 62 after M3's media types, 75 with M4's agent sessions. Raise
+          # it with every wire type added: a floor that lags lets a lost serializer through.
           serializers=$(grep -oE '^[A-Za-z0-9_.]+\$\$serializer' "$seeds" | sort -u | wc -l)
           echo "kept $serializers serializers"
-          if [ "$serializers" -lt 48 ]; then
-            echo "::error::only $serializers serializers kept, expected at least 48"
+          if [ "$serializers" -lt 75 ]; then
+            echo "::error::only $serializers serializers kept, expected at least 75"
             exit 1
           fi
+          # The agent frames arrive only by name through kotlinx.serialization, like the
+          # rest of the wire; losing one means the Agents tab silently shows nothing.
+          for type in AgentEvent AgentSessionDetail AgentSessionSummary AgentApproval ResyncEvent; do
+            if ! grep -qF "dev.siliconoptimizer.buddy.transport.$type\$\$serializer" "$seeds"; then
+              echo "::error::$type's serializer was not kept — agent sessions cannot decode in release"
+              exit 1
+            fi
+          done
 
       - name: APK size
         run: |

@@ -114,6 +114,74 @@ the nearest value that model supports. `GET /video/models` carries
 lane, so a picker never has to offer a size or a field the renderer would
 quietly ignore.
 
+## Agent sessions
+
+`/agent/sessions` mirrors the Mac's Chat tab: one session per engine — `codex`
+and `pi` — and it is *the* session, not a copy. The session id is the engine
+id; there is no thread registry. Sending appends to the transcript the owner is
+looking at, and an approval answered on either side is answered once, for both.
+
+Every route here is **full scope only**, because every one of them runs commands
+on this Mac — and so is what they reveal: `agent` frames on `/events` go only to
+this Mac's own token and to full-control devices. A chat-only device is answered
+403 by the same gate that refuses it `POST /load`. So is the swarm secret, with
+its own sentence (in each fixture's `errorVariants`): a node is a machine with a
+token in a config file, not a person with a phone.
+
+Engines are listed even when stopped, so a phone can offer to start one. The
+summary says whether anything stands between the agent and the Mac: `approvals`
+is `screened` (it asks, and the Jev guardrail judges each ask first), `asked` (it
+asks, a person decides — including while the guardrail is on but cannot judge, with
+no key or no budget left) or `unattended` (nothing asks — Codex under "never ask",
+or Pi with the guardrail off), and `sandbox` is Codex's mode or `none` for Pi.
+`cwd` is home-relative (`~/…`) and null for Codex until the owner has picked a
+folder on the Mac — the one thing a device may not choose.
+
+`POST .../start` is what opening the tab does, or the Mac's Retry from `failed`,
+and is idempotent. `POST .../new` starts a fresh thread — stopping a turn in
+flight first — and clears the Mac's transcript with it. `DELETE` stops the
+sidecar. `POST .../messages` answers **202** with the transcript row the send
+became; a Codex turn already running is a 409, as the Mac's own send button is
+disabled, while Pi takes a message mid-turn as steering. `model` must be one of
+the session's `modelChoices`, and it is **sticky**: it becomes the engine's model,
+saved and shown in the Mac's own menu, exactly as picking it there does.
+
+`GET /agent/sessions/{engine}` carries the transcript in one normalised shape for
+both engines — `user`, `assistant`, `reasoning`, `command`, `fileChange`, `tool`,
+`notice`, `error` — oldest first. `output` is at most its last 8,192 characters,
+with `truncated: true` when it was cut. The answer's `seq` and `epoch` are one
+cursor: send both back as `?since=<seq>&epoch=<epoch>` and the answer carries only
+the rows that changed after it, with `complete: false`. A cursor from another
+epoch — a new thread, a restart, the Mac's app relaunched — or a `seq` never
+reached answers the whole transcript with `complete: true`, so replace rather
+than merge. `?limit=` caps the rows (default 500, at most 2000); `omitted` counts
+what it left out, and a slice that would not fit is answered as the transcript's
+newest rows with `complete: true` rather than a slice missing its oldest changes.
+
+Approvals are what a *person* still has to decide, once the guardrail has had its
+say: a call Jev is still screening is not listed and cannot be answered (409), and
+each listed one carries `screening` — the verdict and the line the Mac's own card
+shows. Answering is `accept` or `decline`. An id that is not waiting is a 404 —
+answered already, or never there — except when the Mac answered it first, which
+is a 409 saying so: the decision was made, the agent has it, and nothing was sent
+twice. A stopped engine is asking nobody anything, so it lists no approvals and
+answering one of its leftover cards is a 409.
+
+On `/events`, the `agent` frame carries all of it live, and every frame carries
+`epoch` and `threadID`. `reset` says the transcript was replaced: drop every row
+and card for that engine and fetch again. `state` fires when a session starts,
+stops or fails or its thread gets an id; `turn` when a turn begins or ends; `item`
+when a row appears or changes, carrying the row whole rather than a delta and
+sampled ten times a second per engine; `approval` — with `pending`, `accepted` or
+`declined` — when a call starts or stops waiting. Frames arrive in `seq` order, so
+a phone resuming from the last frame it read misses nothing. A phone that has
+just connected is sent each engine's `state`, `turn` and pending `approval`s
+first, at the current `seq`. A subscriber that falls more than 32 frames behind
+loses the oldest, and a `resync` frame saying how many arrives exactly where they
+were: after the last frame read before the gap and before anything newer, one per
+gap. Fetch what you show again with the cursor from that last frame — it sits just
+before the gap, so the answer holds exactly what was dropped.
+
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/buddy/pair` | none | Spend the six-digit code on screen for a device token of your own. |
@@ -122,7 +190,7 @@ quietly ignore.
 | `POST` | `/buddy/invitations` | control | Mint the pairing code the Mac's own Settings window would show. |
 | `DELETE` | `/buddy/invitations` | control | Cancel the code on screen. Succeeds whether or not one was open. |
 | `POST` | `/chat/stream` | device | The same body as /chat, answered token by token. _(SSE)_ |
-| `GET` | `/events` | device | What the Mac is doing: loaded model, downloads, render jobs. _(SSE)_ |
+| `GET` | `/events` | device | What the Mac is doing: loaded model, downloads, render jobs — and, for full control, the agent sessions. _(SSE)_ |
 | `GET` | `/conversations` | device | Every conversation on the Mac, newest first. |
 | `POST` | `/conversations` | device | Start a conversation. It appears in the Mac's own sidebar at once. |
 | `GET` | `/conversations/{id}` | device | One transcript. Images are omitted. |
@@ -150,6 +218,14 @@ quietly ignore.
 | `POST` | `/benchmark` | device | Measure the loaded model here, and recalibrate its estimates. |
 | `GET` | `/swarm` | device | The other machines this Mac can delegate to. |
 | `GET` | `/v1/node` | device | What this Mac advertises to its peers. |
+| `GET` | `/agent/sessions` | device | Every agent engine, running or not, as the Mac has it right now. |
+| `GET` | `/agent/sessions/{engine}` | device | One session: the summary, the transcript, and what is waiting. `?since=<seq>&epoch=<epoch>` answers only what changed after that point; `?limit=` caps the rows (default 500, at most 2000). |
+| `POST` | `/agent/sessions/{engine}/start` | device | Start the engine, exactly as opening its tab does — or as the Mac's own Retry does, from `failed`. Idempotent. |
+| `POST` | `/agent/sessions/{engine}/new` | device | Start a fresh thread, stopping a turn in flight first. The Mac's own transcript clears with it, and `/events` sends a `reset`. |
+| `DELETE` | `/agent/sessions/{engine}` | device | Stop the engine. Its sidecar goes with it. |
+| `POST` | `/agent/sessions/{engine}/messages` | device | Send a turn. 202: it is on the Mac's screen, and the answer arrives on /events. `model` is sticky: it becomes the engine's model, as picking it in the Mac's own menu does. |
+| `POST` | `/agent/sessions/{engine}/interrupt` | device | Stop the turn in flight. The turn still ends through its own events. |
+| `POST` | `/agent/sessions/{engine}/approvals/{id}` | device | Answer a held call. The runtime is told once, whichever side answers. |
 | `GET` | `/image/models` | device | The image models here, and what each would peak at. |
 | `POST` | `/image/plan` | device | Phase-by-phase memory for a given size, steps and precision. |
 | `POST` | `/image/generate` | device | Render an image, locally or on a paired node. |

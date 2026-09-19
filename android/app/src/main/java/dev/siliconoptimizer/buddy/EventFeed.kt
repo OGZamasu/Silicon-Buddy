@@ -46,6 +46,52 @@ class EventFeed : ViewModel() {
     val jobEvents: SharedFlow<JobProgress> = _jobEvents.asSharedFlow()
 
     /**
+     * Every `agent` frame, in the order the Mac sent them.
+     *
+     * A flow rather than state for the same reason as [jobEvents]: the sessions reducer
+     * wants each frame, not the latest one. The buffer is generous because streamed prose
+     * arrives ten frames a second per engine — and a frame that still does not fit is
+     * not lost quietly: [agentFramesDropped] moves, and the sessions catch up from the
+     * Mac rather than trusting a transcript with a hole in it.
+     */
+    private val _agentEvents = MutableSharedFlow<AgentFeed>(replay = 0, extraBufferCapacity = 512)
+    val agentEvents: SharedFlow<AgentFeed> = _agentEvents.asSharedFlow()
+
+    /** Bumped whenever an `agent` frame could not be handed on. */
+    var agentFramesDropped by mutableStateOf(0)
+        private set
+
+    /**
+     * Bumped on every `resync`: the Mac dropped frames for this phone. The agent sessions
+     * hear it in order with their frames; this is for the rest — the render queue — which
+     * has to be read again too.
+     */
+    var resyncs by mutableStateOf(0)
+        private set
+
+    /** A break this feed still owes the sessions, because the last one did not fit. */
+    private var owesBreak = false
+
+    /**
+     * Hands an agent frame on, in order. A frame that does not fit is not dropped silently:
+     * the next thing the sessions hear is that the stream broke, so they fetch the gap
+     * rather than trust a transcript with a hole in it.
+     */
+    private fun emitAgent(item: AgentFeed) {
+        if (owesBreak) {
+            if (!_agentEvents.tryEmit(AgentFeed.Broken)) {
+                agentFramesDropped++
+                return
+            }
+            owesBreak = false
+        }
+        if (!_agentEvents.tryEmit(item)) {
+            owesBreak = true
+            agentFramesDropped++
+        }
+    }
+
+    /**
      * The last answer check the Mac published, by conversation. Kept rather than
      * consumed: the chat screen may not be on screen when it arrives.
      */
@@ -59,6 +105,10 @@ class EventFeed : ViewModel() {
 
     /** True when this Mac has no `/events` and the screens must poll instead. */
     var mustPoll by mutableStateOf(false)
+        private set
+
+    /** The Mac refused this phone's token on the stream (401). Cleared by a new [start]. */
+    var unauthorized by mutableStateOf(false)
         private set
 
     /**
@@ -87,8 +137,43 @@ class EventFeed : ViewModel() {
 
     private var job: Job? = null
 
+    /** The stream this feed was told to hold, while the app itself has let go of it. */
+    private var paused: ControlTransport? = null
+
+    /**
+     * The app is leaving the screen. A stream in the background keeps a radio awake to tell
+     * nobody anything — the watcher, when there is one, holds its own — so it is closed, and
+     * [resume] opens it again. Only this feed's own pause is resumed: a feed started fresh
+     * afterwards (a new Mac, a new screen) is not opened twice.
+     */
+    fun pause() {
+        val running = job ?: return
+        running.cancel()
+        job = null
+        paused = current
+        isLive = false
+        retryAt = null
+    }
+
+    /** Back on screen: the stream opens again if [pause] closed it. True when it did. */
+    fun resume(): Boolean {
+        val transport = paused ?: return false
+        paused = null
+        start(transport)
+        return true
+    }
+
+    /** What [start] was last given. */
+    private var current: ControlTransport? = null
+
     fun start(transport: ControlTransport?) {
         stop()
+        paused = null
+        unauthorized = false
+        current = transport
+        // A new connection does not follow on from the old one: whatever the sessions heard
+        // before this, the frames after it are a new run.
+        emitAgent(AgentFeed.Broken)
         if (transport == null) {
             mustPoll = true
             return
@@ -98,6 +183,9 @@ class EventFeed : ViewModel() {
             try {
                 transport.events().collect { event ->
                     if (event is ServerEvent.Disconnected) {
+                        // The sessions hear about the break in order with their frames:
+                        // whatever arrives after it is not known to follow on.
+                        emitAgent(AgentFeed.Broken)
                         isLive = false
                         reconnectAttempt = event.attempt
                         retryAt = System.currentTimeMillis() + event.retryInMillis
@@ -140,6 +228,11 @@ class EventFeed : ViewModel() {
                             // until the Mac exports one.
                             verdicts[event.verdict.conversationID.orEmpty()] = event.verdict
                         }
+                        is ServerEvent.Agent -> emitAgent(AgentFeed.Frame(event.event))
+                        is ServerEvent.Resync -> {
+                            emitAgent(AgentFeed.Broken)
+                            resyncs++
+                        }
                         is ServerEvent.Beat -> Unit
                         // Handled above, before the stream is called live.
                         is ServerEvent.Disconnected -> Unit
@@ -147,10 +240,16 @@ class EventFeed : ViewModel() {
                 }
                 isLive = false
             } catch (error: TransportError) {
-                // Pre-M0 Mac, or a token that stopped working. Either way the screens
-                // have to ask rather than wait.
                 isLive = false
-                mustPoll = true
+                if (error is TransportError.Unauthorized) {
+                    // The Mac no longer knows this phone. Asking instead of listening would
+                    // only be refused the same way, every few seconds: nothing polls.
+                    unauthorized = true
+                    mustPoll = false
+                } else {
+                    // A Mac without `/events`: the screens have to ask rather than wait.
+                    mustPoll = true
+                }
             }
         }
     }
@@ -186,4 +285,14 @@ class EventFeed : ViewModel() {
             it.key == base || it.key.startsWith("$base@")
         }?.value
     }
+}
+
+/**
+ * What the agent sessions are told, in the order the stream said it: a frame, or that the
+ * run of frames broke — a dropped connection, or frames the Mac had to drop for this phone.
+ */
+sealed interface AgentFeed {
+    data class Frame(val event: dev.siliconoptimizer.buddy.transport.AgentEvent) : AgentFeed
+
+    data object Broken : AgentFeed
 }

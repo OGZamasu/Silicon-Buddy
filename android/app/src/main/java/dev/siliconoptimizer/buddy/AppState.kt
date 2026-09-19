@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.siliconoptimizer.buddy.agents.AgentNotifications
+import dev.siliconoptimizer.buddy.agents.AgentNotifier
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
@@ -115,6 +117,16 @@ class AppState(application: Application) : AndroidViewModel(application) {
         reachability = Reachability.Unknown
         pendingInvite = null
         connectionGeneration++
+        // "No longer paired" from a watcher that ended on a 401 is not true any more.
+        AgentNotifier(getApplication()).cancel(AgentNotifications.LOST_TOUCH_NOTIFICATION)
+    }
+
+    /**
+     * A 401 on some route: the Mac no longer knows this phone's token. The connection says
+     * so, as the probe would, and stays that way until the phone is paired again.
+     */
+    fun noteRevoked() {
+        if (config != null) reachability = Reachability.Unauthorized
     }
 
     fun forget() {

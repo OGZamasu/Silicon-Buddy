@@ -147,4 +147,7 @@ dependencies {
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)
+    // Drives the minified app from the outside, through the accessibility tree: a test
+    // that reached into app classes would find them renamed by R8.
+    androidTestImplementation(libs.androidx.test.uiautomator)
 }

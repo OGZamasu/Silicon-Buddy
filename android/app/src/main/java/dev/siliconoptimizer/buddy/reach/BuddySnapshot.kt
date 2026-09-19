@@ -125,8 +125,35 @@ class SnapshotStore(context: Context) {
             .remove(KEY)
             .remove(KEY_ANSWER)
             .remove(KEY_PROMPT)
+            .remove(KEY_APPROVALS)
+            .remove(KEY_APPROVALS_AT)
             .apply()
     }
+
+    /**
+     * How many agent approvals were waiting when this phone last heard, for the Quick
+     * Settings tile. Written whenever the count changes while the app or its watcher is
+     * listening.
+     */
+    fun notePendingApprovals(count: Int, at: Long = System.currentTimeMillis()) {
+        preferences.edit()
+            .putInt(KEY_APPROVALS, count)
+            .putLong(KEY_APPROVALS_AT, at)
+            .apply()
+    }
+
+    /**
+     * The count, while it is fresh. A number from an hour ago is a claim about a Mac this
+     * phone has not heard from since — the owner may well have answered at the desk — so
+     * past [APPROVALS_FRESH_MS] the tile says nothing about approvals rather than
+     * something stale.
+     */
+    fun pendingApprovals(now: Long = System.currentTimeMillis()): Int =
+        pendingApprovals(
+            preferences.getInt(KEY_APPROVALS, 0),
+            preferences.getLong(KEY_APPROVALS_AT, 0L),
+            now,
+        )
 
     /** The preset question the widget's button asks. */
     var quickPrompt: String
@@ -158,6 +185,14 @@ class SnapshotStore(context: Context) {
         const val KEY_PROMPT = "quickPrompt"
         const val KEY_ANSWER = "quickAnswer"
         const val KEY_SPEAKS = "speaksReplies"
+        const val KEY_APPROVALS = "pendingApprovals"
+        const val KEY_APPROVALS_AT = "pendingApprovalsAt"
+
+        /** How long a count of waiting approvals is worth repeating. */
+        const val APPROVALS_FRESH_MS = 15 * 60 * 1000L
+
+        fun pendingApprovals(count: Int, at: Long, now: Long): Int =
+            if (count > 0 && now - at in 0..APPROVALS_FRESH_MS) count else 0
     }
 }
 

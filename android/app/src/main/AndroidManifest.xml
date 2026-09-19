@@ -13,6 +13,19 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+      An agent turn followed with the app closed: the phone carrying on a conversation
+      that lives on the Mac, which is what Android 14's remoteMessaging type is for. A
+      normal permission, granted at install; nothing is asked at runtime beyond the
+      notification permission the approvals need anyway.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <!--
+      While an agent's approval card is on screen, other apps' overlays are not drawn over
+      it (Window.setHideOverlayWindows, Android 12+), so nothing can sit on top of Accept.
+      A normal permission, granted at install.
+    -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
@@ -119,6 +132,25 @@
             android:name=".media.MediaJobService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          Keeps /events open while an agent turn the phone is following runs with the app
+          in the background, and posts one notification per approval. Not exported: only
+          this app starts or stops it.
+        -->
+        <service
+            android:name=".agents.AgentWatchService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
+
+        <!--
+          Accept and Decline on an approval notification. Reached only through this app's
+          own PendingIntents, and on Android 12 and later only after the owner has
+          unlocked the phone — the actions demand it.
+        -->
+        <receiver
+            android:name=".agents.ApprovalActionReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".widget.BuddyWidgetReceiver"

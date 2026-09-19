@@ -12,6 +12,7 @@ import dev.siliconoptimizer.buddy.transport.NodeAdvertisement
 import dev.siliconoptimizer.buddy.transport.Profile
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.SwarmView
+import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -43,12 +44,28 @@ class DashboardViewModel : ViewModel() {
 
     private var ticker: Job? = null
 
+    /**
+     * The Mac refused this phone's token (401): it no longer knows this phone. Nothing is
+     * polled again — no retry mends that — until the phone is paired anew, which resets it.
+     */
+    var unpaired by mutableStateOf(false)
+        private set
+
+    /** Stops every reading this screen makes, for good, and says why. */
+    fun markUnpaired() {
+        unpaired = true
+        stopLiveUpdates()
+        isLoading = false
+        error = UNPAIRED
+    }
+
     /** Set when this Mac has no `/events`, in which case `/status` has to be asked for. */
     var pollsStatus by mutableStateOf(true)
 
     /** Throws away the last Mac's readings, so a re-pair never shows another machine. */
     fun reset() {
         stopLiveUpdates()
+        unpaired = false
         status = null
         profile = null
         metrics = null
@@ -68,19 +85,25 @@ class DashboardViewModel : ViewModel() {
             error = "No Mac is paired yet."
             return
         }
+        if (unpaired) return
         viewModelScope.launch {
             isLoading = true
-            val statusTask = async { runCatching { transport.status() }.getOrNull() }
-            val profileTask = async { runCatching { transport.profile() }.getOrNull() }
-            val metricsTask = async { runCatching { transport.metrics() }.getOrNull() }
-            val swarmTask = async { runCatching { transport.swarm() }.getOrNull() }
-            val nodeTask = async { runCatching { transport.node() }.getOrNull() }
+            val statusTask = async { runCatching { transport.status() } }
+            val profileTask = async { runCatching { transport.profile() } }
+            val metricsTask = async { runCatching { transport.metrics() } }
+            val swarmTask = async { runCatching { transport.swarm() } }
+            val nodeTask = async { runCatching { transport.node() } }
+            val all = listOf(statusTask, profileTask, metricsTask, swarmTask, nodeTask).map { it.await() }
+            if (all.any { it.exceptionOrNull() is TransportError.Unauthorized }) {
+                markUnpaired()
+                return@launch
+            }
 
-            val newStatus = statusTask.await()
-            val newProfile = profileTask.await()
-            val newMetrics = metricsTask.await()
-            val newSwarm = swarmTask.await()
-            val newNode = nodeTask.await()
+            val newStatus = statusTask.await().getOrNull()
+            val newProfile = profileTask.await().getOrNull()
+            val newMetrics = metricsTask.await().getOrNull()
+            val newSwarm = swarmTask.await().getOrNull()
+            val newNode = nodeTask.await().getOrNull()
 
             error = if (newStatus == null && newProfile == null && newMetrics == null) {
                 "Couldn't reach the Mac."
@@ -105,14 +128,20 @@ class DashboardViewModel : ViewModel() {
      */
     fun startLiveUpdates(transport: ControlTransport?, seconds: Long = 4) {
         ticker?.cancel()
-        if (transport == null) return
+        pausedTicker = null
+        tickerTransport = transport
+        if (transport == null || unpaired) return
         ticker = viewModelScope.launch {
             while (isActive) {
                 delay(seconds * 1000)
-                runCatching { transport.metrics() }.getOrNull()?.let { metrics = it }
+                val read = runCatching { transport.metrics() }
+                if (read.exceptionOrNull() is TransportError.Unauthorized) return@launch markUnpaired()
+                read.getOrNull()?.let { metrics = it }
                 // The status card comes from the event stream when the Mac has one.
                 if (pollsStatus) {
-                    runCatching { transport.status() }.getOrNull()?.let { status = it }
+                    val asked = runCatching { transport.status() }
+                    if (asked.exceptionOrNull() is TransportError.Unauthorized) return@launch markUnpaired()
+                    asked.getOrNull()?.let { status = it }
                 }
             }
         }
@@ -121,11 +150,38 @@ class DashboardViewModel : ViewModel() {
     fun stopLiveUpdates() {
         ticker?.cancel()
         ticker = null
+        pausedTicker = null
+    }
+
+    /** The transport a paused ticker was polling, until it is resumed. */
+    private var pausedTicker: ControlTransport? = null
+    private var tickerTransport: ControlTransport? = null
+
+    /**
+     * The app left the screen: nobody is looking at the metrics, and polling them every few
+     * seconds from the background keeps a radio awake for nothing.
+     */
+    fun pauseLiveUpdates() {
+        if (ticker == null) return
+        pausedTicker = tickerTransport
+        ticker?.cancel()
+        ticker = null
+    }
+
+    /** Back on screen: polling resumes if [pauseLiveUpdates] stopped it. */
+    fun resumeLiveUpdates() {
+        val transport = pausedTicker ?: return
+        pausedTicker = null
+        startLiveUpdates(transport)
     }
 
     override fun onCleared() {
         stopLiveUpdates()
         super.onCleared()
+    }
+
+    companion object {
+        const val UNPAIRED = "This phone is no longer paired with the Mac. Pair it again to see it here."
     }
 
     val loadedModelTitle: String
