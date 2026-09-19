@@ -9,6 +9,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.lifecycle.awaitInstance
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,7 @@ import dev.siliconoptimizer.buddy.reach.Attachments
 import dev.siliconoptimizer.buddy.reach.OneShotAsk
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.transport.ControlTransport
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
@@ -211,37 +213,49 @@ private fun CameraPreview(onImage: (Bitmap) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val capture = remember { ImageCapture.Builder().build() }
+    val preview = remember { Preview.Builder().build() }
     val previewView = remember { PreviewView(context) }
+    // Written before the bind and read on dispose, so the two cannot disagree about
+    // whether there is anything to release.
+    val bound = remember { java.util.concurrent.atomic.AtomicReference<ProcessCameraProvider?>() }
 
     // Bound for exactly as long as the preview is on screen.
     //
     // `bindToLifecycle` ties the camera to the *activity*, so a sheet that is dismissed
     // leaves it running: the privacy indicator stays lit and the sensor keeps drawing
     // power until the whole activity stops. Unbinding on dispose is the other half of
-    // the bind. And `getInstance(...).get()` blocks — on the main thread, inside
-    // composition — for as long as the camera service takes to come up, which on a cold
-    // first open is long enough to drop frames, so the work waits for a listener instead.
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val future = ProcessCameraProvider.getInstance(context)
-        var provider: ProcessCameraProvider? = null
-        future.addListener(
-            {
-                val ready = runCatching { future.get() }.getOrNull() ?: return@addListener
-                provider = ready
-                runCatching {
-                    ready.unbindAll()
-                    ready.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        Preview.Builder().build()
-                            .also { it.surfaceProvider = previewView.surfaceProvider },
-                        capture,
-                    )
-                }
-            },
-            ContextCompat.getMainExecutor(context),
-        )
-        onDispose { runCatching { provider?.unbindAll() } }
+    // the bind.
+    //
+    // `awaitInstance` rather than `getInstance(...).get()`, which blocks the main thread
+    // inside composition, or a listener, which has no way of knowing the sheet has since
+    // closed — dismiss it while the camera service is still starting and the listener
+    // binds afterwards, to a preview nobody is looking at, with no dispose left to undo
+    // it. A cancelled coroutine simply never reaches the bind.
+    LaunchedEffect(lifecycleOwner) {
+        val provider = runCatching { ProcessCameraProvider.awaitInstance(context) }
+            .getOrNull() ?: return@LaunchedEffect
+        // Recorded before binding, so a dispose racing the next two lines still finds
+        // something to unbind.
+        bound.set(provider)
+        ensureActive()
+        preview.surfaceProvider = previewView.surfaceProvider
+        runCatching {
+            provider.bindToLifecycle(
+                lifecycleOwner,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                preview,
+                capture,
+            )
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            // These two use cases, not `unbindAll`: the pairing screen's QR scanner
+            // binds its own analyser to the same provider, and tearing that down from
+            // here would stop a scan that has nothing to do with this sheet.
+            runCatching { bound.getAndSet(null)?.unbind(preview, capture) }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -252,8 +266,15 @@ private fun CameraPreview(onImage: (Bitmap) -> Unit) {
                     ContextCompat.getMainExecutor(context),
                     object : ImageCapture.OnImageCapturedCallback() {
                         override fun onCaptureSuccess(image: ImageProxy) {
-                            bitmapOf(image)?.let(onImage)
-                            image.close()
+                            // Closed whatever `onImage` does. An ImageProxy holds a
+                            // buffer out of a fixed-size pool: leak two or three and
+                            // `takePicture` stops calling back at all, which looks
+                            // exactly like a shutter button that has stopped working.
+                            try {
+                                bitmapOf(image)?.let(onImage)
+                            } finally {
+                                image.close()
+                            }
                         }
 
                         override fun onError(exception: ImageCaptureException) {
