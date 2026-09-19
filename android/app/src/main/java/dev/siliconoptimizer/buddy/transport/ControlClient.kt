@@ -308,6 +308,15 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             // knock twenty times a minute, forever.
             val openedAt = System.currentTimeMillis()
             var reason: String? = null
+            // The open is logged as well as the drop. A stream that is up says nothing
+            // on its own, so without this line "connected and quiet" and "never dialled"
+            // look identical in logcat — and those are the two answers anyone reading it
+            // is trying to tell apart.
+            android.util.Log.i(
+                LOG,
+                "/events opening (attempt $attempt" +
+                    (lastEventID?.let { ", resuming after $it" } ?: "") + ")",
+            )
             try {
                 stream(
                     "GET", "/events", null, readTimeoutMs = 0, lastEventID = lastEventID,
