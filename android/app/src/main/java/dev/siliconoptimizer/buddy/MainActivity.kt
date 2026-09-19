@@ -254,7 +254,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         dashboard.startLiveUpdates(app.transport)
         models.refresh(app.transport)
         media.reset()
-        media.refresh(app.transport)
+        media.refresh(app.transport, MediaNotifier(context))
         machines.reset()
         machines.refresh(app.transport)
         chat.loadConversations(app.transport)
@@ -333,7 +333,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             selected = destination == entry,
                             onClick = { destination = entry },
                             icon = { Icon(iconFor(entry), contentDescription = null) },
-                            label = { Text(entry.label) },
+                            // Six destinations on a phone: one line each, or "Machines"
+                            // breaks in half.
+                            label = {
+                                Text(
+                                    entry.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                )
+                            },
                         )
                     }
                 }

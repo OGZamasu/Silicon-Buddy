@@ -42,6 +42,7 @@ import dev.siliconoptimizer.buddy.ui.SectionCard
 fun QueueList(
     app: AppState,
     model: MediaViewModel,
+    notifier: MediaNotifier? = null,
     modifier: Modifier = Modifier,
 ) {
     var confirming by remember { mutableStateOf<String?>(null) }
@@ -65,6 +66,7 @@ fun QueueList(
                                 VideoQueueControlRequest.PAUSE
                             },
                             transport = app.transport,
+                            notifier = notifier,
                         )
                     },
                     enabled = app.canControl,
@@ -83,6 +85,7 @@ fun QueueList(
                         model.control(
                             VideoQueueControlRequest.CLEAR_FINISHED,
                             transport = app.transport,
+                            notifier = notifier,
                         )
                     },
                     enabled = app.canControl && model.queue.finished.isNotEmpty(),
@@ -118,8 +121,8 @@ fun QueueList(
                     confirming = null
                     when (action) {
                         VideoQueueControlRequest.RETRY ->
-                            model.retry(job.id, job.uncertainSubmission, app.transport)
-                        else -> model.control(action, job.id, app.transport)
+                            model.retry(job.id, job.uncertainSubmission, app.transport, notifier)
+                        else -> model.control(action, job.id, app.transport, notifier)
                     }
                 },
             )

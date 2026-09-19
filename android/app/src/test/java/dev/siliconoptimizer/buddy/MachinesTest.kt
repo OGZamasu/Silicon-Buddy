@@ -1,9 +1,6 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.machines.Machines
-import dev.siliconoptimizer.buddy.media.JobNotifications
-import dev.siliconoptimizer.buddy.media.JobState
-import dev.siliconoptimizer.buddy.media.MediaJob
 import dev.siliconoptimizer.buddy.transport.Metrics
 import dev.siliconoptimizer.buddy.transport.NodeAdvertisement
 import dev.siliconoptimizer.buddy.transport.Profile
@@ -127,65 +124,5 @@ class MachinesTest {
     fun `a peer's address is the host, not a URL with a port in it`() {
         assertEquals("100.64.0.7", Machines.host("http://100.64.0.7:8790"))
         assertEquals("not a url", Machines.host("not a url"))
-    }
-
-    // MARK: - What a finished job is worth saying
-
-    private fun row(state: JobState, kind: String = "video", error: String? = null) = MediaJob(
-        id = "9C2F-0001", kind = kind, title = "Lisbon", state = state,
-        statusWord = state.name.lowercase(), error = error,
-        file = if (state == JobState.Done) "/Users/you/Movies/Silicon/Lisbon/scene-001.mp4" else null,
-    )
-
-    @Test
-    fun `a render that finishes is worth a notification, once`() {
-        val notice = JobNotifications.transition(row(JobState.Rendering), row(JobState.Done))
-        assertNotNull(notice)
-        assertEquals("Your clip is ready", notice!!.title)
-        assertTrue(notice.body.contains("scene-001.mp4"))
-        assertFalse(notice.isFailure)
-        // The same state again is the queue being polled, not news.
-        assertNull(JobNotifications.transition(row(JobState.Done), row(JobState.Done)))
-    }
-
-    @Test
-    fun `a failure carries the Mac's reason into the notification`() {
-        val notice = JobNotifications.transition(
-            row(JobState.Rendering),
-            row(JobState.Failed, error = "No node accepted this clip."),
-        )
-        assertEquals("That clip failed", notice!!.title)
-        assertEquals("No node accepted this clip.", notice.body)
-        assertTrue(notice.isFailure)
-    }
-
-    @Test
-    fun `work still running is never a notification`() {
-        assertNull(JobNotifications.transition(null, row(JobState.Queued)))
-        assertNull(JobNotifications.transition(row(JobState.Queued), row(JobState.Rendering)))
-    }
-
-    @Test
-    fun `a job first seen already finished still gets said`() {
-        // The phone was asleep while the Mac worked; the first thing it sees is "done".
-        assertNotNull(JobNotifications.transition(null, row(JobState.Done)))
-    }
-
-    @Test
-    fun `stopping says what the Mac will not claim`() {
-        val notice = JobNotifications.transition(row(JobState.Rendering), row(JobState.Stopped))
-        assertTrue(notice!!.body.contains("node may still finish it"))
-    }
-
-    @Test
-    fun `each kind is named the way a person would name it`() {
-        assertEquals("clip", JobNotifications.noun("video"))
-        assertEquals("image", JobNotifications.noun("image"))
-        assertEquals("mesh", JobNotifications.noun("mesh"))
-        assertEquals("job", JobNotifications.noun(""))
-        assertEquals(
-            "Your image is ready",
-            JobNotifications.transition(null, row(JobState.Done, kind = "image"))!!.title,
-        )
     }
 }

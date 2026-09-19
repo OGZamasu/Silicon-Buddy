@@ -144,10 +144,24 @@ class MediaViewModel : ViewModel() {
     var queue by mutableStateOf(QueueState.empty)
         private set
 
+    private val announcer = JobAnnouncer()
     private var poller: Job? = null
 
+    /**
+     * The one door every queue update goes through.
+     *
+     * Both sources — the poll and the `job` events — land here, and the announcer
+     * decides what is worth saying, so a notification never depends on which of the two
+     * happened to notice a render had finished.
+     */
+    private fun update(next: QueueState, notifier: MediaNotifier?) {
+        val previous = queue
+        queue = next
+        announcer.notices(previous, next).forEach { notifier?.post(it) }
+    }
+
     /** One pass over every list the Create tab shows. */
-    fun refresh(transport: ControlTransport?) {
+    fun refresh(transport: ControlTransport?, notifier: MediaNotifier? = null) {
         if (transport == null) return
         viewModelScope.launch {
             isLoading = true
@@ -169,7 +183,7 @@ class MediaViewModel : ViewModel() {
             newVideo?.let { videoModels = it }
             newImage?.let { imageModels = it }
             newMesh?.let { meshModels = it }
-            newQueue?.let { queue = queue.applying(it) }
+            newQueue?.let { update(queue.applying(it), notifier) }
             routesMedia = newJev?.routesMedia == true
             autoNote = when {
                 newJev == null -> null
@@ -198,12 +212,17 @@ class MediaViewModel : ViewModel() {
      * `GET /video/queue` has the Mac's own sentence about that — so this keeps asking,
      * slowly, and the events fill in the movement in between.
      */
-    fun startFollowing(transport: ControlTransport?, seconds: Long = 6) {
+    fun startFollowing(
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+        seconds: Long = 6,
+    ) {
         poller?.cancel()
         if (transport == null) return
         poller = viewModelScope.launch {
             while (isActive) {
-                runCatching { transport.videoQueue() }.getOrNull()?.let { queue = queue.applying(it) }
+                runCatching { transport.videoQueue() }.getOrNull()
+                    ?.let { update(queue.applying(it), notifier) }
                 delay(seconds * 1000)
             }
         }
@@ -221,16 +240,13 @@ class MediaViewModel : ViewModel() {
      * saw it finish, whichever screen happened to be in front.
      */
     fun apply(event: JobProgress, notifier: MediaNotifier? = null) {
-        val before = queue.job(event.id)
-        queue = queue.applying(event)
-        val after = queue.job(event.id) ?: return
         MediaJobCenter.note(event.kind, event.fraction)
-        JobNotifications.transition(before, after)?.let { notifier?.post(it) }
+        update(queue.applying(event), notifier)
     }
 
     // MARK: - Asking for work
 
-    fun enqueueVideo(transport: ControlTransport?) {
+    fun enqueueVideo(transport: ControlTransport?, notifier: MediaNotifier? = null) {
         val request = VideoRequest.enqueue(
             prompt = videoPrompt,
             lane = lane,
@@ -244,7 +260,7 @@ class MediaViewModel : ViewModel() {
         if (transport == null) return
         viewModelScope.launch {
             try {
-                queue = queue.applying(transport.enqueueVideos(request))
+                update(queue.applying(transport.enqueueVideos(request)), notifier)
                 message = "Added to the queue on the Mac."
                 videoPrompt = ""
                 tab = Tab.Queue
@@ -254,12 +270,20 @@ class MediaViewModel : ViewModel() {
         }
     }
 
-    fun control(action: String, id: String? = null, transport: ControlTransport?) {
+    fun control(
+        action: String,
+        id: String? = null,
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+    ) {
         if (transport == null) return
         viewModelScope.launch {
             try {
-                queue = queue.applying(
-                    transport.controlVideoQueue(VideoQueueControlRequest(action, id)),
+                update(
+                    queue.applying(
+                        transport.controlVideoQueue(VideoQueueControlRequest(action, id)),
+                    ),
+                    notifier,
                 )
             } catch (failure: TransportError) {
                 error = failure.message
@@ -268,16 +292,24 @@ class MediaViewModel : ViewModel() {
     }
 
     /** `retry` on an item the Mac is unsure about needs to be meant. */
-    fun retry(id: String, confirmNewRender: Boolean, transport: ControlTransport?) {
+    fun retry(
+        id: String,
+        confirmNewRender: Boolean,
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+    ) {
         if (transport == null) return
         viewModelScope.launch {
             try {
-                queue = queue.applying(
-                    transport.controlVideoQueue(
-                        VideoQueueControlRequest(
-                            VideoQueueControlRequest.RETRY, id, confirmNewRender,
+                update(
+                    queue.applying(
+                        transport.controlVideoQueue(
+                            VideoQueueControlRequest(
+                                VideoQueueControlRequest.RETRY, id, confirmNewRender,
+                            ),
                         ),
                     ),
+                    notifier,
                 )
             } catch (failure: TransportError) {
                 error = failure.message
@@ -367,6 +399,7 @@ class MediaViewModel : ViewModel() {
         imageModels = emptyList()
         meshModels = emptyList()
         queue = QueueState.empty
+        announcer.forget()
         routesMedia = false
         autoNote = null
         imagePlan = null

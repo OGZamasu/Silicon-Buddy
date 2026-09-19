@@ -75,7 +75,7 @@ fun CreateScreen(
 
     LaunchedEffect(model.tab, app.connectionGeneration) {
         if (model.tab == MediaViewModel.Tab.Queue) {
-            model.startFollowing(app.transport)
+            model.startFollowing(app.transport, notifier)
         } else {
             model.stopFollowing()
         }
@@ -119,10 +119,10 @@ fun CreateScreen(
         }
 
         when (model.tab) {
-            MediaViewModel.Tab.Video -> VideoForm(app, model, ::ensureNotifications)
+            MediaViewModel.Tab.Video -> VideoForm(app, model, notifier, ::ensureNotifications)
             MediaViewModel.Tab.Image -> ImageForm(app, model, ::ensureNotifications)
             MediaViewModel.Tab.Mesh -> MeshForm(app, model, ::ensureNotifications)
-            MediaViewModel.Tab.Queue -> QueueList(app, model)
+            MediaViewModel.Tab.Queue -> QueueList(app, model, notifier)
         }
     }
 }
@@ -131,7 +131,12 @@ fun CreateScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun VideoForm(app: AppState, model: MediaViewModel, ensureNotifications: () -> Unit) {
+private fun VideoForm(
+    app: AppState,
+    model: MediaViewModel,
+    notifier: MediaNotifier,
+    ensureNotifications: () -> Unit,
+) {
     val context = LocalContext.current
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
@@ -259,7 +264,7 @@ private fun VideoForm(app: AppState, model: MediaViewModel, ensureNotifications:
                 Button(
                     onClick = {
                         ensureNotifications()
-                        model.enqueueVideo(app.transport)
+                        model.enqueueVideo(app.transport, notifier)
                     },
                     enabled = app.canControl && model.videoPrompt.isNotBlank(),
                 ) { Text("Add to queue") }

@@ -94,6 +94,53 @@ object JobNotifications {
 }
 
 /**
+ * Says each piece of news once, however it arrived.
+ *
+ * Two sources report the same render — the `job` events and the queue poll — and which
+ * of them notices a clip has finished is a race. Comparing one against the other would
+ * mean a notification that depends on the timing of a poll: sometimes two, sometimes
+ * none. So the queue as a whole is compared against the queue as it was, and an id that
+ * has already been announced in a state is not announced again until it leaves that
+ * state — which a retry does.
+ */
+class JobAnnouncer {
+
+    private val announced = mutableMapOf<String, JobState>()
+    private var primed = false
+
+    fun notices(previous: QueueState, next: QueueState): List<JobNotice> {
+        // The first reading of a Mac is its history. A queue keeps finished clips for a
+        // long time, and opening the app should not fire a notification for every one of
+        // them — those endings happened, and were said at the time or not at all.
+        if (!primed) {
+            primed = true
+            next.jobs.filter { it.state.isTerminal }.forEach { announced[it.id] = it.state }
+            return emptyList()
+        }
+        val notices = mutableListOf<JobNotice>()
+        for (job in next.jobs) {
+            if (!job.state.isTerminal) {
+                // Queued again, or rendering again: the next ending is news.
+                announced.remove(job.id)
+                continue
+            }
+            if (announced[job.id] == job.state) continue
+            val notice = JobNotifications.transition(previous.job(job.id), job)
+            announced[job.id] = job.state
+            if (notice != null) notices.add(notice)
+        }
+        // A clip the Mac has forgotten cannot be announced again either way.
+        announced.keys.retainAll(next.jobs.map { it.id }.toSet())
+        return notices
+    }
+
+    fun forget() {
+        announced.clear()
+        primed = false
+    }
+}
+
+/**
  * The Android half: channels, permission, and posting.
  *
  * Separate from the rules above so the rules can be tested without a device, and so the
