@@ -9,6 +9,55 @@ import XCTest
 /// nobody notices until they place a widget.
 final class SharedContainerTests: XCTestCase {
 
+    /// The bug this replaced: matching the access group on the bundle id alone.
+    ///
+    /// Every target lists `$(AppIdentifierPrefix)dev.siliconoptimizer.buddy` first in
+    /// its entitlement, so an item added with no explicit group is filed under *that*,
+    /// not under the extension's own `…buddy.widgets`. The old code asked for a suffix
+    /// match on the bundle id, got none, and answered nil — in the app it coincided and
+    /// worked, and in both extensions the shared Keychain silently did not exist.
+    func testThePrefixIsReadFromTheSharedGroupNotTheBundleID() {
+        XCTAssertEqual(
+            SharedKeychain.prefix(
+                from: "ABCDE12345.dev.siliconoptimizer.buddy",
+                bundleID: "dev.siliconoptimizer.buddy.widgets"
+            ),
+            "ABCDE12345."
+        )
+        XCTAssertEqual(
+            SharedKeychain.prefix(
+                from: "ABCDE12345.dev.siliconoptimizer.buddy",
+                bundleID: "dev.siliconoptimizer.buddy.share"
+            ),
+            "ABCDE12345."
+        )
+    }
+
+    /// A build with no shared entitlement at all files under the bundle id, and the
+    /// prefix is still worth having — it just names a group nothing else can reach.
+    func testTheBundleIDIsTheFallbackWhenThereIsNoSharedGroup() {
+        XCTAssertEqual(
+            SharedKeychain.prefix(
+                from: "ABCDE12345.dev.siliconoptimizer.buddy.widgets",
+                bundleID: "dev.siliconoptimizer.buddy.widgets"
+            ),
+            "ABCDE12345."
+        )
+    }
+
+    func testAnEmptyTeamPrefixIsAPrefixAndNotAFailure() {
+        XCTAssertEqual(
+            SharedKeychain.prefix(from: "dev.siliconoptimizer.buddy", bundleID: nil),
+            ""
+        )
+    }
+
+    func testAGroupThatIsNeitherIsRefused() {
+        XCTAssertNil(
+            SharedKeychain.prefix(from: "ABCDE12345.com.example.other", bundleID: nil)
+        )
+    }
+
     func testTheAppGroupIsReallyShared() throws {
         try XCTSkipIf(
             UserDefaults(suiteName: BuddyShared.appGroup) == nil,

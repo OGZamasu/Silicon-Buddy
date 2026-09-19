@@ -6,11 +6,16 @@ import Security
 /// The host and port are ordinary preferences; the token is a credential, so it lives
 /// where a backup or a file dump cannot read it, and it never appears in a log line.
 ///
-/// Filed under a shared access group so the widget, the share sheet and the Shortcuts
-/// actions can read the same token without the app handing it to them. When there is no
-/// shared group — an unsigned build, a Simulator without the entitlement — every call
-/// falls back to this process's own default group, which is what M1 used: the app keeps
-/// working and the extensions find nothing, which is the honest failure.
+/// Filed under a shared access group so the widget and the share sheet can read the
+/// same token without the app handing it to them. The group is `SharedKeychain
+/// .accessGroup`, which is resolved from the Keychain at launch because its team prefix
+/// is not known at compile time.
+///
+/// When there is no shared group — an unsigned build, a Simulator without the
+/// entitlement — every call falls back to this process's own default group, which is
+/// what M1 used: the app keeps working and the extensions find nothing. That is the
+/// honest failure, and `SharedContainerTests` is what stops it from being the silent
+/// one, because from inside the app the two are indistinguishable.
 public struct TokenStore: Sendable {
     public static let service = "dev.siliconoptimizer.buddy.control-token"
 

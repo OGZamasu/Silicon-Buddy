@@ -37,6 +37,46 @@ public enum BuddyShared {
     public static var hasSharedContainer: Bool {
         UserDefaults(suiteName: appGroup) != nil
     }
+
+    /// The shared container on disk, which is also where the group's preferences file
+    /// lives (`Library/Preferences/group.dev.siliconoptimizer.buddy.plist`).
+    public static var containerURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+
+    /// Keeps everything in the shared container out of backups.
+    ///
+    /// What is in there is the address of somebody's Mac, what it has loaded, and the
+    /// last answer it gave — which is a piece of a conversation, sitting in a file
+    /// rather than behind the Keychain. None of it belongs in an iCloud backup or in a
+    /// transfer to a new phone.
+    ///
+    /// It is also the consistent choice. The token is stored
+    /// `…AccessibleAfterFirstUnlockThisDeviceOnly` and so is never restored anywhere;
+    /// a backup that carried the host and the scope without it would restore half a
+    /// pairing that cannot work and cannot be seen to be broken. Excluding the
+    /// directory excludes what it contains, so one call covers the preferences file
+    /// too.
+    ///
+    /// Android's half of this is `res/xml/data_extraction_rules.xml`, which excludes
+    /// every shared-preferences file from both cloud backup and device transfer.
+    ///
+    /// Called once from `AppModel`, which only the app builds — an extension inherits
+    /// the result because the container is the same directory.
+    @discardableResult
+    public static func excludeContainerFromBackup() -> Bool {
+        guard var url = containerURL else { return false }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        do {
+            try url.setResourceValues(values)
+            return true
+        } catch {
+            // A container that cannot be marked is not a reason to refuse to run. The
+            // token is still device-only, which is the part that matters.
+            return false
+        }
+    }
 }
 
 /// The Keychain group the token is filed under, resolved at runtime.
@@ -86,12 +126,30 @@ public enum SharedKeychain {
               let group = found[kSecAttrAccessGroup as String] as? String
         else { return nil }
 
-        // The default group is the prefix followed by this process's own bundle id —
-        // `dev.siliconoptimizer.buddy` in the app, `…buddy.widgets` in the widget. Only
-        // the prefix is wanted.
-        guard let bundleID = Bundle.main.bundleIdentifier, group.hasSuffix(bundleID) else {
-            return nil
+        return prefix(from: group, bundleID: Bundle.main.bundleIdentifier)
+    }
+
+    /// The team prefix in front of an access group, given the bundle id of whoever
+    /// asked. Pure, because getting it wrong is invisible: the app keeps working and
+    /// only the extensions go blank.
+    ///
+    /// An item added with no `kSecAttrAccessGroup` is filed under the *first* group in
+    /// the process's `keychain-access-groups` entitlement, and only under its bundle id
+    /// when the entitlement is absent. Every target here lists
+    /// `$(AppIdentifierPrefix)dev.siliconoptimizer.buddy` first, so in the widget — whose
+    /// bundle id is `…buddy.widgets` — the group read back ends in `…buddy` and never
+    /// in the bundle id. Matching on the bundle id alone therefore answered nil in both
+    /// extensions, which is exactly the case the shared group exists for.
+    ///
+    /// So: the shared suffix first, the bundle id second, for a build whose entitlement
+    /// is missing entirely.
+    static func prefix(from group: String, bundleID: String?) -> String? {
+        if group.hasSuffix(BuddyShared.keychainGroupSuffix) {
+            return String(group.dropLast(BuddyShared.keychainGroupSuffix.count))
         }
-        return String(group.dropLast(bundleID.count))
+        if let bundleID, !bundleID.isEmpty, group.hasSuffix(bundleID) {
+            return String(group.dropLast(bundleID.count))
+        }
+        return nil
     }
 }
