@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Silicon Buddy</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>To scan the pairing code your Mac shows, and to send a photo to a vision model.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>To attach a picture to a message for a vision model.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>To reach Silicon Optimizer on your Mac when it is on the same network rather than the tailnet.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>To unlock Silicon Buddy without typing your passcode.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!--
+		  The Mac's control API is plain HTTP on a tailnet address, and there is no
+		  certificate on a tailnet to validate. ATS cannot express that: it matches
+		  domains, not address ranges, and the Mac binds 100.64/10 or loopback and
+		  puts that raw address in the QR it shows. NSAllowsLocalNetworking covers
+		  loopback and RFC1918 but not 100.64/10 — measured: without this key a
+		  request to the Mac's tailnet address fails NSURLErrorDomain -1022 — and
+		  iOS ignores NSAllowsArbitraryLoads whenever NSAllowsLocalNetworking is
+		  present, so the two cannot be combined.
+
+		  So ATS is open here and the narrowing is TailnetHost, which every request
+		  passes through and which accepts only loopback, the Android emulator's
+		  10.0.2.2, 100.64.0.0/10 and fd7a:115c:a1e0::/48. That gate is the security
+		  boundary; this key is not. See PairingSecurityTests and ControlClientTests.
+		-->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.siliconoptimizer.buddy.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>siliconbuddy</string>
+			</array>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

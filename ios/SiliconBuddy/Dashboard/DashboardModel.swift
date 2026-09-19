@@ -1,0 +1,138 @@
+import Foundation
+import Observation
+
+/// Everything the first screen shows, fetched together.
+///
+/// Each reading is kept separately so one slow or missing endpoint — `/v1/node` on an
+/// older Mac, say — leaves the rest of the screen intact instead of blanking it.
+@MainActor
+@Observable
+public final class DashboardModel {
+    public private(set) var status: ControlAPI.Status?
+    public private(set) var profile: ControlAPI.Profile?
+    public private(set) var metrics: ControlAPI.Metrics?
+    public private(set) var swarm: ControlAPI.SwarmView?
+    public private(set) var node: ControlAPI.NodeAdvertisement?
+    public private(set) var isLoading = false
+    public private(set) var error: String?
+    public private(set) var lastUpdated: Date?
+
+    private var ticker: Task<Void, Never>?
+
+    /// Set when this Mac has no `/events`, in which case `/status` has to be asked for.
+    public var pollsStatus = true
+
+    public init() {}
+
+    /// One pass over every dashboard endpoint, in parallel.
+    public func refresh(using transport: (any ControlTransport)?, app: AppModel? = nil) async {
+        guard let transport else {
+            error = TransportError.notConfigured.localizedDescription
+            return
+        }
+        isLoading = true
+        defer { isLoading = false }
+
+        async let statusTask = transport.status()
+        async let profileTask = transport.profile()
+        async let metricsTask = transport.metrics()
+        async let swarmTask = transport.swarm()
+        async let nodeTask = transport.node()
+
+        let newStatus = try? await statusTask
+        let newProfile = try? await profileTask
+        let newMetrics = try? await metricsTask
+        let newSwarm = try? await swarmTask
+        let newNode = try? await nodeTask
+
+        if newStatus == nil, newProfile == nil, newMetrics == nil {
+            // Nothing answered: this is a connection problem, not an empty Mac.
+            error = "Couldn't reach the Mac."
+        } else {
+            error = nil
+            lastUpdated = Date()
+        }
+        if let newStatus { status = newStatus }
+        if let newProfile { profile = newProfile }
+        if let newMetrics { metrics = newMetrics }
+        if let newSwarm { swarm = newSwarm }
+        if let newNode {
+            node = newNode
+            app?.noteMacName(newNode.name)
+        }
+    }
+
+    /// Throws away the last Mac's readings. Called when the paired Mac changes: a
+    /// dashboard still showing the previous machine's memory is not stale, it is wrong.
+    public func reset() {
+        stopLiveUpdates()
+        status = nil
+        profile = nil
+        metrics = nil
+        swarm = nil
+        node = nil
+        error = nil
+        lastUpdated = nil
+    }
+
+    /// Takes the status the event stream pushed, so the card is current without asking.
+    public func apply(streamed status: ControlAPI.Status) {
+        self.status = status
+        lastUpdated = Date()
+    }
+
+    /// Metrics while the dashboard is on screen. `/metrics` is a reading, not an event —
+    /// the Mac never pushes it — so this polls regardless; the status card is fed by the
+    /// stream when there is one, and by this when there is not.
+    public func startLiveUpdates(using transport: (any ControlTransport)?, every seconds: Double = 4) {
+        ticker?.cancel()
+        guard let transport else { return }
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                let reading = try? await transport.metrics()
+                guard let self, !Task.isCancelled else { return }
+                if let reading { self.metrics = reading }
+                // The status card comes from the event stream when the Mac has one.
+                if self.pollsStatus, let state = try? await transport.status() {
+                    self.status = state
+                }
+                if reading != nil { self.lastUpdated = Date() }
+            }
+        }
+    }
+
+    public func stopLiveUpdates() {
+        ticker?.cancel()
+        ticker = nil
+    }
+
+    // MARK: - Derived
+
+    public var memoryFraction: Double {
+        guard let metrics, metrics.memoryTotalBytes > 0 else { return 0 }
+        return Double(metrics.memoryUsedBytes) / Double(metrics.memoryTotalBytes)
+    }
+
+    public var loadedModelTitle: String {
+        if let name = status?.loadedModelName { return name }
+        if let activity = status?.activity { return activity }
+        return status?.state ?? "Unknown"
+    }
+
+    public var loadedModelDetail: String {
+        guard let status else { return "No reading yet." }
+        var parts: [String] = [status.state]
+        if let context = status.contextLength {
+            parts.append("\(context / 1024)K context")
+        }
+        if status.expertStreaming { parts.append("expert streaming") }
+        if let activity = status.activity, status.loadedModelID != nil { parts.append(activity) }
+        return parts.joined(separator: " · ")
+    }
+
+    public var reachablePeers: Int {
+        swarm?.peers.filter(\.reachable).count ?? 0
+    }
+}

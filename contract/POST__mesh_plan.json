@@ -1,0 +1,52 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/mesh\/plan",
+  "request" : {
+    "imagePath" : "\/Users\/you\/Pictures\/kettle.png",
+    "modelID" : "hunyuan3d-2",
+    "textureSize" : 2048
+  },
+  "response" : {
+    "budgetBytes" : 29200000000,
+    "isRemote" : false,
+    "model" : "Hunyuan3D 2",
+    "notes" : [
+
+    ],
+    "peakBytes" : 13958643712,
+    "peakPhase" : "Texture bake",
+    "phases" : [
+      {
+        "detail" : "2048px",
+        "name" : "Texture bake",
+        "residentBytes" : 13958643712
+      }
+    ],
+    "suggestions" : [
+
+    ],
+    "verdict" : "fits"
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Will this mesh job fit, here or on the node?"
+}

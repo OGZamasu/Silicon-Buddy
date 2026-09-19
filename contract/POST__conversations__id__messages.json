@@ -1,0 +1,58 @@
+{
+  "auth" : "device",
+  "contentType" : "text\/event-stream",
+  "errors" : {
+    "400" : {
+      "error" : "No model is loaded."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "404" : {
+      "error" : "No conversation with id 3F5C1A88-9C1D-4E2B-8A70-1D2E3F405162."
+    },
+    "409" : {
+      "error" : "That conversation is still being answered. Wait for it to finish, or start another one."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "429" : {
+      "error" : "Too many open streams. Close one before opening another."
+    }
+  },
+  "events" : {
+    "error" : {
+      "error" : "The device stopped reading."
+    },
+    "finished" : {
+      "generatedTokens" : 96,
+      "promptTokens" : 412,
+      "timeToFirstToken" : 0.31,
+      "tokensPerSecond" : 89.400000000000006
+    },
+    "reasoning" : {
+      "text" : "Three days is "
+    },
+    "token" : {
+      "text" : "Start "
+    }
+  },
+  "method" : "POST",
+  "path" : "\/conversations\/{id}\/messages",
+  "request" : {
+    "content" : "Three days in Lisbon — what would you do?",
+    "images" : [
+
+    ]
+  },
+  "response" : null,
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "Send a message and stream the answer. Both are saved on the Mac."
+}

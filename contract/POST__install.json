@@ -1,0 +1,33 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/install",
+  "request" : {
+    "modelID" : "qwen3-coder-30b",
+    "quantization" : "Q4_K_M"
+  },
+  "response" : {
+    "status" : "Downloading Qwen3-Coder 30B A3B (Q4_K_M)."
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Download a model. Progress arrives on \/events."
+}

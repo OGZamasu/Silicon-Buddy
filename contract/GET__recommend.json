@@ -1,0 +1,76 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "404" : {
+      "error" : "No model in the catalog fits this machine."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/recommend",
+  "request" : null,
+  "response" : {
+    "activeParameters" : "3B",
+    "author" : "Qwen",
+    "capabilities" : [
+      "code",
+      "tools"
+    ],
+    "category" : "code",
+    "id" : "qwen3-coder-30b",
+    "isMoE" : true,
+    "license" : "Apache-2.0",
+    "maxContext" : 262144,
+    "name" : "Qwen3-Coder 30B A3B",
+    "parameters" : "30B",
+    "quantizations" : [
+      "Q4_K_M",
+      "Q5_K_M",
+      "Q8_0"
+    ],
+    "rating" : 5,
+    "recommendation" : {
+      "contextLength" : 16384,
+      "downloadBytes" : 20401094656,
+      "estimatedGenerationTokensPerSecond" : 89,
+      "estimatedPromptTokensPerSecond" : 1120,
+      "plan" : {
+        "budgetBytes" : 29200000000,
+        "computeBytes" : 325000000,
+        "expertsBytes" : 0,
+        "kvCacheBytes" : 1073741824,
+        "notes" : [
+          "Measured on this Mac's own disk speed."
+        ],
+        "residentBytes" : 21800000000,
+        "streamedFromDiskBytes" : 0,
+        "suggestions" : [
+          {
+            "cost" : "Shorter memory in long chats",
+            "detail" : "8K instead of 16K frees half a gigabyte.",
+            "savingBytes" : 536870912,
+            "title" : "Halve the context"
+          }
+        ],
+        "verdict" : "fits",
+        "weightsBytes" : 20401094656
+      },
+      "quantization" : "Q4_K_M",
+      "rationale" : "The strongest coding model inside this Mac's budget."
+    },
+    "summary" : "A coding model that fits a 36 GB Mac."
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The strongest model this machine can actually run."
+}

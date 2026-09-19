@@ -1,0 +1,85 @@
+name: SiliconBuddy
+options:
+  bundleIdPrefix: dev.siliconoptimizer
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Sign to run locally. An unsigned Simulator build has no entitlements at all, and
+    # the first thing that fails is the Keychain: SecItemAdd answers
+    # errSecMissingEntitlement (-34018) and pairing cannot store its token.
+    CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
+
+targets:
+  SiliconBuddy:
+    type: application
+    platform: iOS
+    sources:
+      - path: SiliconBuddy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.siliconoptimizer.buddy
+        # The bundle is SiliconBuddy.app; the home screen shows CFBundleDisplayName,
+        # "Silicon Buddy". A product name with a space in it breaks TEST_HOST.
+        PRODUCT_NAME: SiliconBuddy
+        INFOPLIST_FILE: SiliconBuddy/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        SUPPORTS_MACCATALYST: NO
+        DEVELOPMENT_ASSET_PATHS: ""
+
+  SiliconBuddyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: SiliconBuddyTests
+      # The contract fixtures captured from the running Mac app. A folder reference so
+      # adding a fixture never means editing the project.
+      - path: ../contract
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: SiliconBuddy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.siliconoptimizer.buddy.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SiliconBuddy.app/SiliconBuddy"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  SiliconBuddy:
+    build:
+      targets:
+        SiliconBuddy: all
+        SiliconBuddyTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - SiliconBuddyTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

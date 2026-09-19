@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The same chip as the iOS icon: a body, a core, and pins. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F2F2F5"
+        android:pathData="M36,36h36v36h-36z" />
+    <path
+        android:fillColor="#F2F2F5"
+        android:pathData="M28,26h52v3h-52z M28,79h52v3h-52z M26,28h3v52h-3z M79,28h3v52h-3z" />
+    <path
+        android:fillColor="#F2F2F5"
+        android:pathData="M39,19h3v7h-3z M52.5,19h3v7h-3z M66,19h3v7h-3z M39,82h3v7h-3z M52.5,82h3v7h-3z M66,82h3v7h-3z M19,39h7v3h-7z M19,52.5h7v3h-7z M19,66h7v3h-7z M82,39h7v3h-7z M82,52.5h7v3h-7z M82,66h7v3h-7z" />
+</vector>

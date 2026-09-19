@@ -1,0 +1,39 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/swarm",
+  "request" : null,
+  "response" : {
+    "peers" : [
+      {
+        "baseURL" : "http:\/\/silicon-node:8790",
+        "capabilities" : [
+          {
+            "id" : "image-to-mesh",
+            "kind" : "mesh",
+            "ready" : true
+          }
+        ],
+        "name" : "silicon-node",
+        "reachable" : true
+      }
+    ],
+    "polledSecondsAgo" : 4
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The other machines this Mac can delegate to."
+}

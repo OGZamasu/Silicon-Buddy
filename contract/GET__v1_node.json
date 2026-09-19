@@ -1,0 +1,47 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/v1\/node",
+  "request" : null,
+  "response" : {
+    "capabilities" : [
+      {
+        "detail" : "Loaded at 16K context",
+        "id" : "llm-qwen3-coder-30b",
+        "kind" : "llm",
+        "peak_gb" : 20.300000000000001,
+        "ready" : true
+      }
+    ],
+    "metrics" : {
+      "gpu_util_pct" : 12,
+      "headroom_gb" : 8.9000000000000004,
+      "memory_used_pct" : 52,
+      "queue_depth" : 0
+    },
+    "name" : "Mac Studio",
+    "platform" : "macos-apple-silicon",
+    "profile" : {
+      "bandwidth_gbps" : 300,
+      "chip" : "Apple M3 Max",
+      "gpu_cores" : 40,
+      "memory_gb" : 38.700000000000003
+    }
+  },
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "What this Mac advertises to its peers."
+}

@@ -1,0 +1,32 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/installed",
+  "request" : null,
+  "response" : [
+    {
+      "id" : "qwen3-coder-30b",
+      "isLoaded" : true,
+      "name" : "Qwen3-Coder 30B A3B",
+      "quantization" : "Q4_K_M",
+      "sizeOnDiskBytes" : 20401094656,
+      "supportsVision" : false
+    }
+  ],
+  "scopes" : [
+    "full",
+    "chat"
+  ],
+  "summary" : "The models on this Mac's disk."
+}

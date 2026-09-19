@@ -1,0 +1,53 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/video\/queue\/control",
+  "request" : {
+    "action" : "pause"
+  },
+  "response" : {
+    "activeID" : "9C2F-0001",
+    "items" : [
+      {
+        "batchID" : "9C2F",
+        "h3Steps" : 30,
+        "h3Turbo" : false,
+        "id" : "9C2F-0001",
+        "modelID" : "hailuo-h3",
+        "nodeJobID" : "job-1187",
+        "outputDirectory" : "\/Users\/you\/Movies\/Silicon\/Lisbon",
+        "prompt" : "A tram climbing Alfama at dawn",
+        "resolution" : "768P",
+        "scene" : 1,
+        "seconds" : 5,
+        "seed" : 424242,
+        "status" : "running",
+        "title" : "Lisbon",
+        "uncertainSubmission" : false,
+        "variation" : 1
+      }
+    ],
+    "paused" : false
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Pause, resume, skip or cancel queued work."
+}

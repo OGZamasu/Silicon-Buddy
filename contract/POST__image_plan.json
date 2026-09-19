@@ -1,0 +1,56 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/image\/plan",
+  "request" : {
+    "height" : 1024,
+    "modelID" : "flux2-klein",
+    "prompt" : "A tram climbing Alfama at dawn",
+    "steps" : 8,
+    "width" : 1024
+  },
+  "response" : {
+    "budgetBytes" : 29200000000,
+    "height" : 1024,
+    "notes" : [
+      "The last phase is the one that decides."
+    ],
+    "peakBytes" : 13958643712,
+    "peakPhase" : "Decode",
+    "phases" : [
+      {
+        "detail" : "VAE",
+        "name" : "Decode",
+        "residentBytes" : 13958643712
+      }
+    ],
+    "quantization" : "8-bit",
+    "steps" : 8,
+    "suggestions" : [
+
+    ],
+    "verdict" : "fits",
+    "width" : 1024
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Phase-by-phase memory for a given size, steps and precision."
+}

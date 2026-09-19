@@ -1,0 +1,34 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can list paired devices."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/buddy\/devices",
+  "request" : null,
+  "response" : [
+    {
+      "id" : "7A1E0C6E-2C6A-4F4E-9F1E-0B2D3C4A5B6C",
+      "lastSeen" : "2026-09-18T09:40:02Z",
+      "name" : "Galaxy S24 Ultra",
+      "pairedAt" : "2026-09-18T09:12:44Z",
+      "platform" : "android",
+      "scope" : "full"
+    }
+  ],
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "The paired devices, without their token hashes."
+}

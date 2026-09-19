@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Mac's control API is plain HTTP on a private address: 10.0.2.2 from the emulator,
+  a 100.64/10 tailnet address on a phone. There is no certificate on a tailnet to
+  validate, and the Mac's own listener binds 100.64/10 or loopback and nothing else.
+
+  Cleartext is permitted here rather than in a domain allowlist because this file cannot
+  express the rule: network security config matches hostnames, not ranges, and the Mac
+  puts a raw 100.64/10 address in the QR it shows. Listing the few names that can be
+  written down would not narrow anything — a phone still has to reach an address that
+  cannot be listed — and would suggest a name-based path that the app does not accept.
+
+  The narrowing lives in the app instead, at the one place every request passes through:
+  TailnetHost, which refuses any host that is not loopback, 10.0.2.2, 100.64.0.0/10 or
+  fd7a:115c:a1e0::/48, and which PairingInvite applies before a scanned code can name a
+  machine. That gate is the security boundary; this file is not. See TailnetHostTest,
+  PairingSecurityTest and ControlClientTest.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
