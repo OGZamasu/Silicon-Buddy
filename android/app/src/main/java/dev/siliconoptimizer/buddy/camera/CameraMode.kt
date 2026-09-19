@@ -213,17 +213,35 @@ private fun CameraPreview(onImage: (Bitmap) -> Unit) {
     val capture = remember { ImageCapture.Builder().build() }
     val previewView = remember { PreviewView(context) }
 
-    LaunchedEffect(Unit) {
-        val provider = ProcessCameraProvider.getInstance(context).get()
-        provider.unbindAll()
-        runCatching {
-            provider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider },
-                capture,
-            )
-        }
+    // Bound for exactly as long as the preview is on screen.
+    //
+    // `bindToLifecycle` ties the camera to the *activity*, so a sheet that is dismissed
+    // leaves it running: the privacy indicator stays lit and the sensor keeps drawing
+    // power until the whole activity stops. Unbinding on dispose is the other half of
+    // the bind. And `getInstance(...).get()` blocks — on the main thread, inside
+    // composition — for as long as the camera service takes to come up, which on a cold
+    // first open is long enough to drop frames, so the work waits for a listener instead.
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val future = ProcessCameraProvider.getInstance(context)
+        var provider: ProcessCameraProvider? = null
+        future.addListener(
+            {
+                val ready = runCatching { future.get() }.getOrNull() ?: return@addListener
+                provider = ready
+                runCatching {
+                    ready.unbindAll()
+                    ready.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        Preview.Builder().build()
+                            .also { it.surfaceProvider = previewView.surfaceProvider },
+                        capture,
+                    )
+                }
+            },
+            ContextCompat.getMainExecutor(context),
+        )
+        onDispose { runCatching { provider?.unbindAll() } }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
