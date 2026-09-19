@@ -38,13 +38,22 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 cd "$android"
 
 # --- Unit tests -------------------------------------------------------------------
-./gradlew --console=plain -q testDebugUnitTest assembleRelease
-python3 - "$android/app/build/test-results/testDebugUnitTest" <<'PY'
+# --rerun, always: an up-to-date `testDebugUnitTest` prints nothing and passes, so a green
+# run can mean "nothing was tested since the last one". A gate that can pass without
+# running the tests is not a gate.
+./gradlew --console=plain -q testDebugUnitTest --rerun assembleRelease assembleReleaseProbe
+# Both modules: the app's, and the llama module's own — which are where the rules about
+# loading and freeing a model live.
+python3 - "$android/app/build/test-results/testDebugUnitTest" "$android/llama/build/test-results/testDebugUnitTest" <<'PY'
 import glob, re, sys
 tests = failures = 0
-for path in glob.glob(sys.argv[1] + "/*.xml"):
-    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', open(path).read())
-    tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
+for folder in sys.argv[1:]:
+    found = glob.glob(folder + "/*.xml")
+    if not found:
+        sys.exit(f"no test results in {folder}")
+    for path in found:
+        head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', open(path).read())
+        tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
 print(f"unit tests: {tests}, failures: {failures}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
@@ -75,8 +84,54 @@ for method in nativeInit nativeBackends nativeSystemInfo nativeLoad nativeCancel
 done
 grep -qE "^dev\.siliconoptimizer\.buddy\.llama\.LlamaSink: boolean onText\(byte\[\]\)" "$seeds" ||
     fail "LlamaSink.onText was not kept — native code finds it by name"
-grep -q "^dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe$" "$seeds" ||
+# The test probe reaches the engine by name from inside a minified build — and is in the
+# build the tests run on, never in the one the owner installs.
+grep -q "^dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe$" "$seeds" &&
+    fail "OnDeviceProbe is in the release build; it belongs to the releaseProbe build type only"
+probeSeeds="$android/app/build/outputs/mapping/releaseProbe/seeds.txt"
+[ -f "$probeSeeds" ] || fail "no seeds.txt for releaseProbe — did R8 run?"
+grep -q "^dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe$" "$probeSeeds" ||
     fail "OnDeviceProbe was not kept — the instrumented tests reach the engine through it"
+
+# --- What the JNI bridge can reach ------------------------------------------------
+# llama.cpp ships an HTTP client and a Hugging Face downloader in libllama-common. The
+# bridge links that library for its chat templates and its sampling, and must not have
+# brought any of the rest with it: nothing on this phone fetches a model except the app's
+# own downloader, from the owner's Mac.
+bridge=$(ls "$android"/app/build/outputs/apk/release/*.apk | head -1)
+python3 - "$bridge" <<'PY'
+import re, struct, sys, zipfile
+
+data = zipfile.ZipFile(sys.argv[1]).read("lib/arm64-v8a/libbuddy_llama.so")
+if data[:4] != b"\x7fELF" or data[4] != 2:
+    sys.exit("libbuddy_llama.so is not an ELF64 object")
+shoff, = struct.unpack_from("<Q", data, 0x28)
+shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x3A)
+sections = []
+for index in range(shnum):
+    fields = struct.unpack_from("<IIQQQQIIQQ", data, shoff + index * shentsize)
+    sections.append(dict(name=fields[0], offset=fields[4], size=fields[5], link=fields[6]))
+def named(section):
+    start = sections[shstrndx]["offset"] + section["name"]
+    return data[start:data.index(b"\0", start)].decode()
+dynsym = next(s for s in sections if named(s) == ".dynsym")
+dynstr = sections[dynsym["link"]]
+undefined = []
+for index in range(dynsym["size"] // 24):
+    st_name, _, _, st_shndx, _, _ = struct.unpack_from("<IBBHQQ", data, dynsym["offset"] + index * 24)
+    if st_shndx == 0 and st_name:
+        start = dynstr["offset"] + st_name
+        undefined.append(data[start:data.index(b"\0", start)].decode())
+forbidden = re.compile(
+    r"^(socket|socketpair|connect|bind|listen|accept4?|send|sendto|sendmsg|recv|recvfrom|recvmsg|"
+    r"getaddrinfo|gethostbyname\w*|inet_\w+|curl_\w+|SSL_\w+|fork|vfork|execv\w*|execl\w*|"
+    r"system|popen|posix_spawn\w*)$",
+)
+bad = sorted({name for name in undefined if forbidden.match(name)})
+print(f"bridge imports: {len(undefined)} symbols, {len(bad)} reaching a network or a process")
+if bad:
+    sys.exit("libbuddy_llama.so imports " + ", ".join(bad))
+PY
 
 # --- The APK ----------------------------------------------------------------------
 apk=$(ls "$android"/app/build/outputs/apk/release/*.apk | head -1)
@@ -97,11 +152,29 @@ for library in libbuddy_llama libllama libllama-common libggml libggml-base libc
     [ "$size" -lt 5000000 ] || fail "$library.so is $size bytes: not stripped?"
 done
 
+# --- What was downloaded to build it ----------------------------------------------
+# llama.cpp fetches KleidiAI v1.24.0 at build time and pins it by MD5, which is not a hash
+# to trust a download to. The archive that was actually fetched is checked here.
+kleidiai=$(find "$android/llama/.cxx" -name "kleidiai-*-src.tar.gz" 2>/dev/null | head -1)
+if [ -n "$kleidiai" ]; then
+    sum=$(shasum -a 256 "$kleidiai" | awk '{print $1}')
+    echo "kleidiai archive: $sum"
+    [ "$sum" = "9348b969e042d8890a54b01a463dbe71f5a4c074b5329e9c26a85ef3b68aa19b" ] ||
+        fail "the KleidiAI archive is not the pinned v1.24.0 release (got $sum)"
+elif [ -z "${BUDDY_KLEIDIAI_VENDORED:-}" ]; then
+    fail "no KleidiAI archive under android/llama/.cxx — build with -Pbuddy.kleidiaiSource and set BUDDY_KLEIDIAI_VENDORED=1 if it is vendored"
+fi
+
 # --- On a device ------------------------------------------------------------------
 if $connected; then
     [ -n "${ANDROID_SERIAL:-}" ] || fail "--connected needs ANDROID_SERIAL"
-    ./gradlew --console=plain -q connectedReleaseAndroidTest
-    python3 - "$android/app/build/outputs/androidTest-results/connected/release" <<'PY'
+    # Two passes. The main one, and then — on the fresh install every run begins with —
+    # the one class that is about a phone where notifications were never granted, which
+    # another class grants for the whole of the run above.
+    notice=dev.siliconoptimizer.buddy.NotificationsOffTest
+    ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
+        "-Pandroid.testInstrumentationRunnerArguments.notClass=$notice"
+    python3 - "$android/app/build/outputs/androidTest-results/connected/releaseProbe" <<'PY'
 import glob, re, sys
 tests = failures = 0
 for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
@@ -109,6 +182,18 @@ for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
     if head:
         tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
 print(f"instrumented tests: {tests}, failures: {failures}")
+sys.exit(1 if failures or tests == 0 else 0)
+PY
+    ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
+        "-Pandroid.testInstrumentationRunnerArguments.class=$notice"
+    python3 - "$android/app/build/outputs/androidTest-results/connected/releaseProbe" <<'PY'
+import glob, re, sys
+tests = failures = 0
+for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
+    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', open(path).read())
+    if head:
+        tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
+print(f"instrumented tests (fresh install, notifications never granted): {tests}, failures: {failures}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 fi

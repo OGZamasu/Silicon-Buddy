@@ -77,6 +77,8 @@ import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ui.Format
+import dev.siliconoptimizer.buddy.ui.KeepScreenOn
+import dev.siliconoptimizer.buddy.ui.NoRecentsScreenshot
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -109,6 +111,14 @@ fun ChatScreen(
             kotlinx.coroutines.delay(1000)
         }
     }
+
+    // The phone's own model writes for as long as a minute, and Android dims and sleeps a
+    // screen nobody is touching — which slows the answer down and then stops it, because an
+    // app that is not in front does not get to keep writing. Only while it is writing.
+    KeepScreenOn(model.keepsScreenOn)
+    // A conversation the phone answered is on this phone and nowhere else. The Recents
+    // thumbnail is a copy of it somewhere the owner did not put it.
+    if (model.current?.onDevice == true) NoRecentsScreenshot()
 
     val photoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -254,8 +264,10 @@ fun ChatScreen(
                                 expanded.value + message.id
                             }
                         },
-                        onCopy = { copyToClipboard(context, message.content) },
-                        onShare = { share(context, message.content) },
+                        // Copied and shared with the chip's words, so an answer the phone
+                        // wrote does not arrive somewhere else looking like the Mac's.
+                        onCopy = { copyToClipboard(context, OnDeviceNotices.labelled(message.content, message.originLabel.takeIf { message.isFromPhone })) },
+                        onShare = { share(context, OnDeviceNotices.labelled(message.content, message.originLabel.takeIf { message.isFromPhone })) },
                         // The failed Mac reply carries the same offer as the banner.
                         onAnswerOnPhone = if (model.offer?.failedMessageID == message.id) {
                             { model.answerOnPhone() }
@@ -539,6 +551,16 @@ private fun MessageBubble(
         // Every answer the phone wrote says so, on the answer itself — not in a setting, not
         // in a banner that scrolls away. Drawn before the text, so it is read first too.
         if (fromPhone) PhoneChip(message.originLabel ?: "this phone's model")
+
+        // A phone model holds a few thousand words of context. When the conversation ran
+        // past that, the answer was written without the beginning of it, and says so.
+        if (message.trimmedHistory) {
+            Text(
+                OnDeviceNotices.HISTORY_TRIMMED,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
 
         if (message.content.isNotEmpty()) {
             Column(

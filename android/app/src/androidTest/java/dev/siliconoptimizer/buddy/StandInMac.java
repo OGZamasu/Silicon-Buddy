@@ -72,6 +72,18 @@ final class StandInMac {
         return out;
     }
 
+    /**
+     * What the phone has asked of the `/ondevice` routes, oldest first — and only since the
+     * last [ondevice] call that cleared them, which is what makes this readable at all: the
+     * full request log is a ring buffer that a test's own polling rolls over in seconds.
+     */
+    List<String> ondeviceRequests() throws Exception {
+        JSONArray lines = new JSONObject(request("GET", "/demo/ondevice/requests", null)).getJSONArray("requests");
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < lines.length(); i++) out.add(lines.getString(i));
+        return out;
+    }
+
     /** Sets the stand-in's phone-model switches and states. */
     void ondevice(String json) throws Exception {
         request("POST", "/demo/ondevice", json);

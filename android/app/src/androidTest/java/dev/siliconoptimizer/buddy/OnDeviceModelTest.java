@@ -157,6 +157,29 @@ public class OnDeviceModelTest {
         return check.holds();
     }
 
+    /**
+     * Whether the stand-in has just seen a request starting with [prefix].
+     *
+     * Its full log is the last two thousand lines, and a test that polls it while it waits
+     * rolls that over in seconds — so neither an index nor a count taken earlier means
+     * anything by the time it is compared. Only the newest lines are read. Where a test
+     * needs more than "just now", the `/ondevice` log is the one to read: it is cleared on
+     * demand and only the phone writes to it.
+     */
+    private boolean justSaw(String prefix) throws Exception {
+        List<String> all = mac.requests();
+        for (String line : all.subList(Math.max(0, all.size() - 150), all.size())) {
+            if (line.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
+    /** Whether the phone has asked this of the `/ondevice` routes since they were cleared. */
+    private boolean asked(String prefix) throws Exception {
+        for (String line : mac.ondeviceRequests()) if (line.startsWith(prefix)) return true;
+        return false;
+    }
+
     private String shell(String command) throws Exception {
         ParcelFileDescriptor output = instrumentation.getUiAutomation().executeShellCommand(command);
         StringBuilder text = new StringBuilder();
@@ -232,12 +255,8 @@ public class OnDeviceModelTest {
             assertNotNull(replace);
             replace.click();
         }
-        final int before = mac.requests().size();
-        assertTrue("the app never paired with the stand-in", waitFor(WAIT, () -> {
-            List<String> seen = mac.requests();
-            for (int i = Math.max(0, before - 5); i < seen.size(); i++) if (seen.get(i).startsWith("POST /buddy/pair")) return true;
-            return false;
-        }));
+        assertTrue("the app never paired with the stand-in",
+            waitFor(WAIT, () -> justSaw("POST /buddy/pair")));
         device.waitForIdle();
     }
 
@@ -430,7 +449,8 @@ public class OnDeviceModelTest {
     @Test
     public void aModelComesFromTheMacThroughSettings_afterConsent() throws Exception {
         probe("delete", context, STORIES);
-        mac.ondevice("{\"state\":{\"" + STORIES + "\":\"absent\"},\"fetchSeconds\":2}");
+        // …and a clean `/ondevice` request log, which is what this test reads back.
+        mac.ondevice("{\"state\":{\"" + STORIES + "\":\"absent\"},\"fetchSeconds\":2,\"clearRequests\":true}");
         pair();
 
         UiObject2 settings = device.wait(Until.findObject(By.desc("Settings")), WAIT);
@@ -451,16 +471,16 @@ public class OnDeviceModelTest {
         assertNotNull(device.findObject(By.text("Licence: MIT")));
         assertNotNull(device.findObject(By.textStartsWith("Free on this phone: ")));
         assertNotNull("Wi-Fi unless the owner says otherwise", device.findObject(By.text("Download on Wi-Fi")));
-        final int before = mac.requests().size();
+        final String fetch = "GET /ondevice/models/" + STORIES + "/file";
+        final String prepare = "POST /ondevice/models/" + STORIES + "/prepare";
         device.findObject(By.text("Download on Wi-Fi")).click();
 
         // This emulator's only network is mobile data, so a Wi-Fi-only download waits — and
         // says so — rather than spending the owner's data.
-        assertNotNull("it waits for Wi-Fi", device.wait(Until.findObject(By.desc("Stories 260K: Waiting for Wi-Fi")), WAIT));
+        assertNotNull("it waits for Wi-Fi", device.wait(Until.findObject(By.descStartsWith("Stories 260K: Waiting for Wi-Fi")), WAIT));
         Thread.sleep(3_000);
-        List<String> meanwhile = mac.requests();
-        assertFalse("nothing was fetched on mobile data",
-            String.join("\n", meanwhile.subList(before, meanwhile.size())).contains("/ondevice/models/" + STORIES));
+        assertFalse("nothing was fetched on mobile data", asked(fetch));
+        assertFalse("and the Mac was not even asked to get it ready", asked(prepare));
         UiObject2 cancel = device.wait(Until.findObject(By.text("Cancel")), WAIT);
         assertNotNull(cancel);
         cancel.click();
@@ -478,10 +498,8 @@ public class OnDeviceModelTest {
 
         assertTrue("it arrived and was verified", waitFor(90_000, () -> ((String) probe("installed", context)).contains(STORIES)));
         assertEquals(STORIES_SHA256, probe("sha256", context, STORIES));
-        List<String> all = mac.requests();
-        List<String> seen = all.subList(before, all.size());
-        assertTrue("the Mac was asked to fetch it: " + seen, seen.contains("POST /ondevice/models/" + STORIES + "/prepare"));
-        assertTrue("and the phone fetched it from the Mac", seen.contains("GET /ondevice/models/" + STORIES + "/file"));
+        assertTrue("the Mac was asked to fetch it: " + mac.ondeviceRequests(), asked(prepare));
+        assertTrue("and the phone fetched it from the Mac", asked(fetch));
         assertTrue("and said so", waitFor(10_000, () -> {
             for (StatusBarNotification posted : context.getSystemService(NotificationManager.class).getActiveNotifications()) {
                 CharSequence title = posted.getNotification().extras.getCharSequence(Notification.EXTRA_TITLE);
@@ -489,6 +507,57 @@ public class OnDeviceModelTest {
             }
             return false;
         }));
+    }
+
+    /**
+     * A download that stopped half-way is a gigabyte of the owner's storage with nothing to
+     * show for it. Settings says it is there, and offers the two things worth doing.
+     */
+    @Test
+    public void aPartFinishedDownloadIsVisible_andSurvivesLeavingTheApp() throws Exception {
+        probe("delete", context, STORIES);
+        mac.ondevice("{\"state\":{\"" + STORIES + "\":\"ready\"}}");
+        pair();
+        // As a cancelled download leaves it: bytes on disk and the record of how many.
+        probe("partial", context, STORIES_SHA256, 500_000L);
+
+        openPhoneModels();
+        UiObject2 paused = device.wait(Until.findObject(By.descContains("of 1.19 MB is already here — paused")), WAIT);
+        if (paused == null) evidence("partial");
+        assertNotNull("Settings says what is half-here", paused);
+        assertNotNull("and offers to carry on", buttonUnder("Stories 260K", "Resume…"));
+        assertNotNull("or to get the space back", buttonUnder("Stories 260K", "Delete"));
+
+        // It is read off the disk, so leaving the app and coming back changes nothing.
+        device.pressHome();
+        Thread.sleep(1_000);
+        openPhoneModels();
+        assertNotNull("still there after leaving the app",
+            device.wait(Until.findObject(By.descContains("of 1.19 MB is already here — paused")), WAIT));
+
+        buttonUnder("Stories 260K", "Delete").click();
+        assertNotNull("and deleting it says so", device.wait(Until.findObject(By.desc("Stories 260K: Not on this phone")), WAIT));
+    }
+
+    /**
+     * Settings → On this phone, scrolled to Stories 260K — from wherever the app happens to
+     * be, including Settings itself, which is where it comes back to after a trip to Home.
+     */
+    private void openPhoneModels() throws Exception {
+        bringToFront();
+        if (!device.hasObject(By.text("Stories 260K"))) {
+            UiObject2 settings = device.findObject(By.desc("Settings"));
+            if (settings != null) {
+                settings.click();
+                device.waitForIdle();
+            }
+            UiObject2 list = device.wait(Until.findObject(By.scrollable(true)), WAIT);
+            assertNotNull("the Settings screen", list);
+            if (list.scrollUntil(Direction.DOWN, Until.findObject(By.text("Stories 260K"))) == null) {
+                list.scrollUntil(Direction.UP, Until.findObject(By.text("Stories 260K")));
+            }
+        }
+        assertNotNull("the phone models section", device.wait(Until.findObject(By.text("Stories 260K")), WAIT));
     }
 
     @Test
@@ -535,6 +604,10 @@ public class OnDeviceModelTest {
         UiObject2 chip = device.wait(Until.findObject(By.desc("On this phone · SmolLM2 135M")), 90_000);
         if (chip == null) evidence("fallback");
         assertNotNull("the answer carries the chip", chip);
+        // The phone writes at a word or two a second and nobody is touching the screen:
+        // without this the display sleeps, the app leaves the foreground and its own rules
+        // stop the answer it is in the middle of.
+        assertTrue("the screen is kept awake while the phone writes", waitFor(WAIT, this::screenIsKeptOn));
         assertNotNull("the phone's model is writing it", device.wait(Until.findObject(By.desc("This phone's model replied")), WAIT));
         // Finished: the composer offers Send again rather than Stop.
         assertNotNull("and finishes", device.wait(Until.findObject(By.desc("Send")), 120_000));
@@ -544,5 +617,16 @@ public class OnDeviceModelTest {
         for (String line : mac.requests()) {
             assertFalse("the Mac never heard of the phone's conversation: " + line, line.contains("phone-"));
         }
+        assertFalse("and it is let go of as soon as the answer ends", screenIsKeptOn());
     }
+
+    /** Whether this app's window is holding the screen awake, as the window manager sees it. */
+    private boolean screenIsKeptOn() throws Exception {
+        String windows = shell("dumpsys window windows");
+        for (String block : windows.split("Window #")) {
+            if (block.contains(PACKAGE + "/" + PACKAGE + ".MainActivity") && block.contains("KEEP_SCREEN_ON")) return true;
+        }
+        return false;
+    }
+
 }

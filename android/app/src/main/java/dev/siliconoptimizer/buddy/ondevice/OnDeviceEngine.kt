@@ -1,6 +1,5 @@
 package dev.siliconoptimizer.buddy.ondevice
 
-import android.app.ActivityManager
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.res.Configuration
@@ -17,6 +16,7 @@ import dev.siliconoptimizer.buddy.llama.LlamaSession
 import dev.siliconoptimizer.buddy.llama.LlamaStop
 import dev.siliconoptimizer.buddy.transport.ChatMetrics
 import dev.siliconoptimizer.buddy.transport.ChatStreamEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,7 +54,12 @@ sealed interface Preflight {
  *   the model unloads after 30 s in the background, at once when Android asks for memory back
  *   from a background app, and after five idle minutes anywhere.
  */
-class OnDeviceEngine private constructor(private val context: Context) {
+class OnDeviceEngine internal constructor(
+    val store: ModelStore,
+    private val runtime: ModelRuntime,
+    private val device: DeviceState,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+) {
 
     sealed interface State {
         data object Unloaded : State
@@ -77,22 +82,21 @@ class OnDeviceEngine private constructor(private val context: Context) {
     @Volatile var backends: String? = null
         private set
 
-    val store = ModelStore(context)
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mutex = Mutex()
-    @Volatile private var session: LlamaSession? = null
+    @Volatile private var session: ModelSession? = null
     @Volatile private var sessionModel: InstalledPhoneModel? = null
     @Volatile private var stopReason: StopReason? = null
     @Volatile private var inForeground = true
     private var unloadTimer: Job? = null
 
-    private val power: PowerManager? = context.getSystemService(PowerManager::class.java)
-    private val activities: ActivityManager? = context.getSystemService(ActivityManager::class.java)
+    /** Android, when there is one: memory warnings and the thermal listener come from here. */
+    private var context: Context? = null
     private var listeningToHeat = false
     private val heatListener = PowerManager.OnThermalStatusChangedListener { status -> onHeat(status) }
 
-    init {
+    /** Starts listening to Android for memory pressure. The tests' engine has no Context. */
+    private fun watch(context: Context) {
+        this.context = context
         context.registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
                 // UI_HIDDEN arrives every time the app leaves the screen, which the grace
@@ -122,19 +126,14 @@ class OnDeviceEngine private constructor(private val context: Context) {
 
     /** Loads the library once and says whether this phone can run a model at all. */
     suspend fun availability(): LlamaRuntime.Availability =
-        LlamaRuntime.availability(context.applicationInfo.nativeLibraryDir).also {
+        runtime.availability().also {
             if (it is LlamaRuntime.Availability.Ready) backends = it.backends
         }
 
-    val thermalStatus: Int
-        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) power?.currentThermalStatus ?: 0 else 0
+    val thermalStatus: Int get() = device.thermalStatus
 
     /** Free memory as Android counts it, and whether it considers itself low. */
-    fun memory(): Pair<Long, Boolean> {
-        val info = ActivityManager.MemoryInfo()
-        activities?.getMemoryInfo(info) ?: return Long.MAX_VALUE to false
-        return info.availMem to info.lowMemory
-    }
+    fun memory(): Pair<Long, Boolean> = device.memory()
 
     val loadedModel: InstalledPhoneModel? get() = sessionModel.takeIf { session?.isClosed == false }
 
@@ -160,12 +159,7 @@ class OnDeviceEngine private constructor(private val context: Context) {
         }
         if (!store.isIntact(model)) {
             val stillGood = withContext(Dispatchers.IO) { store.reverify(model) }
-            if (!stillGood) {
-                return Preflight.Refused(
-                    "The copy of ${model.label} on this phone changed since it was checked, so it " +
-                        "was deleted. Get it again while your Mac is reachable.",
-                )
-            }
+            if (!stillGood) return Preflight.Refused(OnDeviceNotices.changedOnDisk(model.label))
         }
         return Preflight.Ready
     }
@@ -261,6 +255,14 @@ class OnDeviceEngine private constructor(private val context: Context) {
         session?.cancel()
     }
 
+    /**
+     * Stops a load in progress. Stop during the minute a model takes to arrive in memory has
+     * to reach llama.cpp itself; cancelling the flow alone would leave it loading.
+     */
+    fun cancelLoading() {
+        if (_state.value is State.Loading) runtime.cancelLoading()
+    }
+
     private fun sentence(reason: StopReason?): String = when (reason) {
         StopReason.Heat -> OnDeviceNotices.TOO_HOT
         StopReason.Background -> OnDeviceNotices.LEFT_APP
@@ -270,7 +272,7 @@ class OnDeviceEngine private constructor(private val context: Context) {
 
     // MARK: - Loading and letting go
 
-    private suspend fun load(model: InstalledPhoneModel): LlamaSession = mutex.withLock {
+    private suspend fun load(model: InstalledPhoneModel): ModelSession = mutex.withLock {
         session?.let { current ->
             if (!current.isClosed && sessionModel?.id == model.id) return current
             current.close()
@@ -282,9 +284,15 @@ class OnDeviceEngine private constructor(private val context: Context) {
             is ResourceGuard.Heat.Run -> heat.threads
             ResourceGuard.Heat.Stop -> throw OnDeviceFailure(OnDeviceNotices.TOO_HOT_TO_START)
         }
+        // Nothing is read into memory before the file is the one that was verified: the
+        // preflight checks this too, but a load can also be reached from a widget or a
+        // retry, and a swapped file is the one thing llama.cpp will happily read.
+        if (!store.isIntact(model) && !withContext(Dispatchers.IO) { store.reverify(model) }) {
+            throw OnDeviceFailure(OnDeviceNotices.changedOnDisk(model.label))
+        }
         _state.value = State.Loading(model)
         try {
-            val opened = LlamaSession.open(
+            val opened = runtime.open(
                 store.file(model).absolutePath,
                 LlamaSession.Settings(
                     contextLength = model.model.recommended.contextLength,
@@ -298,6 +306,13 @@ class OnDeviceEngine private constructor(private val context: Context) {
             listenToHeat(true)
             scheduleUnload(if (inForeground) ResourceGuard.IDLE_MS else ResourceGuard.BACKGROUND_GRACE_MS, if (inForeground) "idle" else "background")
             opened
+        } catch (cancelled: CancellationException) {
+            // The answer this was for is gone. LlamaSession.open frees what it made; all
+            // that is left here is to stop calling this loaded.
+            _state.value = State.Unloaded
+            session = null
+            sessionModel = null
+            throw cancelled
         } catch (failure: IllegalStateException) {
             _state.value = State.Unloaded
             throw OnDeviceFailure(
@@ -347,7 +362,7 @@ class OnDeviceEngine private constructor(private val context: Context) {
     fun appLeftForeground() {
         inForeground = false
         if (_state.value is State.Answering) cancel(StopReason.Background)
-        if (_state.value is State.Loading) LlamaSession.cancelLoading()
+        if (_state.value is State.Loading) runtime.cancelLoading()
         if (session != null) scheduleUnload(ResourceGuard.BACKGROUND_GRACE_MS, "background")
     }
 
@@ -361,7 +376,8 @@ class OnDeviceEngine private constructor(private val context: Context) {
 
     private fun listenToHeat(listen: Boolean) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        val manager = power ?: return
+        val context = context ?: return
+        val manager = context.getSystemService(PowerManager::class.java) ?: return
         synchronized(this) {
             if (listen && !listeningToHeat) {
                 runCatching { manager.addThermalStatusListener(context.mainExecutor, heatListener) }
@@ -373,7 +389,7 @@ class OnDeviceEngine private constructor(private val context: Context) {
         }
     }
 
-    private fun onHeat(status: Int) {
+    internal fun onHeat(status: Int) {
         val model = sessionModel ?: return
         when (val heat = ResourceGuard.heat(status, model.model.recommended)) {
             ResourceGuard.Heat.Stop -> if (_state.value is State.Answering) cancel(StopReason.Heat)
@@ -394,7 +410,17 @@ class OnDeviceEngine private constructor(private val context: Context) {
         @Volatile private var instance: OnDeviceEngine? = null
 
         fun get(context: Context): OnDeviceEngine = instance ?: synchronized(this) {
-            instance ?: OnDeviceEngine(context.applicationContext).also { instance = it }
+            instance ?: run {
+                val app = context.applicationContext
+                OnDeviceEngine(
+                    store = ModelStore(app),
+                    runtime = NativeModelRuntime(app.applicationInfo.nativeLibraryDir),
+                    device = AndroidDeviceState(app),
+                ).also {
+                    it.watch(app)
+                    instance = it
+                }
+            }
         }
 
         /** The engine if something already made it; never makes one. */

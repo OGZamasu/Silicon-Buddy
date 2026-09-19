@@ -40,6 +40,13 @@ class FakePhoneMac(
     @Volatile var ready = false
     @Volatile var servedSize: Long? = null
 
+    /** A digest to serve in `X-Content-SHA256` other than the real one, for a Mac serving
+     * a different file than it listed. */
+    @Volatile var servedDigest: String? = null
+
+    /** A digest to *list*, for a Mac that answers with something that is not one. */
+    @Volatile var listedDigest: String? = null
+
     private var pollsLeft = 0
 
     data class Request(val method: String, val path: String, val query: String, val headers: Map<String, String>)
@@ -73,7 +80,7 @@ class FakePhoneMac(
             requests.any { it.path.endsWith("/prepare") } -> """{"state":"downloading","stage":"fetching","fraction":0.5}"""
             else -> """{"state":"absent"}"""
         }
-        return """{"id":"$id","label":"$label","isDefault":true,"sizeBytes":${bytes.size},"sha256":"$sha256",""" +
+        return """{"id":"$id","label":"$label","isDefault":true,"sizeBytes":${bytes.size},"sha256":"${listedDigest ?: sha256}",""" +
             """"licence":"Apache-2.0","source":{"repo":"test/repo","commit":"abc","file":"model.gguf"},""" +
             """"onMac":$onMac,"recommended":{"threadsPrompt":6,"threadsGenerate":4,"contextLength":4096,""" +
             """"minFreeMemoryBytes":3100000000,"thinking":false},"slowerOnPhone":false}"""
@@ -174,7 +181,7 @@ class FakePhoneMac(
         val text = buildString {
             append(if (start != null) "HTTP/1.1 206 Partial Content\r\n" else "HTTP/1.1 200 OK\r\n")
             append("Content-Type: application/octet-stream\r\nContent-Length: ${size - from}\r\n")
-            append("ETag: \"$sha256\"\r\nX-Content-SHA256: $sha256\r\nAccept-Ranges: bytes\r\n")
+            append("ETag: \"$sha256\"\r\nX-Content-SHA256: ${servedDigest ?: sha256}\r\nAccept-Ranges: bytes\r\n")
             if (start != null) append("Content-Range: bytes $from-${size - 1}/$size\r\n")
             append("Connection: close\r\n\r\n")
         }

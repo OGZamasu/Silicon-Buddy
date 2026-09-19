@@ -120,8 +120,18 @@ class ModelDownloader(
 
     private suspend fun listed(id: String): PhoneModel {
         val models = persist { mac.phoneModels() }.models
-        return models.firstOrNull { it.id == id }
+        val model = models.firstOrNull { it.id == id }
             ?: throw DownloadFailure("Your Mac no longer offers that model for this phone.", transient = false)
+        // Everything about this download is named after that digest — the part file, the
+        // record beside it, the file it becomes — and it arrives over the network.
+        if (!ModelStore.isDigest(model.sha256.lowercase())) {
+            throw DownloadFailure(
+                "Your Mac listed ${model.label} without a proper checksum, so this phone can't " +
+                    "check what it gets. Update Silicon Optimizer on your Mac.",
+                transient = false,
+            )
+        }
+        return model
     }
 
     /** Asks the Mac to have [model] ready and waits until it is, following its progress. */

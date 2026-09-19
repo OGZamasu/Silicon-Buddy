@@ -27,7 +27,7 @@ sealed interface DownloadState {
 
     data class Queued(override val label: String) : DownloadState
 
-    /** The owner kept it to Wi-Fi, and the phone is not on Wi-Fi. */
+    /** The owner kept it to Wi-Fi, and the phone is not on Wi-Fi it can spend freely. */
     data class WaitingForWifi(override val label: String) : DownloadState
     data class OnMac(override val label: String, val stage: String?, val fraction: Double?) : DownloadState
     data class Copying(override val label: String, val received: Long, val total: Long) : DownloadState
@@ -41,7 +41,7 @@ sealed interface DownloadState {
     val line: String
         get() = when (this) {
             is Queued -> "Starting…"
-            is WaitingForWifi -> "Waiting for Wi-Fi"
+            is WaitingForWifi -> "Waiting for Wi-Fi that isn't metered"
             is OnMac -> when (stage) {
                 "checking" -> "Your Mac is checking it"
                 "moving" -> "Your Mac is moving it to its model library"
@@ -64,40 +64,82 @@ sealed interface DownloadState {
         }
 }
 
+/** What the phone is on right now, as much of it as the rule needs. */
+data class NetworkNow(
+    val transports: Set<Int>,
+    /** Android's own `NET_CAPABILITY_NOT_METERED`: a hotspot and a capped SSID are metered. */
+    val unmetered: Boolean,
+    /**
+     * The networks underneath, when the one in use is a VPN and Android did not copy their
+     * transports onto the tunnel.
+     */
+    val underneath: List<NetworkNow> = emptyList(),
+) {
+    val isVpn: Boolean get() = NetworkCapabilities.TRANSPORT_VPN in transports
+    val isWired: Boolean
+        get() = NetworkCapabilities.TRANSPORT_WIFI in transports ||
+            NetworkCapabilities.TRANSPORT_ETHERNET in transports
+}
+
 /**
- * Which networks may carry a model. Wi-Fi (or Ethernet) by default — over the tailnet too,
- * where the phone's traffic rides a VPN whose capabilities carry the transport underneath —
- * and anything at all once the owner has said "use mobile data" for this download.
+ * Which networks may carry a model.
+ *
+ * "Wi-Fi only" is what the owner asked for, and what they meant by it is "not out of my data
+ * allowance" — so the test is Android's own `NOT_METERED`, not the Wi-Fi transport. A phone
+ * tethered to another phone, or on a hotel network Android has marked metered, is Wi-Fi and
+ * is exactly the case this refuses.
+ *
+ * The tailnet complicates it: reaching the Mac at all means going through Tailscale, and the
+ * network in use is then a VPN. Android normally copies the underlying transports and the
+ * metered state onto the tunnel, which is all this needs; where it does not, the networks
+ * underneath are asked instead. Nothing here treats "is a VPN" as a reason to refuse.
  */
 object DownloadNetwork {
 
-    fun allows(transports: Set<Int>, useMobileData: Boolean): Boolean =
-        useMobileData ||
-            NetworkCapabilities.TRANSPORT_WIFI in transports ||
-            NetworkCapabilities.TRANSPORT_ETHERNET in transports
+    fun allows(now: NetworkNow, useMobileData: Boolean): Boolean {
+        if (useMobileData) return true
+        if (now.isWired) return now.unmetered
+        // A tunnel that says nothing about what it rides on: look underneath it.
+        if (now.isVpn) return now.underneath.any { it.isWired && it.unmetered }
+        return false
+    }
 
     /**
      * The job's network constraint. `NOT_VPN` is removed because Tailscale *is* a VPN: a
      * request left with the default would never be satisfied while the phone is on the
-     * tailnet, which is the only way it ever reaches the Mac.
+     * tailnet, which is the only way it ever reaches the Mac. `NOT_METERED` is the same
+     * rule as [allows], enforced by the system while the job waits.
      */
     fun request(useMobileData: Boolean): NetworkRequest = NetworkRequest.Builder()
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         .apply {
-            if (!useMobileData) {
-                addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-            }
+            if (!useMobileData) addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         }
         .build()
 
-    /** The transports under the phone's default network right now. */
-    fun current(context: Context): Set<Int> {
-        val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return emptySet()
-        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork) ?: return emptySet()
-        return transportsOf(capabilities)
+    /** The phone's default network right now, and what it rides on. */
+    fun current(context: Context): NetworkNow {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+            ?: return NetworkNow(emptySet(), false)
+        val active = connectivity.activeNetwork ?: return NetworkNow(emptySet(), false)
+        val capabilities = connectivity.getNetworkCapabilities(active)
+            ?: return NetworkNow(emptySet(), false)
+        val now = read(capabilities)
+        if (!now.isVpn || now.isWired) return now
+        // Under the tunnel: every other connected network this app can see.
+        val underneath = connectivity.allNetworks
+            .filter { it != active }
+            .mapNotNull { connectivity.getNetworkCapabilities(it) }
+            .filterNot { it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+            .map { read(it) }
+        return now.copy(underneath = underneath)
     }
+
+    fun read(capabilities: NetworkCapabilities): NetworkNow = NetworkNow(
+        transports = transportsOf(capabilities),
+        unmetered = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+    )
 
     fun transportsOf(capabilities: NetworkCapabilities): Set<Int> = listOf(
         NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_CELLULAR,

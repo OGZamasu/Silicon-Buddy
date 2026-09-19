@@ -9,8 +9,15 @@ plugins {
  * The native part is built from the submodule at `third_party/llama.cpp`, pinned to tag
  * b11053 (commit 1af554f8fc78ba029665a47b839484d9763e2a75), with the flags M5's design
  * settled on: shared libraries, the CPU backend built once per ARM generation and chosen
- * when the app starts (`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`), Arm's KleidiAI
- * kernels, and nothing that reaches a network or spawns a process at run time.
+ * when the app starts (`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`) and Arm's KleidiAI
+ * kernels, with curl, OpenSSL and llama.cpp's subprocess support all off.
+ *
+ * That last part is a build setting, not a proof. libllama-common still carries llama.cpp's
+ * own HTTP and Hugging Face code — it is one library, and the bridge links it for chat
+ * templates and sampling — so what matters is that *the bridge* never calls into it.
+ * `scripts/ci-android.sh` reads the shipped `libbuddy_llama.so` and fails if it imports a
+ * socket, a resolver, curl, TLS or anything that starts a process. Models reach this phone
+ * one way: the app's own downloader, from the owner's Mac.
  */
 val llamaSource: File = rootDir.resolve("../third_party/llama.cpp")
 
@@ -65,8 +72,12 @@ android {
                 arguments += "-DLLAMA_BUILD_UI=OFF"
 
                 arguments += "-DBUDDY_LLAMA_SOURCE=${llamaSource.absolutePath}"
-                // KleidiAI's sources are fetched by llama.cpp's own CMake, pinned there by
-                // version and checksum. An offline machine can point at an unpacked copy.
+                // KleidiAI's sources are fetched by llama.cpp's own CMake at build time,
+                // pinned there to v1.24.0 by MD5. MD5 is not a hash to trust a download to
+                // on its own, so `scripts/ci-android.sh` also checks the archive that was
+                // fetched against its SHA-256:
+                //   9348b969e042d8890a54b01a463dbe71f5a4c074b5329e9c26a85ef3b68aa19b
+                // An offline machine can point at an unpacked copy instead.
                 (findProperty("buddy.kleidiaiSource") as String?)?.let {
                     arguments += "-DFETCHCONTENT_SOURCE_DIR_KLEIDIAI=$it"
                 }

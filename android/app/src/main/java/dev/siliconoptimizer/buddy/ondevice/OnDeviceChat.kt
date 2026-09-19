@@ -31,6 +31,9 @@ interface OnDeviceChat {
     /** The answer, as the chat reads a Mac's: tokens, then `Finished`, or `Failed`. */
     fun answer(model: InstalledPhoneModel, history: List<ChatMessage>, maxTokens: Int): Flow<ChatStreamEvent>
 
+    /** Stop, while the model is still being read into memory. Does nothing once it is. */
+    fun cancelLoading()
+
     /** Nothing here: no models, no store worth reading, never an offer. */
     class None(directory: File) : OnDeviceChat {
         override val conversations = ConversationStore(directory)
@@ -41,6 +44,7 @@ interface OnDeviceChat {
             Preflight.Refused(dev.siliconoptimizer.buddy.llama.LlamaRuntime.NOT_AVAILABLE)
         override fun answer(model: InstalledPhoneModel, history: List<ChatMessage>, maxTokens: Int): Flow<ChatStreamEvent> =
             flow { emit(ChatStreamEvent.Failed(dev.siliconoptimizer.buddy.llama.LlamaRuntime.NOT_AVAILABLE)) }
+        override fun cancelLoading() = Unit
     }
 
     companion object {
@@ -66,6 +70,8 @@ class AndroidOnDeviceChat(private val context: Context) : OnDeviceChat {
 
     override fun answer(model: InstalledPhoneModel, history: List<ChatMessage>, maxTokens: Int) =
         engine.answer(model, history, maxTokens)
+
+    override fun cancelLoading() = engine.cancelLoading()
 }
 
 /** The few choices the owner makes about the phone's model. Ordinary preferences: none is secret. */

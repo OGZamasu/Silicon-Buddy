@@ -5,6 +5,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -271,6 +272,11 @@ class ControlClient(
         if (authorized && config.token.isEmpty()) throw TransportError.NotConfigured
         val connection = config.url(path, query).openConnection() as HttpURLConnection
         connection.requestMethod = method
+        // No redirects. Everything this app talks to is one Mac on the tailnet, and a
+        // redirect is a request to go somewhere else with the owner's bearer token — which
+        // HttpURLConnection would do, carrying the Authorization header, without asking.
+        // A Mac that means to move a route can say so in a body.
+        connection.instanceFollowRedirects = false
         connection.connectTimeout = 8_000
         connection.readTimeout = readTimeoutMs
         connection.setRequestProperty("Accept", accept)
@@ -789,7 +795,17 @@ class ControlClient(
                 content = message.content, images = message.images, maxTokens = maxTokens,
             ),
         ),
-    )
+    ).catch { failure ->
+        // A 404 from this route is about the conversation, not the route: the Mac listed
+        // it, so it serves `/conversations`. Reported as a missing route it would mean
+        // "this Mac keeps no conversations", and the chat would quietly move every one of
+        // them onto the phone over a single deleted thread.
+        throw if (failure is TransportError && failure.isMissingRoute) {
+            TransportError.NotFound("That conversation isn't on your Mac any more.")
+        } else {
+            failure
+        }
+    }
 
     private fun chatEvents(path: String, body: String): Flow<ChatStreamEvent> =
         stream("POST", path, body).let { events ->

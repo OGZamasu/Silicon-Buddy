@@ -17,6 +17,14 @@ object OnDeviceNotices {
     /** The chip on every answer the phone wrote. */
     fun chip(label: String) = "On this phone · $label"
 
+    /**
+     * An answer with the chip's words attached, for the clipboard and the share sheet: out
+     * of the app the bubble's colour and border are gone, and text that the phone's small
+     * model wrote should not be read as the Mac's.
+     */
+    fun labelled(content: String, phoneModelLabel: String?): String =
+        if (phoneModelLabel == null) content else "$content\n\n— ${chip(phoneModelLabel)}"
+
     /** The conversation list's section for conversations that never reached the Mac. */
     const val SECTION = "On this phone — not synced"
 
@@ -50,6 +58,15 @@ object OnDeviceNotices {
     const val CHAT_SCOPE_SETTINGS =
         "This phone is paired for chat only, so your Mac won't send it a model of its own. " +
             "Pair it again with full control from Settings → Silicon Buddy on the Mac."
+
+    /** The file is no longer the one that was verified, so it was deleted rather than read. */
+    fun changedOnDisk(label: String): String =
+        "The copy of $label on this phone changed since it was checked, so it was deleted. " +
+            "Get it again while your Mac is reachable."
+
+    /** Older turns did not fit in the phone model's context. */
+    const val HISTORY_TRIMMED =
+        "Only the most recent messages were sent to the model on this phone."
 
     const val NO_MODEL_YET =
         "No model on this phone yet. While your Mac is reachable, get one in Settings → On this phone."

@@ -108,6 +108,32 @@ class ControlClientTest {
         assertTrue(!(error as TransportError).isMissingRoute)
     }
 
+    @Test
+    fun `a message to a conversation the Mac has forgotten is not a Mac without conversations`() = runBlocking {
+        // The difference matters: read as "this Mac has no /conversations", the app moves
+        // every conversation onto the phone and stops syncing.
+        server.reply("/conversations/C9/messages", 404, """{"error":"No conversation with id C9."}""")
+        val error = runCatching {
+            client.sendMessage("C9", ChatMessageWire("user", "Hello")).toList<ChatStreamEvent>()
+        }.exceptionOrNull()
+        assertTrue("Expected NotFound, got $error", error is TransportError.NotFound)
+        assertTrue(!(error as TransportError).isMissingRoute)
+    }
+
+    @Test
+    fun `a redirect is not followed, and the token does not go with it`() = runBlocking {
+        server.reply(
+            "/status", 302, """{"error":"moved"}""",
+            mapOf("Location" to "http://127.0.0.1:${server.port}/elsewhere"),
+        )
+        server.reply("/elsewhere", 200, """{"state":"Ready"}""")
+        runCatching { client.status() }
+        assertNull(
+            "a redirect is a request to send the owner's bearer token somewhere else",
+            server.request("/elsewhere"),
+        )
+    }
+
     // MARK: - What the client sends
 
     @Test

@@ -404,6 +404,12 @@ Java_dev_siliconoptimizer_buddy_llama_LlamaNative_nativeGenerate(
         // The oldest turns go first when the conversation outgrows the context, keeping a
         // system message and always the newest message.
         while (true) {
+            // Rendering and tokenising a long conversation is not instant, and this can go
+            // round many times; Stop is answered here too, not only once decoding starts.
+            if (session.cancel.load(std::memory_order_relaxed)) {
+                env->SetLongArrayRegion(metrics_out, 0, METRIC_COUNT, metrics);
+                return STATUS_CANCELLED;
+            }
             common_chat_params rendered;
             try {
                 rendered = render(session.templates.get(), messages, thinking == JNI_TRUE);

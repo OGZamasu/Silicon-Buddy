@@ -282,6 +282,39 @@ class ModelDownloaderTest {
     }
 
     @Test
+    fun `a Mac serving a different file than it listed is stopped at the first header`() = runBlocking {
+        mac.ready = true
+        // The listing says one digest; the file comes with another. Nothing is kept and
+        // nothing is hashed: 3 MB is cheap to notice here and expensive to notice later.
+        mac.servedDigest = "9".repeat(64)
+        try {
+            downloader().download(mac.id)
+            fail("a file the Mac itself says is a different one was accepted")
+        } catch (stopped: DownloadFailure) {
+            assertTrue(stopped.message!!.contains("serving a different file"))
+            assertTrue("worth trying again: the Mac may be mid-swap", stopped.transient)
+        }
+        assertNull("nothing was installed", store.installed(mac.id))
+        assertEquals("and nothing was left on the phone", 0, store.receivedBytes(mac.sha256))
+    }
+
+    @Test
+    fun `a Mac that lists something which is not a checksum is refused before a byte moves`() = runBlocking {
+        mac.ready = true
+        mac.listedDigest = "../../../../data/data/dev.siliconoptimizer.buddy/files/owned"
+        val before = mac.requests.size
+        try {
+            downloader().download(mac.id)
+            fail("a path where a digest should be was used")
+        } catch (refused: DownloadFailure) {
+            assertTrue(refused.message!!.contains("without a proper checksum"))
+            assertFalse("this is not a network problem", refused.transient)
+        }
+        assertEquals("only the list was read", before + 1, mac.requests.size)
+        assertEquals("nothing was written anywhere", 0, store.directory.list()!!.size)
+    }
+
+    @Test
     fun `a model already here and intact is not fetched again`() = runBlocking {
         mac.ready = true
         downloader().download(mac.id)

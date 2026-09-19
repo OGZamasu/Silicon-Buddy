@@ -41,6 +41,12 @@ data class ChatMessage(
     val origin: String? = null,
     /** The phone model's name when it wrote this, so the chip outlives the model. */
     val originLabel: String? = null,
+    /**
+     * Set when the phone's model was given only the newest part of the conversation,
+     * because the whole of it would not fit in its context. Said under the answer: a
+     * reply that has forgotten the beginning should not look like one that read it.
+     */
+    val trimmedHistory: Boolean = false,
 ) {
     val wire: ChatMessageWire get() = ChatMessageWire(role, content, images)
 

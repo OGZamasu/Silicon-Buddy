@@ -14,6 +14,7 @@ import dev.siliconoptimizer.buddy.ondevice.InstalledPhoneModel
 import dev.siliconoptimizer.buddy.ondevice.MacState
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceChat
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
+import dev.siliconoptimizer.buddy.ondevice.PhoneHistory
 import dev.siliconoptimizer.buddy.ondevice.Preflight
 import dev.siliconoptimizer.buddy.transport.ChatMessageWire
 import dev.siliconoptimizer.buddy.transport.ChatMetrics
@@ -98,6 +99,14 @@ class ChatViewModel(
 
     private var sendJob: Job? = null
 
+    /**
+     * The ask in flight for what the Mac keeps, so opening a conversation can wait for the
+     * answer instead of guessing — and the last transport seen, so the chat can ask again
+     * by itself when the Mac comes back.
+     */
+    private var conversationsAsk: Job? = null
+    private var lastTransport: ControlTransport? = null
+
     // MARK: - The phone's own model
 
     /** Conversations the phone answered itself, in their own section. Never the Mac's. */
@@ -127,8 +136,22 @@ class ChatViewModel(
     fun loadConversations(transport: ControlTransport?) {
         // Two reads, neither waiting on the other: the Mac is asked at once, as before, and
         // the phone's own list comes off the phone's disk beside it.
-        viewModelScope.launch { loadConversationsNow(transport) }
+        lastTransport = transport ?: lastTransport
+        conversationsAsk = viewModelScope.launch { loadConversationsNow(transport) }
         viewModelScope.launch { loadPhoneConversations() }
+    }
+
+    /**
+     * Waits for the Mac to have answered what it keeps, asking if nobody has.
+     *
+     * A definite answer is the list or "this Mac has no /conversations"; a timeout is
+     * neither, and leaves the question open for the next time the Mac is reachable.
+     */
+    private suspend fun awaitConversationAnswer(transport: ControlTransport?) {
+        if (transport == null || askedAboutConversations) return
+        val ask = conversationsAsk
+            ?: viewModelScope.launch { loadConversationsNow(transport) }.also { conversationsAsk = it }
+        ask.join()
     }
 
     /** The phone's own conversations, from the phone. No Mac is asked about these. */
@@ -143,10 +166,10 @@ class ChatViewModel(
 
     private suspend fun loadConversationsNow(transport: ControlTransport?) {
             if (transport != null && (usesRemoteConversations || !askedAboutConversations)) {
-                askedAboutConversations = true
                 try {
                     val remote = transport.conversations()
                     usesRemoteConversations = true
+                    askedAboutConversations = true
                     conversations.clear()
                     conversations.addAll(
                         remote.map {
@@ -163,10 +186,12 @@ class ChatViewModel(
                     if (failure.isMissingRoute) {
                         // This Mac has no /conversations at all; the device keeps them.
                         usesRemoteConversations = false
+                        askedAboutConversations = true
                     } else {
-                        // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still
-                        // owns these conversations — moving them to the device over a bad
-                        // minute would fork the transcript, and nothing would merge it back.
+                        // A timeout, a dropped tailnet, a Mac mid-restart. Nothing was
+                        // learned, so the question stays open and is put again when the Mac
+                        // answers — a Mac that was merely unreachable at launch still keeps
+                        // its conversations, and the device must not adopt them.
                         error = failure.message
                         if (usesRemoteConversations) return
                     }
@@ -210,6 +235,11 @@ class ChatViewModel(
     }
 
     fun open(id: String, transport: ControlTransport?) {
+        lastTransport = transport ?: lastTransport
+        // The conversation that is already open is left exactly as it is. Re-reading it
+        // would replace what is on the screen with the copy on disk — and an answer still
+        // being written into it is in neither the store nor the Mac yet.
+        if (current?.id == id) return
         // With a Mac, nothing opens until it has been asked what it keeps.
         //
         // The id can arrive before the answer does: it is saved across process death, so
@@ -224,6 +254,9 @@ class ChatViewModel(
         // be, there is nothing to wait for, and waiting would mean never opening one.
         // The phone's own conversations open from the phone, whatever the Mac is doing —
         // and their ids never reach it.
+        //
+        // Waiting, rather than returning and trusting the caller to come back: a screen
+        // that forgets to re-run leaves the owner looking at nothing.
         if (OnDeviceIds.isOnDevice(id)) {
             viewModelScope.launch {
                 current = phone.conversations.conversation(id)
@@ -234,8 +267,8 @@ class ChatViewModel(
             }
             return
         }
-        if (transport != null && !askedAboutConversations) return
         viewModelScope.launch {
+            awaitConversationAnswer(transport)
             if (usesRemoteConversations && transport != null) {
                 try {
                     val detail = transport.conversation(id)
@@ -270,8 +303,13 @@ class ChatViewModel(
                     }
                 }
             }
-            current = store.conversation(id) ?: conversations.firstOrNull { it.id == id }
-                    ?: Conversation(id = id)
+            val stored = store.conversation(id) ?: conversations.firstOrNull { it.id == id }
+            // A Mac that never answered may well be holding this conversation. Opening an
+            // empty transcript under its id is the one outcome worse than not opening it:
+            // it reads as the Mac having lost it. The screen re-runs this when the Mac
+            // does answer.
+            if (stored == null && transport != null && !askedAboutConversations) return@launch
+            current = stored ?: Conversation(id = id)
         }
     }
 
@@ -291,6 +329,7 @@ class ChatViewModel(
     // MARK: - Sending
 
     fun send(transport: ControlTransport?) {
+        lastTransport = transport ?: lastTransport
         // A conversation the phone is answering stays on the phone.
         if (current?.onDevice == true) {
             sendOnPhone(null)
@@ -364,6 +403,9 @@ class ChatViewModel(
     }
 
     fun cancel() {
+        // A phone model can be a minute arriving in memory. Cancelling the job alone would
+        // leave llama.cpp reading the file for a question nobody is waiting for any more.
+        if (current?.onDevice == true) phone.cancelLoading()
         sendJob?.cancel()
         sendJob = null
         isSending = false
@@ -612,6 +654,8 @@ class ChatViewModel(
         usesStreaming = true
         usesRemoteConversations = false
         askedAboutConversations = false
+        conversationsAsk = null
+        lastTransport = null
         conversations.clear()
         // The phone's own conversations belong to no Mac, so a new one does not take them.
         if (current?.onDevice != true) current = null
@@ -677,7 +721,12 @@ class ChatViewModel(
         val state = MacState.of(reachability, paired)
         if (state == MacState.Answering && reachability is Reachability.Unknown && paired) return
         macState = state
-        if (!state.isOutOfReach) offer = null else refreshOffer(null, null)
+        if (!state.isOutOfReach) {
+            offer = null
+            askAgainIfTheMacWasOutOfReach()
+        } else {
+            refreshOffer(null, null)
+        }
     }
 
     /**
@@ -685,10 +734,38 @@ class ChatViewModel(
      * A stream that drops says nothing either way — it is reconnecting — so only this half
      * is taken from it.
      */
-    fun noteStreamLive() {
+    fun noteStreamLive() = noteMacAnswered()
+
+    /**
+     * Something reached the Mac and it answered — the event stream coming up, or the
+     * dashboard's own polling, which carries on every few seconds whatever the chat is
+     * doing. Either is better news than the last probe.
+     */
+    fun noteMacAnswered() {
         macState = MacState.Answering
         offer = null
+        askAgainIfTheMacWasOutOfReach()
     }
+
+    /**
+     * A Mac that was unreachable at launch was never answered about its conversations, and
+     * `usesRemoteConversations` has been false-because-unknown ever since. Now that it is
+     * answering, the question goes again — otherwise "Send to Mac…" would quietly make a
+     * device-only conversation on a Mac that keeps its own.
+     */
+    private fun askAgainIfTheMacWasOutOfReach() {
+        if (askedAboutConversations) return
+        val transport = lastTransport ?: return
+        conversationsAsk = viewModelScope.launch { loadConversationsNow(transport) }
+    }
+
+    /**
+     * Whether the screen should stay awake: the phone's own model is loading or writing.
+     *
+     * Not for the Mac's answers — those are the Mac's watts, and the phone is only waiting.
+     */
+    val keepsScreenOn: Boolean
+        get() = isSending && current?.onDevice == true
 
     /** Whether to say "Your Mac is back" in a conversation the phone answered. */
     val macIsBack: Boolean
@@ -794,14 +871,22 @@ class ChatViewModel(
 
         sendJob?.cancel()
         sendJob = viewModelScope.launch {
+            // Written down before anything slow happens. Loading a model is the longest
+            // minute in this app and the likeliest moment for Android to take the process:
+            // the question is already on the phone's disk by then, not only on the screen.
+            persistPhone()
             when (val check = phone.preflight(model)) {
                 is Preflight.Refused -> {
                     update(placeholderID) { it.copy(isStreaming = false, failure = check.message) }
                     refusal = PhoneRefusal(check.message, check.alternative, text, placeholderID)
                 }
                 Preflight.Ready -> {
-                    val history = current?.messages.orEmpty().filter { it.id != placeholderID }
-                    consume(phone.answer(model, history, phoneMaxTokens), placeholderID, phoneMaxTokens)
+                    // Only the newest turns: the phone reads a prompt at about a hundred
+                    // tokens a second, and a long conversation would be a minute of silence
+                    // before the first word. The reply says when older ones were left out.
+                    val capped = PhoneHistory.cap(current?.messages.orEmpty().filter { it.id != placeholderID })
+                    if (capped.wasTrimmed) update(placeholderID) { it.copy(trimmedHistory = true) }
+                    consume(phone.answer(model, capped.messages, phoneMaxTokens), placeholderID, phoneMaxTokens)
                     finishStreaming(null)
                 }
             }
@@ -854,6 +939,8 @@ class ChatViewModel(
      */
     fun sendToMac(transport: ControlTransport?) {
         val source = current?.takeIf { it.onDevice } ?: return
+        // Half an answer is not what the owner meant to send. Stop it, or wait for it.
+        if (isSending) return
         if (transport == null) {
             error = TransportError.NotConfigured.message
             return

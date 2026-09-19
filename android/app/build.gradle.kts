@@ -75,12 +75,22 @@ android {
             // res/xml/network_security_config.xml for the exception this needs.
             isMinifyEnabled = false
         }
+        // Release, plus one class: `OnDeviceProbe`, which the instrumented tests call by
+        // name to reach the engine inside a minified build. Same R8 rules, same signing,
+        // same everything else — but the APK the owner installs has no such class in it,
+        // because the probe's source set belongs to this build type alone.
+        create("releaseProbe") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            isMinifyEnabled = true
+            isShrinkResources = true
+        }
     }
 
     // Instrumented tests run against the *minified* build, because the thing worth
     // testing on a device is whether R8's keep rules survived. A debug APK keeps
     // everything and would prove nothing.
-    testBuildType = "release"
+    testBuildType = "releaseProbe"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

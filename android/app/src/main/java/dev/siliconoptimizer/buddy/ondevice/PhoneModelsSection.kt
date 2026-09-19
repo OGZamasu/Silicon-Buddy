@@ -65,6 +65,22 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
         private set
     var freeBytes by androidx.compose.runtime.mutableStateOf<Long?>(null)
         private set
+
+    /** What the phone has free to *run* one, beside what each model says it needs. */
+    var availableMemoryBytes by androidx.compose.runtime.mutableStateOf<Long?>(null)
+        private set
+
+    /**
+     * Part-finished downloads, by model id: bytes already on the phone with no model to
+     * show for them. Reserved in full on disk, so an owner who never sees them sees a
+     * gigabyte of "Silicon Buddy" in Android's storage screen and nothing here.
+     */
+    var partials by androidx.compose.runtime.mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+
+    /** Models with a download the system still has in hand, which will carry on by itself. */
+    var scheduled by androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
+        private set
     var preferredID by androidx.compose.runtime.mutableStateOf(settings.preferredModelID)
         private set
 
@@ -79,7 +95,7 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
             loading = true
             installed = withContext(Dispatchers.IO) { store.installed() }
             freeBytes = withContext(Dispatchers.IO) { runCatching { AndroidSpace(getApplication()).allocatableBytes(store.directory) }.getOrNull() }
-            availability = OnDeviceEngine.get(getApplication()).availability()
+            availableMemoryBytes = OnDeviceEngine.get(getApplication()).memory().first
             preferredID = settings.preferredModelID
             problem = null
             when {
@@ -106,8 +122,32 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 }
             }
+            readPartials()
             loading = false
         }
+    }
+
+    /**
+     * llama.cpp itself, loaded only when this section is on screen.
+     *
+     * Asking what the phone can run means loading the library and every CPU variant beside
+     * it to pick one. That is a few tens of milliseconds and a few megabytes, and it used to
+     * happen at every launch for a screen most launches never open.
+     */
+    fun probeRuntime() {
+        if (availability != null) return
+        viewModelScope.launch { availability = OnDeviceEngine.get(getApplication()).availability() }
+    }
+
+    /** What is half-here, and what the system is still working on. */
+    private suspend fun readPartials() {
+        val known = (offered + installed.map { it.model }).distinctBy { it.id }
+        partials = withContext(Dispatchers.IO) {
+            known.filter { model -> installed.none { it.id == model.id } }
+                .associate { it.id to store.receivedBytes(it.sha256) }
+                .filterValues { it > 0 }
+        }
+        scheduled = known.map { it.id }.filter { ModelDownloads.isScheduled(getApplication(), it) }.toSet()
     }
 
     /** A `download` frame for one of the phone's models: the Mac's side, live. */
@@ -127,6 +167,16 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
     fun download(context: Context, model: PhoneModel, useMobileData: Boolean) {
         consent = null
         ModelDownloads.start(context, model, useMobileData)
+    }
+
+    /** Throws away a part-finished download without touching anything else. */
+    fun discardPartial(context: Context, model: PhoneModel) {
+        viewModelScope.launch {
+            ModelDownloads.cancel(context, model.id)
+            withContext(Dispatchers.IO) { store.discardPartial(model.sha256) }
+            partials = partials - model.id
+            freeBytes = withContext(Dispatchers.IO) { runCatching { AndroidSpace(getApplication()).allocatableBytes(store.directory) }.getOrNull() }
+        }
     }
 
     fun cancel(context: Context, id: String) = ModelDownloads.cancel(context, id)
@@ -158,6 +208,7 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
             installed = withContext(Dispatchers.IO) { store.installed() }
             // A finished download makes itself the preferred model when there was none.
             preferredID = settings.preferredModelID
+            readPartials()
         }
     }
 }
@@ -172,6 +223,13 @@ fun PhoneModelsSection(
     val downloads by ModelDownloads.states.collectAsState()
     val engineState by OnDeviceEngine.get(context).state.collectAsState()
 
+    // Opening this section reads what is actually on the phone: llama.cpp for what it can
+    // run, and the store for what is here — including a download that stopped half-way,
+    // which is otherwise a gigabyte the owner can see only in Android's storage screen.
+    LaunchedEffect(Unit) {
+        model.probeRuntime()
+        model.installedNow()
+    }
     LaunchedEffect(macFrames.values.toList()) { macFrames.values.forEach { model.apply(it) } }
     // A download that finished while this was open: the list of what is here changes.
     LaunchedEffect(downloads.values.count { it is DownloadState.Done }) { model.installedNow() }
@@ -222,11 +280,14 @@ fun PhoneModelsSection(
                 offered = offered,
                 installed = here,
                 download = downloads[id],
+                partialBytes = model.partials[id]?.takeIf { id !in model.scheduled },
+                availableMemoryBytes = model.availableMemoryBytes,
                 preferred = model.preferredID == id || (model.preferredID == null && here != null && model.installed.size == 1),
                 canDownload = model.availability !is LlamaRuntime.Availability.Unavailable,
                 onDownload = { offered?.let { model.consent = it } },
                 onCancel = { model.cancel(context, id) },
                 onDelete = { model.deleting = id },
+                onDiscardPartial = { offered?.let { model.discardPartial(context, it) } },
                 onPrefer = { model.prefer(id) },
             )
         }
@@ -237,6 +298,8 @@ fun PhoneModelsSection(
         ConsentDialog(
             model = asking,
             freeBytes = model.freeBytes,
+            alreadyHere = model.partials[asking.id] ?: 0,
+            availableMemoryBytes = model.availableMemoryBytes,
             onDismiss = { model.consent = null },
             onDownload = { mobile -> model.download(context, asking, mobile) },
         )
@@ -264,11 +327,15 @@ private fun PhoneModelRow(
     offered: PhoneModel?,
     installed: InstalledPhoneModel?,
     download: DownloadState?,
+    /** Bytes of a stopped download sitting on the phone with nothing to show for them. */
+    partialBytes: Long?,
+    availableMemoryBytes: Long?,
     preferred: Boolean,
     canDownload: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
+    onDiscardPartial: () -> Unit,
     onPrefer: () -> Unit,
 ) {
     val entry = offered ?: installed?.model ?: return
@@ -285,10 +352,20 @@ private fun PhoneModelRow(
         OnDeviceNotices.expectation(entry)?.let {
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
+        // What it needs to run, beside what this phone has free right now — the number the
+        // refusal will be about, before it is refused.
+        Text(
+            PartialDownload.memoryLine(entry.recommended.minFreeMemoryBytes, availableMemoryBytes),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        val stopped = PartialDownload.line(partialBytes, entry.sizeBytes)
+            .takeIf { download?.isActive != true && installed == null }
         val status = when {
             download != null && download.isActive -> download.line
             download is DownloadState.Failed -> download.message
             installed != null -> "On this phone" + if (preferred) " · answers when your Mac can't" else ""
+            stopped != null -> stopped
             offered?.onMac?.isDownloading == true -> "Your Mac is fetching it" +
                 (offered.onMac.fraction?.let { " · ${Format.percent(it)}" } ?: "")
             offered?.onMac?.isFailed == true -> offered.onMac.reason ?: "Your Mac couldn't fetch it."
@@ -307,12 +384,23 @@ private fun PhoneModelRow(
             when {
                 download?.isActive == true -> OutlinedButton(onClick = onCancel) { Text("Cancel") }
                 installed == null && offered != null && canDownload -> OutlinedButton(onClick = onDownload) {
-                    Text(if (download is DownloadState.Failed) "Try again…" else "Download…")
+                    Text(
+                        when {
+                            stopped != null -> "Resume…"
+                            download is DownloadState.Failed -> "Try again…"
+                            else -> "Download…"
+                        },
+                    )
                 }
                 else -> Unit
             }
             if (installed != null && !preferred) TextButton(onClick = onPrefer) { Text("Use this one") }
-            if (installed != null || (download is DownloadState.Failed)) TextButton(onClick = onDelete) { Text("Delete") }
+            // Deleting a model and throwing away a part-finished download are different
+            // things; the second is the one that is otherwise invisible.
+            if (installed != null || (download is DownloadState.Failed && stopped == null)) {
+                TextButton(onClick = onDelete) { Text("Delete") }
+            }
+            if (stopped != null) TextButton(onClick = onDiscardPartial) { Text("Delete") }
         }
     }
 }
@@ -325,18 +413,25 @@ private fun PhoneModelRow(
 private fun ConsentDialog(
     model: PhoneModel,
     freeBytes: Long?,
+    alreadyHere: Long,
+    availableMemoryBytes: Long?,
     onDismiss: () -> Unit,
     onDownload: (useMobileData: Boolean) -> Unit,
 ) {
     var mobile by remember { mutableStateOf(false) }
+    val remaining = (model.sizeBytes - alreadyHere).coerceAtLeast(0)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Get ${model.label} for this phone?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Size: ${Format.bytes(model.sizeBytes)}")
+                if (alreadyHere > 0) {
+                    Text("${Format.bytes(alreadyHere)} of it is already here, so ${Format.bytes(remaining)} to come.")
+                }
                 Text("Licence: ${model.licence}")
                 Text("Free on this phone: ${freeBytes?.let { Format.bytes(it) } ?: "unknown"}")
+                Text(PartialDownload.memoryLine(model.recommended.minFreeMemoryBytes, availableMemoryBytes))
                 Text(
                     "From your Mac, which fetches it from ${model.source.repo} and checks it; " +
                         "this phone checks it again before using it.",
@@ -350,9 +445,9 @@ private fun ConsentDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (freeBytes != null && freeBytes < model.sizeBytes) {
+                if (freeBytes != null && freeBytes < remaining) {
                     Text(
-                        "There isn't room for it yet: free ${Format.bytes(model.sizeBytes - freeBytes)} first.",
+                        "There isn't room for it yet: free ${Format.bytes(remaining - freeBytes)} first.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -369,11 +464,40 @@ private fun ConsentDialog(
         confirmButton = {
             TextButton(
                 onClick = { onDownload(mobile) },
-                enabled = freeBytes == null || freeBytes >= model.sizeBytes,
-            ) { Text(if (mobile) "Download" else "Download on Wi-Fi") }
+                enabled = freeBytes == null || freeBytes >= remaining,
+            ) {
+                Text(
+                    when {
+                        alreadyHere > 0 -> if (mobile) "Resume" else "Resume on Wi-Fi"
+                        mobile -> "Download"
+                        else -> "Download on Wi-Fi"
+                    },
+                )
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
     )
+}
+
+/**
+ * The two sentences a row says about a model that is not simply here and working: what is
+ * half-downloaded, and what it would need to run.
+ *
+ * Plain functions, because they are the part worth testing: the rest of the row is Compose.
+ */
+object PartialDownload {
+
+    /** "38% of 1.2 GB is already here — paused", or null when nothing is part-finished. */
+    fun line(received: Long?, total: Long): String? {
+        if (received == null || received <= 0 || total <= 0) return null
+        val percent = Math.round(received * 100.0 / total).coerceIn(0, 100)
+        return "$percent% of ${Format.bytes(total)} is already here — paused"
+    }
+
+    /** "Needs 3.1 GB of free memory to run · 1.6 GB free now". */
+    fun memoryLine(needed: Long, availableNow: Long?): String =
+        "Needs ${Format.bytes(needed)} of free memory to run" +
+            (availableNow?.let { " · ${Format.bytes(it)} free now" } ?: "")
 }
 
 /** "libggml-cpu-android_armv8.6_1.so [NEON,…]" → "ARMv8.6 (i8mm, dot product)". */

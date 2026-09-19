@@ -305,6 +305,10 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     var pairing by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
+    // A new conversation on a Mac that keeps them is made *there*, which is a round trip:
+    // the id to open does not exist at the moment the button is tapped. This says to open
+    // whichever conversation the chat lands on next.
+    var openingNew by remember { mutableStateOf(false) }
     var openAgent by rememberSaveable { mutableStateOf<String?>(null) }
     var agentMenu by remember { mutableStateOf(false) }
     var confirmingAgent by remember { mutableStateOf<Confirm?>(null) }
@@ -329,8 +333,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             is LinkArrival.Refused -> refusedLink = arrival.reason
             is LinkArrival.Compose -> {
                 destination = Destination.Chat
-                if (chat.current == null) chat.newConversation()
+                if (chat.current == null) chat.newConversation(app.transport)
                 openConversation = chat.current?.id
+                openingNew = openConversation == null
                 arrival.text?.let { chat.draft = it }
                 if (arrival.offerPhone) chat.offerFromShortcut()
                 arriving.value = null
@@ -393,14 +398,20 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         if (events.isLive) chat.noteStreamLive()
     }
 
+    // …and on a Mac with no event stream, the dashboard's polling is the news instead.
+    LaunchedEffect(dashboard.macAnsweredAt) {
+        if (dashboard.macAnsweredAt > 0L) chat.noteMacAnswered()
+    }
+
     // A conversation the chat moved to by itself — the phone's own, answering; a new one on
     // the Mac from "Send to Mac…" or "New Mac conversation" — is the open one now, so it is
     // the one a restart comes back to. Only while a conversation is open: the list stays
     // the list.
     LaunchedEffect(chat.current?.id) {
         val id = chat.current?.id ?: return@LaunchedEffect
-        if (destination == Destination.Chat && openConversation != null && id != openConversation) {
+        if (destination == Destination.Chat && (openingNew || (openConversation != null && id != openConversation))) {
             openConversation = id
+            openingNew = false
         }
     }
 
@@ -545,7 +556,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                                 DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
                                     DropdownMenuItem(
                                         text = { Text(OnDeviceNotices.SEND_TO_MAC) },
-                                        enabled = chat.sendableCount > 0,
+                                        // Not while the phone is still writing: half an
+                                        // answer is not what anybody means to send.
+                                        enabled = chat.sendableCount > 0 && !chat.isSending,
                                         onClick = {
                                             chatMenu = false
                                             confirmingSendToMac = true
@@ -561,8 +574,13 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                                 }
                             }
                             IconButton(onClick = {
-                                chat.newConversation()
+                                // With the transport: on a Mac that keeps conversations, a
+                                // new one belongs there, and one made without it is a
+                                // device-only conversation the Mac never hears about.
+                                chat.newConversation(app.transport)
                                 openConversation = chat.current?.id
+                                // Made on the Mac: the effect above opens it when it lands.
+                                openingNew = openConversation == null
                             }) {
                                 Icon(Icons.Filled.Add, contentDescription = "New conversation")
                             }

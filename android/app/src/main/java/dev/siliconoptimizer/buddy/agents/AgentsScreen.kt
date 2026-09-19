@@ -33,6 +33,7 @@ import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.transport.AgentEngines
 import dev.siliconoptimizer.buddy.transport.AgentItem
 import dev.siliconoptimizer.buddy.transport.AgentSessionSummary
+import dev.siliconoptimizer.buddy.ui.NotificationsOffNotice
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
 
@@ -59,6 +60,9 @@ fun AgentsScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(vertical = 12.dp),
     ) {
+        // An agent waiting for an answer is the one thing in this app that needs a person
+        // *now*. If notifications are off it waits in silence, so this says so.
+        item { NotificationsOffNotice("an agent waiting for you") }
         model.unavailable?.let { reason ->
             item {
                 Text(

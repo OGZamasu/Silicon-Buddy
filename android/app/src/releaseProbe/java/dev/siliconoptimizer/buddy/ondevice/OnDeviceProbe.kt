@@ -49,6 +49,21 @@ object OnDeviceProbe {
         }
     }
 
+    /**
+     * Leaves [bytes] of a part-finished download on the phone, as a cancelled one would:
+     * the reserved file and the record of how much of it arrived. The Settings screen reads
+     * it from disk, which is what makes it survive a restart.
+     */
+    @JvmStatic
+    fun partial(context: Context, sha256: String, bytes: Long): String {
+        val store = ModelStore(context)
+        val part = store.partFile(sha256)
+        part.parentFile?.mkdirs()
+        java.io.RandomAccessFile(part, "rw").use { it.setLength(bytes) }
+        store.noteReceived(sha256, bytes)
+        return part.name
+    }
+
     /** The verified models, as `id,id`. */
     @JvmStatic
     fun installed(context: Context): String = ModelStore(context).installed().joinToString(",") { it.id }

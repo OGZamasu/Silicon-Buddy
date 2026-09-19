@@ -158,7 +158,10 @@ class ModelDownloadService : Service() {
             val allowed = callbackFlow {
                 val callback = object : ConnectivityManager.NetworkCallback() {
                     override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                        trySend(DownloadNetwork.allows(DownloadNetwork.transportsOf(capabilities), mobile))
+                        // The change is the news; what to make of it is read whole, because
+                        // a Tailscale tunnel's own capabilities may say nothing about the
+                        // Wi-Fi underneath it.
+                        trySend(DownloadNetwork.allows(DownloadNetwork.current(this@ModelDownloadService), mobile))
                     }
 
                     override fun onLost(network: Network) {
@@ -189,6 +192,20 @@ class ModelDownloadService : Service() {
                 transfer.join()
                 watcher.cancel()
                 if (result == DownloadRunner.Result.Retry && transfer.isCancelled.not()) failures++
+            }
+            // Android 10 to 13 have no job to hand this back to, so giving up is the end of
+            // it — and the owner is told, rather than left with a notification that simply
+            // stops. What arrived is still on the phone, so "try again" carries on from it.
+            if (result == DownloadRunner.Result.Retry) {
+                report(
+                    notifier, id,
+                    DownloadState.Failed(
+                        label,
+                        "The download stopped after several tries. What arrived is kept — " +
+                            "try again in Settings while your Mac is reachable.",
+                        transient = true,
+                    ),
+                )
             }
             notifier.finished(id, ModelDownloads.states.value[id])
             downloads.remove(id)

@@ -2,9 +2,12 @@ package dev.siliconoptimizer.buddy.llama
 
 import android.os.Build
 import android.os.Process
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -157,7 +160,13 @@ class LlamaSession private constructor(
 ) {
     private val lock = Any()
     @Volatile private var closed = false
-    private val cancelRequested = AtomicBoolean(false)
+
+    /** One answer's Stop. A new answer gets a new one, so a late Stop cannot cut it short. */
+    private class Answer {
+        val stopped = AtomicBoolean(false)
+    }
+
+    @Volatile private var answer: Answer? = null
 
     val isClosed: Boolean get() = closed
 
@@ -168,19 +177,59 @@ class LlamaSession private constructor(
         val threadsGenerate: Int = 4,
     )
 
+    /**
+     * The three native calls a load involves, behind an interface.
+     *
+     * The rule that matters here — a model whose caller went away is freed, not left
+     * sitting in a gigabyte of memory nothing can reach — is a rule about coroutines, and
+     * this is what lets it be tested on a JVM, where there is no llama.cpp to load.
+     */
+    internal interface Loads {
+        fun load(path: String, settings: Settings): Long
+        fun cancelLoad()
+        fun unload(handle: Long)
+    }
+
     companion object {
-        /** Loads [path]. Throws `IllegalStateException` with llama.cpp's reason. */
-        suspend fun open(path: String, settings: Settings): LlamaSession =
-            withContext(LlamaThread.dispatcher) {
-                val handle = LlamaNative.nativeLoad(
-                    path, settings.contextLength, settings.batch,
-                    settings.threadsPrompt, settings.threadsGenerate,
-                )
-                LlamaSession(handle, settings.contextLength)
+
+        private object Native : Loads {
+            override fun load(path: String, settings: Settings): Long = LlamaNative.nativeLoad(
+                path, settings.contextLength, settings.batch,
+                settings.threadsPrompt, settings.threadsGenerate,
+            )
+
+            override fun cancelLoad() = LlamaNative.nativeCancelLoad()
+            override fun unload(handle: Long) = LlamaNative.nativeUnload(handle)
+        }
+
+        /** llama.cpp itself, except in this module's own tests. */
+        internal var loads: Loads = Native
+
+        /**
+         * Loads [path]. Throws `IllegalStateException` with llama.cpp's reason.
+         *
+         * The load runs on [LlamaThread] in a coroutine of its own, so a caller that is
+         * cancelled half-way — the owner left the app, or closed the chat — cannot walk away
+         * from a model that is still arriving. The load is told to stop, and whatever it
+         * managed to make is freed before the cancellation is passed on.
+         */
+        suspend fun open(path: String, settings: Settings): LlamaSession {
+            val loading = LlamaThread.scope.async {
+                LlamaSession(loads.load(path, settings), settings.contextLength)
             }
+            try {
+                return loading.await()
+            } catch (cancelled: CancellationException) {
+                cancelLoading()
+                withContext(NonCancellable) {
+                    runCatching { loading.await() }.getOrNull()?.close()
+                }
+                throw cancelled
+            }
+        }
 
         /** Asks a load in progress to stop at its next progress report. */
-        fun cancelLoading() = LlamaNative.nativeCancelLoad()
+        fun cancelLoading() = loads.cancelLoad()
 
         /**
          * What [messages] render to through the model's own chat template — the exact text an
@@ -208,7 +257,8 @@ class LlamaSession private constructor(
      * thread never waits on the screen.
      */
     fun generate(request: LlamaRequest): Flow<LlamaEvent> = callbackFlow {
-        cancelRequested.set(false)
+        val mine = Answer()
+        answer = mine
         val worker = LlamaThread.scope.launch {
             if (closed) {
                 trySend(LlamaEvent.Failed("The model was unloaded."))
@@ -216,8 +266,8 @@ class LlamaSession private constructor(
                 return@launch
             }
             LlamaNative.nativeReset(handle)
-            // A cancel that arrived while this waited its turn still counts.
-            if (cancelRequested.get()) LlamaNative.nativeCancel(handle)
+            // A Stop that arrived while this waited its turn still counts.
+            if (mine.stopped.get()) LlamaNative.nativeCancel(handle)
             val metrics = LongArray(LlamaNative.METRIC_COUNT)
             val sink = object : LlamaSink {
                 override fun onText(bytes: ByteArray): Boolean {
@@ -249,14 +299,21 @@ class LlamaSession private constructor(
             }
             channel.close()
         }
-        awaitClose { if (!worker.isCompleted) cancel() }
+        awaitClose {
+            if (!worker.isCompleted) stop(mine)
+            if (answer === mine) answer = null
+        }
     }.buffer(Channel.UNLIMITED)
 
-    /** Stops the answer in progress, if there is one. */
+    /** Stops the answer in progress, if there is one. An answer that has ended is left alone. */
     fun cancel() {
-        cancelRequested.set(true)
+        stop(answer ?: return)
+    }
+
+    private fun stop(which: Answer) {
+        which.stopped.set(true)
         synchronized(lock) {
-            if (!closed) LlamaNative.nativeCancel(handle)
+            if (!closed && answer === which) LlamaNative.nativeCancel(handle)
         }
     }
 
@@ -268,7 +325,7 @@ class LlamaSession private constructor(
     }
 
     /** Frees the model and its context, after any answer in progress has stopped. */
-    suspend fun close() {
+    suspend fun close() = withContext(NonCancellable) {
         cancel()
         withContext(LlamaThread.dispatcher) {
             synchronized(lock) {
@@ -276,7 +333,7 @@ class LlamaSession private constructor(
                 closed = true
                 val freeing = handle
                 handle = 0
-                LlamaNative.nativeUnload(freeing)
+                loads.unload(freeing)
             }
         }
     }

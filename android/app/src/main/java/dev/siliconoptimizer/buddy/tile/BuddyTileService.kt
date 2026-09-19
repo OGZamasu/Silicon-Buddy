@@ -44,16 +44,25 @@ class BuddyTileService : TileService() {
         listening?.cancel()
         listening = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope ->
             scope.launch {
-                val reachable = withTimeoutOrNull(PROBE_MS) {
+                // Three answers, not two: yes, no, and "it did not say in time". Tailscale
+                // sleeps when the phone does, and the first request after it wakes can take
+                // longer than a tile may wait. Recording that as "Mac unreachable" would put
+                // the phone's model in front of an owner whose Mac is sitting there awake —
+                // so a slow answer changes nothing, and what was known before stands.
+                val reachable: Boolean? = withTimeoutOrNull(PROBE_MS) {
                     try {
                         ControlClient(config).health()
                         true
                     } catch (error: TransportError) {
-                        !(error is TransportError.Unreachable || error is TransportError.AppNotRunning ||
-                            error is TransportError.TimedOut)
+                        when (error) {
+                            is TransportError.TimedOut -> null
+                            is TransportError.Unreachable, is TransportError.AppNotRunning -> false
+                            // It answered, even if it answered with a refusal.
+                            else -> true
+                        }
                     }
-                } ?: false
-                SnapshotStore(this@BuddyTileService).noteMacReachable(reachable)
+                }
+                reachable?.let { SnapshotStore(this@BuddyTileService).noteMacReachable(it) }
                 draw()
             }
         }

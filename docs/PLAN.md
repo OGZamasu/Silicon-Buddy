@@ -394,8 +394,13 @@ android/app/…/ondevice/
   FallbackPolicy    when the phone is offered — the truth table
   ResourceGuard     memory and heat, as rules
   OnDeviceChat      what the chat needs (a test can stand in), and the phone's conversation store
+  ModelRuntime      the engine's two seams — llama.cpp and the phone — plus PhoneHistory's cap
   PhoneModelsSection Settings → On this phone, with the consent dialog
-  OnDeviceProbe     the engine by name, for the instrumented tests on the minified build
+android/app/src/releaseProbe/…/OnDeviceProbe.kt
+                    the engine by name, for the instrumented tests — in the build they run
+                    on, never in the one the owner installs
+android/app/…/ui/  NotificationsNotice (notifications off, and the button that fixes it)
+                   ScreenPrivacy (keep the screen on while the phone writes; no Recents thumbnail)
 ```
 
 **How the model gets to the phone — only through the Mac.** Settings → On this phone lists
@@ -411,12 +416,24 @@ means another file, so the partial goes; a 416 means the partial does not fit, s
 missing drive and stops); then the phone hashes it. A match is renamed into place. A
 mismatch is deleted, `prepare?verify=1` asked once, and the file fetched once more from zero;
 a second mismatch stops and keeps nothing. On Android 14+ this is a user-initiated data
-transfer job with a Wi-Fi `NetworkRequest` (`NOT_VPN` removed: Tailscale is a VPN, and a
-default request would never be satisfied on the tailnet) and the job's own progress
-notification with Cancel; on 10–13 a `dataSync` foreground service that watches the default
-network and pauses off Wi-Fi. A verified model is re-hashed before use if its size or
-modification time ever changes. The phone never leaves the tailnet: every request still
-goes through `TailnetHost`.
+transfer job whose `NetworkRequest` asks for `NOT_METERED` with `NOT_VPN` removed (Tailscale
+is a VPN, and a default request would never be satisfied on the tailnet), and the job's own
+progress notification with Cancel; on 10–13 a `dataSync` foreground service that watches the
+default network, pauses when it is not free, and says so when it finally gives up.
+
+"Wi-Fi only" is tested as Android's own `NOT_METERED` rather than the Wi-Fi transport: a
+phone tethered to another phone is Wi-Fi and is somebody's data allowance. Under a tunnel
+that carries no transports of its own, the networks underneath decide. A download that
+stopped half-way is a gigabyte of the owner's storage with nothing on screen to show for it,
+so Settings says "42% of 1.19 MB is already here — paused" beside Resume and Delete, read
+off the disk and so unchanged by a restart; every model's row also says what it needs to run
+beside what the phone has free right now. The digest a model is named by is checked to be 64
+hex characters before it becomes a file name, the digest the Mac serves in
+`X-Content-SHA256` is compared against the one it listed, and a new pin deletes the file the
+old one left. A verified model is re-hashed before use if its size or modification time ever
+changes — before the preflight, and again in the load itself. The phone never leaves the
+tailnet: every request still goes through `TailnetHost`, which now also refuses to follow a
+redirect anywhere.
 
 **The fallback.** `FallbackPolicy` offers the phone only when the Mac is out of reach —
 unreachable, the app not running, too slow, or no Mac paired (401 included) — a model is
@@ -444,9 +461,28 @@ quarter of the threads, SEVERE half and keeps answering, CRITICAL or worse stops
 ("Stopped — phone too hot") and starts no new one; changes apply from the next token.
 Screen: an answer is written only while the app is in front — leaving stops it ("Stopped
 when you left the app.") — and the model is let go after 30 s in the background, at once on
-a background trim-memory signal, or after five idle minutes. Threads come from the Mac's
-`recommended` block (Qwen 6 for the prompt, 4 for writing; Gemma 4/6), context 4096,
-thinking off.
+a background trim-memory signal, or after five idle minutes. While the phone is loading or
+writing, the screen is kept awake (`FLAG_KEEP_SCREEN_ON`), and cleared the moment it stops:
+a display that sleeps takes the app out of the foreground, and the app's own rule would then
+stop the answer it is in the middle of. A conversation the phone answered is also kept out
+of the Recents thumbnail. Threads come from the Mac's `recommended` block (Qwen 6 for the
+prompt, 4 for writing; Gemma 4/6), context 4096, thinking off. History: about 1,500 tokens
+of the newest turns go to the model — the prompt is read at about 120 tokens a second, so a
+long conversation would be a minute of silence before the first word — and a reply written
+without the beginning of the conversation says so under its chip.
+
+Stop, at any point: during the minute a model takes to arrive in memory it reaches
+llama.cpp's own load-cancel, and a load whose caller has gone is freed rather than left in
+memory nothing can reach. The question is written to the phone's disk before the load
+starts, not after the answer, so a process Android kills mid-load loses nothing.
+
+Two things the owner found on their own phone rather than here: notifications were never
+granted, and after two dismissals Android stops showing the dialog and `launch` does nothing
+at all — so the Agents tab and the Create queue now carry one line, "Notifications are off,
+so … won't reach you", with an Allow button that asks while asking still works and opens the
+app's notification settings once it does not. And the Quick Settings tile no longer records
+a slow answer as "Mac unreachable": Tailscale takes a few seconds to wake, and a timeout
+means nothing was learned.
 
 **Verified** on the SiliconBuddyM3 emulator (Android 16, arm64, 2.5 GB, mobile data only)
 against a stand-in Mac serving the real files through the real routes: Qwen3.5 2B (1.3 GB)
@@ -457,22 +493,34 @@ and SmolLM2's labelled answer; and — on an install with no instrumentation att
 Android pins an instrumented process to the foreground and refuses it — `am send-trim-memory
 … BACKGROUND` unloading the model 15 ms later, inside the 30 s grace.
 
-Tests: Android 585 unit (50 new: the fallback truth table and what counts as out of reach;
+Tests: Android 619 unit (84 new: the fallback truth table and what counts as out of reach;
 the downloader over a socket against a fake Mac — fetch, 40% cut and resume with Range and
 If-Range, 200 restart, 416, 409, 503, a mismatch leading to `verify=1` once and a clean
 refetch, a second mismatch keeping nothing, a full disk, the Mac's own failure, a cancel
 keeping the partial; heat and memory as tables; trim levels; the Wi-Fi rule; the chat's
 offer, answer, isolation — zero Mac calls for a phone conversation, and the client refusing
 its id without a byte — refusal and alternative, Try again, Send to Mac; the store; the
-thinking splitter; the tile, widget and link lines; and the contract), 18 instrumented on
-the minified release build (11 new, below), iOS 275 (5 new: the new types round-trip, and
-503/507 have cases of their own). Every protection was checked by undoing it and seeing a
-test fail (14 mutants, all caught). Release APK 17,918,705 bytes (13,920,891 at M4); the
-llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in the APK. `scripts/ci-android.sh`
-is the local CI: unit tests, the release build, R8's `seeds.txt` for the widget callbacks,
-83 serializers (75 at M4), every `LlamaNative` JNI method, the sink and the probe, each
-native library present, compressed and stripped, and the APK under 30 MB; `--connected`
-adds the instrumented tests, `--ios` the iOS suite.
+thinking splitter; the tile, widget and link lines; and the contract — and, after the
+review: a load whose caller is cancelled being freed rather than left in memory, the engine
+refusing for memory and stopping for heat with llama.cpp and the phone both stood in for, a
+file that changed under it, a Mac unreachable at launch being asked again when it comes
+back, the question saved before the model is loaded, the screen kept awake, the newest
+turns only, metered Wi-Fi, a digest that is not a digest, a new pin replacing the old file,
+the Mac serving a different file than it listed, a 404 from a conversation route, and a
+redirect the client refuses to follow), 20 instrumented on the minified release build (14
+new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of their
+own). Every protection was checked by undoing it and seeing a test fail (14 mutants in the
+first round, 5 more for the review's fixes, all caught). Release APK 17,930,693 bytes
+(13,920,891 at M4); the llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in
+the APK. `scripts/ci-android.sh` is the local CI: unit tests — both modules, forced with
+`--rerun`, because an up-to-date test task prints nothing and passes, which is a gate that
+can pass without running anything — the release build, R8's `seeds.txt` for the widget
+callbacks, 83 serializers (75 at M4), every `LlamaNative` JNI method and the sink, the test
+probe kept in the build the tests run on and *absent* from the one the owner installs, the
+bridge's own imported symbols (nothing that reaches a network or starts a process), the
+SHA-256 of the KleidiAI archive llama.cpp fetched, each native library present, compressed
+and stripped, and the APK under 30 MB; `--connected` adds the instrumented tests in two
+passes, `--ios` the iOS suite.
 
 The instrumented tests (`OnDeviceModelTest`, with `StandInMac` reaching the stand-in at
 10.0.2.2, not `adb reverse`): stories260K
@@ -486,10 +534,15 @@ real 1.3 GB file's vocabulary, since its weights do not fit this emulator — cl
 thinking block before the answer (thinking off, as the Mac recommends) and opens one only
 when asked; pressing HOME stops the answer at once and unloads after the grace; a background
 trim unloads at once; a model comes through Settings — waiting on mobile data, then
-consented to — and is verified; and an unreachable Mac offers the phone, whose answer
-carries its chip and never reaches the Mac. The stand-in (`demo_mac.py` with the
-`/ondevice` routes and switches for dropping, corrupting, refusing and going away) runs on
-the host: `standin.sh start` in the M5 stand-in folder.
+consented to — and is verified; a download stopped half-way says how much is here and
+offers Resume and Delete, unchanged by a trip to Home; and an unreachable Mac offers the
+phone, whose answer carries its chip, holds the screen awake while it writes and lets go
+the moment it stops, and never reaches the Mac. Then a second pass, on the fresh install
+every run begins with: `NotificationsOffTest` alone, because another class grants
+notifications for the whole of the first pass, checking the owner's own case — nothing
+granted, and the Agents tab and the Create queue each say so, with Allow. The stand-in
+(`demo_mac.py` with the `/ondevice` routes and switches for dropping, corrupting, refusing
+and going away) runs on the host: `standin.sh start` in the M5 stand-in folder.
 
 Not done, and why:
 
