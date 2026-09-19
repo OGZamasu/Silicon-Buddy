@@ -43,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -134,7 +135,20 @@ sealed interface LinkArrival {
 }
 
 private enum class Destination(val label: String) {
-    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings")
+    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings"),
+    ;
+
+    companion object {
+        /**
+         * Saved by name, so a tab added or reordered later cannot restore somebody onto
+         * a different screen than the one they left.
+         */
+        val Saver: androidx.compose.runtime.saveable.Saver<Destination, String> =
+            androidx.compose.runtime.saveable.Saver(
+                save = { it.name },
+                restore = { name -> entries.firstOrNull { it.name == name } ?: Dashboard },
+            )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -146,10 +160,17 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     val chat: ChatViewModel = viewModel()
     val events: EventFeed = viewModel()
 
-    var destination by remember { mutableStateOf(Destination.Dashboard) }
+    // Saved rather than merely remembered. Two things take this activity away and bring
+    // it back: a configuration change the manifest does not absorb — font scale is the
+    // common one — and One UI deciding a backgrounded app has had long enough. Either
+    // way `remember` alone puts the person back on the dashboard, having lost the
+    // conversation they were reading.
+    var destination by rememberSaveable(stateSaver = Destination.Saver) {
+        mutableStateOf(Destination.Dashboard)
+    }
     var pairing by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
-    var openConversation by remember { mutableStateOf<String?>(null) }
+    var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { app.refreshReachability() }
