@@ -2,7 +2,7 @@ package dev.siliconoptimizer.buddy.transport
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
@@ -784,40 +784,51 @@ class ControlClient(
         readTimeoutMs: Int = 900_000,
         lastEventID: String? = null,
     ): Flow<SseEvent> = kotlinx.coroutines.flow.flow {
-        var connection: HttpURLConnection? = null
-        try {
-            connection = open(
-                method, path, body = body,
-                accept = "text/event-stream", readTimeoutMs = readTimeoutMs,
-            )
-            lastEventID?.let { connection.setRequestProperty("Last-Event-ID", it) }
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                val text = connection.errorStream?.bufferedReader()
-                    ?.use(BufferedReader::readText).orEmpty()
-                throw TransportError.from(status, text, path)
-                    ?: TransportError.Server(status, text)
-            }
-            val parser = SseParser()
-            // `readLine` blocks in the kernel; a cancelled coroutine cannot interrupt
-            // it, and the stream would be held open until the Mac said something. So
-            // cancellation disconnects the socket, which is what makes the read return.
-            val open = connection
-            val watchdog = coroutineContext[Job]?.invokeOnCompletion {
-                runCatching { open.disconnect() }
+        coroutineScope {
+            // A stream is a read that blocks in the kernel until the Mac says something —
+            // a heartbeat, seconds away. Cancelled, it has to let go now: the watcher that
+            // stops following when a turn ends, and the app leaving the screen, both mean
+            // "hang up", not "hang up after the next heartbeat". So, as in `send`, a child
+            // waits on cancellation and closes the connection from its own thread, which is
+            // what makes the blocked read return. Not `invokeOnCompletion`: a job still
+            // inside that read has not completed, so the handler would only run after it.
+            val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+            val watcher = launch {
+                try {
+                    awaitCancellation()
+                } finally {
+                    socket.get()?.let(abandon)
+                }
             }
             try {
+                val connection = open(
+                    method, path, body = body,
+                    accept = "text/event-stream", readTimeoutMs = readTimeoutMs,
+                )
+                socket.set(connection)
+                lastEventID?.let { connection.setRequestProperty("Last-Event-ID", it) }
+                ensureActive()
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val text = connection.errorStream?.bufferedReader()
+                        ?.use(BufferedReader::readText).orEmpty()
+                    throw TransportError.from(status, text, path)
+                        ?: TransportError.Server(status, text)
+                }
+                val parser = SseParser()
                 readLines(connection.inputStream) { line ->
                     parser.consume(line)?.let { emit(it) }
                 }
+                parser.finish()?.let { emit(it) }
+            } catch (error: IOException) {
+                // Closed under it because it was given up on: that is the cancellation,
+                // not a Mac that dropped the line.
+                ensureActive()
+                throw TransportError.from(error, config.host)
             } finally {
-                watchdog?.dispose()
+                watcher.cancel()
+                socket.get()?.disconnect()
             }
-            parser.finish()?.let { emit(it) }
-        } catch (error: IOException) {
-            throw TransportError.from(error, config.host)
-        } finally {
-            connection?.disconnect()
         }
     }.flowOn(Dispatchers.IO)
 

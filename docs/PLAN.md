@@ -221,11 +221,13 @@ What the phone does:
   activity, the newest line, pending approvals, and a "Runs without asking" line when the
   Mac says nothing asks. Start is one tap; Stop and New thread ask first. Hidden for a
   device paired for chat, with one line in Settings saying why. On a phone, Settings
-  moved from the bottom bar to the top bar to make room: seven destinations do not fit
-  a bar at a readable size, and a tablet's rail still lists all seven. A phone on its
-  side keeps the gear in the top bar and its rail scrolls; Back from Settings returns to
-  the tab it was opened from. A phone the Mac no longer knows (401) says so, stops
-  asking, and offers Pair again; a 403 is said in the Mac's words and not retried.
+  moved from the bottom bar to the top bar to make room: seven destinations do not fit a
+  bar at a readable size, and a tablet's rail still lists all seven. A phone on its side
+  keeps the gear in the top bar and its rail scrolls; Back from Settings returns to the
+  tab it was opened from. A phone the Mac no longer knows (401) says so, stops asking —
+  the agents, and the dashboard's metrics and status with them — and offers Pair again; a
+  403 is said in the Mac's words and not retried. Pairing again takes down a watcher's
+  "no longer paired" notice.
 - **The session**: the transcript in the Mac's eight kinds, reasoning folded, output
   scrolling inside its row with the Mac's "truncated" said, "N earlier rows are on the
   Mac" when a read was capped by `limit`; the composer with a model picker that offers
@@ -237,34 +239,41 @@ What the phone does:
   composer stays on screen; from 600 dp wide the card sits beside the transcript. On
   Android 13 and later the screen leaves no Recents thumbnail.
 - **Approvals**: a card per call with the guardrail's verdict and sentence; Accept and
-  Decline; a 409 leaves the Mac's sentence on the card and asks what is true now (answered
-  at the Mac first, still screening, engine stopped), a 404 takes the card down quietly,
-  and an `approval` frame answered on the Mac takes it down saying which way it went. An
-  answer is recorded as this phone's before it is sent, so a card answered here never
-  comes down reading "on the Mac" when the Mac's frame beats the reply, or the reply is
-  lost. The buttons refuse a tap that came through another app's window. The tab carries
-  a badge that TalkBack reads, and the Quick Settings tile's second line says
-  "2 approvals waiting" — while that is fresh — and opens the Agents tab.
-- **In the background**: leaving the app while a turn runs in a session this phone
-  opened starts `AgentWatchService`, a foreground service of type `remoteMessaging`
-  (Android 14+; the type for carrying on a conversation that lives on another device —
-  not `dataSync`, which is for moving files and is budgeted on Android 15). It opens its
-  own `/events`, reads the watched sessions whole, and posts one high-priority
-  notification per approval. The app's own stream and the dashboard's polling close when
-  the app leaves the screen and open again when it returns, so in the background the
-  watcher's is the only stream. A notification never carries the command, the paths or
-  the tool: marked private, it is still shown whole on a lock screen set to show all
-  content, so it says only the guardrail's verdict and "Open Silicon Buddy to see exactly
-  what, before you answer"; each kind has its own generic public version. Accept and
-  Decline carry `setAuthenticationRequired(true)` on Android 12+ and go to a non-exported
-  receiver, which also refuses while the device is locked ("Unlock your phone to answer.
-  Nothing was sent."); on Android 10 and 11 there is a single Open. What comes back is one
-  of a dozen fixed sentences, never an error's own words, which can name the Mac. It stops
-  when the turn ends; when nothing has been heard from the Mac for a minute, reconnecting
-  with the client's backoff meanwhile (a relaunch or a network change is seconds), saying
-  so once; at once on a 401 or a 403, saying which; when its notification is dismissed;
-  or when the app returns, taking its approval notifications with it, and any a watcher
-  whose process died left behind.
+  Decline; a 409 leaves the Mac's sentence on the card and asks what is true now
+  (answered at the Mac first, still screening, engine stopped), a 404 takes the card down
+  quietly, and an `approval` frame answered on the Mac takes it down saying which way it
+  went. An answer is recorded as this phone's before it is sent, so a card answered here
+  never comes down reading "on the Mac" when the Mac's frame beats the reply, or the
+  reply is lost — but a frame is credited to this phone only when its decision is the one
+  this phone sent, and a 404 or 409 takes any credit back. While a card is on screen
+  other apps' overlays are hidden (Android 12+), and its buttons refuse a press that went
+  through another app's window at the point pressed — not one whose window merely
+  overlaps elsewhere, and not the next answer from a keyboard or switch access. The tab
+  carries a badge that TalkBack reads, and the Quick Settings tile's second line says "2
+  approvals waiting" — while that is fresh — and opens the Agents tab.
+- **In the background**: leaving the app while a turn runs in a session this phone opened
+  starts `AgentWatchService`, a foreground service of type `remoteMessaging` (Android
+  14+; the type for carrying on a conversation that lives on another device — not
+  `dataSync`, which is for moving files and is budgeted on Android 15). It opens its own
+  `/events`, reads the watched sessions whole, and posts one high-priority notification
+  per approval. The app's own stream and the dashboard's polling close when the app
+  leaves the screen and open again when it returns, so in the background the watcher's is
+  the only stream. A notification never carries the command, the paths or the tool:
+  marked private, it is still shown whole on a lock screen set to show all content, so it
+  says only the guardrail's verdict and "Review it to see exactly what it wants; you
+  accept it in the app"; each kind has its own generic public version. With the command
+  not on it, nothing on it can allow the command: its buttons are Decline and Review, and
+  Accept exists only in the app, on the card, under what it runs. Both carry
+  `setAuthenticationRequired(true)` on Android 12+; Decline goes to a non-exported
+  receiver, which also refuses while the device is locked — asking once more a second
+  later, for an unlock not yet recorded — and Review opens the session with that
+  approval's card in front. On Android 10 and 11 the one button is Review. What comes
+  back from a Decline is one of a dozen fixed sentences, never an error's own words,
+  which can name the Mac. It stops when the turn ends; when nothing has been heard from
+  the Mac for a minute, reconnecting with the client's backoff meanwhile (a relaunch or a
+  network change is seconds), saying so once; at once on a 401 or a 403, saying which;
+  when its notification is dismissed; or when the app returns, taking its approval
+  notifications with it, and any a watcher whose process died left behind.
 
 **Keeping in step**, which is most of the reducer: rows keyed by id and known at a
 sequence, so a frame older than a held row is dropped and the same frame twice is
@@ -280,10 +289,11 @@ connect carry no rows, so a read answered before the stream opened leaves a gap 
 `?since=` can fill, and frames move the cursor only while the stream has been unbroken
 since it. Breaks — a dropped connection, a `resync`, a restart of the stream — reach the
 reducer in order with the frames, so no frame after a break is taken to follow on from
-the ones before it; a frame the client cannot decode counts as a break too. Returning to
-the app opens the stream again and costs one catch-up read per engine, however the
-stream's opening frames and the reads interleave; a relaunched Mac costs one full read
-per engine and no more.
+the ones before it; a frame the client cannot decode counts as a break too. Letting go of
+the stream — the watcher at a turn's end, the app leaving the screen — closes its socket
+at once, not at the next heartbeat. Returning to the app opens the stream again and costs
+one catch-up read per engine, however the stream's opening frames and the reads
+interleave; a relaunched Mac costs one full read per engine and no more.
 
 Verified on the SiliconBuddyM3 emulator (Android 16) against a stand-in Mac with fake
 Codex and Pi sessions: pairing, both cards, a turn sent from the phone and streamed back,
@@ -296,23 +306,35 @@ stopped; a 20-second outage of the stand-in is ridden out, the approval's notifi
 replaced by the new one, and a longer one ends the watch with one notification saying so;
 a stand-in that forgets the phone gets "no longer paired", Pair again and no further
 reads; 200% text and a phone on its side keep the pinned answer row and the composer;
-Back from Settings returns to its tab; a return costs one catch-up per engine; Accept in
-the shade reaches the stand-in once and leaves "Accepted on this phone.", and the watcher
-lets go as the turn ends. Two instrumented tests on the minified release build drive the
-tab from the outside, read the posted notification (its actions both
-`isAuthenticationRequired`, its text the verdict and not the command) and check the
-watcher starts and then stops.
+Back from Settings returns to its tab; a return costs one catch-up per engine; a Decline
+in the shade reaches the stand-in once and leaves "Declined on this phone.", and the
+watcher lets go as the turn ends; Review in the shade opens the app on that card. After
+the second review: the app's stream socket is closed within a second of leaving the
+screen; a stand-in that revokes the phone ends the watcher with its "no longer paired"
+notice, the app back in front asks nothing more — no metrics, no status, no reads — and
+pairing again takes the notice down and starts everything afresh. Four instrumented tests
+on the minified release build drive the tab from the outside: an approval accepted in the
+app; the posted notification read (its text the verdict and not the command, its actions
+Decline and Review, both `isAuthenticationRequired`), declined from the shade, and the
+watcher seen to start and stop; Review on the second of two approvals opening the app on
+that card, where it is accepted; and a press carrying `FLAG_WINDOW_IS_OBSCURED` refused
+while the window asks for overlays to be hidden, the next answer by accessibility let
+through, and a partly-covered press let through.
 
-Tests: Android 506 unit (170 new — the reducer, every agent route over a socket with the
-Mac's own error bodies, notifications, the picker, the tile, strict `errorVariants`; and
-after review the Agents tab's view model, the watcher's loop from its first read to each
-way it ends, a press in the shade from the lock check to the sentence it leaves, the
-event feed's agent path, and the review's five probes kept as regression tests — the
-fifth, whose excerpt is gone, now aimed at what the app still shows) and 5 instrumented;
-iOS 270, with a round trip for every new fixture part and the same strict read of
-`errorVariants`. Every fix from the review was checked by undoing it and seeing a test
-fail. CI's floor on kept serializers rises from 48 to 75, and it checks the agent frame
-types by name. Release APK 13.9 MB.
+Tests: Android 535 unit (199 new — the reducer, every agent route over a socket with the
+Mac's own error bodies, notifications, the picker, the tile, strict `errorVariants`;
+after the first review the Agents tab's view model, the watcher's loop from its first
+read to each way it ends, a press in the shade from the lock check to the sentence it
+leaves, the event feed's agent path, and the review's five probes kept as regression
+tests — the fifth, whose excerpt is gone, now aimed at what the app still shows; after
+the second, whose answer a card was when the Mac says otherwise, Decline and Review and
+never Accept in the shade, the lock asked again a second later, the touch guard, the
+stream letting go of its socket, a 401 stopping the dashboard, the masking, and the
+second review's probe) and 7 instrumented; iOS 270, with a round trip for every new
+fixture part and the same strict read of `errorVariants`. Every fix from both reviews was
+checked by undoing it and seeing a test fail — the touch guard's wiring, the overlay
+hiding and the receiver's lock reading on the emulator. CI's floor on kept serializers
+rises from 48 to 75, and it checks the agent frame types by name. Release APK 13.9 MB.
 
 Not done, and why:
 
@@ -321,10 +343,11 @@ Not done, and why:
    approval after the watcher let go, rings nothing until the app is opened. That needs
    FCM (and APNs for the iPad), sent by the Mac.
 2. **The locked-phone path was not walked end to end.** The flag is on the posted
-   notification's actions (asserted on the device) and the answer from the shade reaches
-   the Mac on an unlocked emulator; the keyguard prompt in between, and the receiver's
-   own refusal while locked, need a PIN set on the device, which is a security setting
-   and was not changed, and the owner's phone was not touched.
+   notification's actions (asserted on the device) and a Decline from the shade reaches
+   the Mac on an unlocked emulator; the keyguard prompt in between, and the receiver's own
+   refusal while locked — with its second look a second later, for an unlock Android has
+   not recorded yet — need a PIN set on the device, which is a security setting and was
+   not changed. The rule is unit-tested; the owner will try it on the real phone.
 3. **The harness is not here**, on the Mac's side: it holds no transcript to mirror.
 4. **iPad**: types and contract tests only. The Agents tab comes when iOS catches up.
 5. **Handoff from the Mac to the iPad** is iOS work and waits with it.

@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.agents.AgentAnswers
+import dev.siliconoptimizer.buddy.agents.AgentNotices
 import dev.siliconoptimizer.buddy.agents.AgentsViewModel
 import dev.siliconoptimizer.buddy.agents.Sync
 import dev.siliconoptimizer.buddy.transport.AgentApproval
@@ -203,6 +204,72 @@ class AgentsViewModelTest {
         val said = model.board.session("codex").resolutions.single()
         assertFalse(said.byThisPhone)
         assertEquals("That was answered at the Mac before this arrived.", said.note)
+    }
+
+    private val answeredFirst = "That was answered at the Mac before this arrived."
+
+    /**
+     * The second review's case: the owner declines at the Mac while this phone's Accept is
+     * out. The Mac's frame lands first, then the 409. Nothing this phone sent was applied.
+     */
+    @Test
+    fun `the owner answering the other way at the Mac is not this phone's answer`() = runTest(dispatcher) {
+        opened()
+        mac.duringAnswer = { model.apply(frame(AgentEvent.APPROVAL, 6, state = AgentEvent.DECLINED, approval = card)) }
+        mac.answerError = TransportError.Conflict(answeredFirst)
+        model.answer("codex", "A1", accept = true)
+        val said = model.board.session("codex").resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertEquals("Declined on the Mac", AgentNotices.resolution("codex", said))
+        assertEquals(answeredFirst, said.note)
+    }
+
+    /** Both declined at once and the Mac's got there first: the 409 takes the credit back. */
+    @Test
+    fun `a 409 after a frame that matched takes the credit back`() = runTest(dispatcher) {
+        opened()
+        mac.duringAnswer = { model.apply(frame(AgentEvent.APPROVAL, 6, state = AgentEvent.DECLINED, approval = card)) }
+        mac.answerError = TransportError.Conflict(answeredFirst)
+        model.answer("codex", "A1", accept = false)
+        val said = model.board.session("codex").resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertEquals("Declined on the Mac", AgentNotices.resolution("codex", said))
+    }
+
+    @Test
+    fun `a 404 after a frame that matched takes the credit back`() = runTest(dispatcher) {
+        opened()
+        mac.duringAnswer = { model.apply(frame(AgentEvent.APPROVAL, 6, state = AgentEvent.ACCEPTED, approval = card)) }
+        mac.answerError = TransportError.NotFound("No approval A1 is waiting.")
+        model.answer("codex", "A1", accept = true)
+        assertFalse(model.board.session("codex").resolutions.single().byThisPhone)
+    }
+
+    /** Paired again with a session open: the screen says so, and is watched again. */
+    @Test
+    fun `a reset tells an open session screen to register again`() = runTest(dispatcher) {
+        opened()
+        model.watch("codex")
+        assertEquals(listOf("codex"), model.watchedTurns)
+        val before = model.resets
+        model.reset()
+        assertTrue("what was watched went with the reset", model.watchedTurns.isEmpty())
+        assertEquals(before + 1, model.resets)
+    }
+
+    /** Review on a notification opens the card it was pressed for, not the oldest one. */
+    @Test
+    fun `review puts its own card in front while it waits`() = runTest(dispatcher) {
+        val second = card.copy(id = "A2", summary = "git push origin main")
+        mac.next = { detail(5, approvals = listOf(card, second)) }
+        opened()
+        assertEquals("the oldest first, as the Mac lists them", "A1", model.shownApproval("codex")?.id)
+        model.focus("codex", "A2")
+        assertEquals("A2", model.shownApproval("codex")?.id)
+        model.apply(frame(AgentEvent.APPROVAL, 6, state = AgentEvent.DECLINED, approval = second))
+        assertEquals("answered, and the next one is in front", "A1", model.shownApproval("codex")?.id)
+        model.focus("codex", "gone")
+        assertEquals("an id no longer waiting changes nothing", "A1", model.shownApproval("codex")?.id)
     }
 
     @Test

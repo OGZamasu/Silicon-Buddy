@@ -698,6 +698,112 @@ class AgentSessionTest {
         assertEquals("declined", said.decision)
     }
 
+    // MARK: - Whose answer it was, when the Mac says otherwise
+
+    private val answeredFirst = "That was answered at the Mac before this arrived. The agent already has its decision; nothing was sent twice."
+
+    /**
+     * The second review's case in reverse: this phone's Decline is out when the owner
+     * accepts at the Mac. The frame says accepted; this phone never sent that, so it was
+     * not this phone.
+     */
+    @Test
+    fun `a frame that decides the other way is the Mac's, not this phone's`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "decline")
+            .applying(approvalFrame(card, seq = 6, state = AgentEvent.ACCEPTED))
+        val said = session.resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertEquals("accepted", said.decision)
+        assertEquals("Accepted on the Mac", dev.siliconoptimizer.buddy.agents.AgentNotices.resolution("codex", said))
+    }
+
+    /** Both sides declined at once, the Mac's first: the frame matched, the 409 says whose it was. */
+    @Test
+    fun `a matching frame followed by a 409 was the Mac's after all`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "decline")
+            .applying(approvalFrame(card, seq = 6, state = AgentEvent.DECLINED))
+            .unanswering("A1")
+            .approvalConflict("A1", answeredFirst)
+        val said = session.resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertEquals("the decision the Mac said stands", "declined", said.decision)
+        assertEquals(answeredFirst, said.note)
+        assertTrue("a settled card keeps no note of its own", session.notes.isEmpty())
+        assertTrue(session.pending.isEmpty())
+    }
+
+    @Test
+    fun `a matching frame followed by a 404 was not this phone's either`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "accept")
+            .applying(approvalFrame(card, seq = 6, state = AgentEvent.ACCEPTED))
+            .unanswering("A1")
+            .approvalGone("A1")
+        val said = session.resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertEquals("accepted", said.decision)
+    }
+
+    /**
+     * A read showed the card gone while this phone's answer was out, so its answer stood in
+     * for the Mac's word. A 409 then says the Mac answered first — and how, it does not say.
+     */
+    @Test
+    fun `an answer that stood in for the Mac's is taken back by a 409, decision and all`() {
+        val card = approval("A1")
+        var session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "accept")
+            .applying(detail(listOf(item("a"), item("b")), seq = 9, complete = false))
+        assertTrue("until the reply, the answer out is the best guess", session.resolutions.single().byThisPhone)
+        session = session.unanswering("A1").approvalConflict("A1", answeredFirst)
+        val said = session.resolutions.single()
+        assertFalse(said.byThisPhone)
+        assertNull("how the Mac answered it, nobody here knows", said.decision)
+        assertEquals(
+            "No longer waiting — $answeredFirst",
+            dev.siliconoptimizer.buddy.agents.AgentNotices.resolution("codex", said),
+        )
+    }
+
+    /** The same stand-in, and a reply that says it landed: this phone's, as the reply says. */
+    @Test
+    fun `an answer that stood in and then landed is this phone's`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "decline")
+            .applying(detail(listOf(item("a"), item("b")), seq = 9, complete = false))
+            .answered("A1", "declined")
+        val said = session.resolutions.single()
+        assertTrue(said.byThisPhone)
+        assertEquals("declined", said.decision)
+        assertFalse(said.standIn)
+    }
+
+    /** A frame that only says "no longer waiting" credits nobody; the reply decides. */
+    @Test
+    fun `a frame without a decision credits nobody until the reply does`() {
+        val card = approval("A1")
+        var session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "accept")
+            .applying(approvalFrame(card, seq = 6, state = "cancelled"))
+        assertFalse(session.resolutions.single().byThisPhone)
+        assertNull(session.resolutions.single().decision)
+        session = session.answered("A1", "accepted")
+        assertTrue(session.resolutions.single().byThisPhone)
+        assertEquals("accepted", session.resolutions.single().decision)
+    }
+
     /**
      * Back from the background: the stream restarts, the catch-up goes out, and the
      * stream's opening lands while it is out. An answer taken at or after the opening is

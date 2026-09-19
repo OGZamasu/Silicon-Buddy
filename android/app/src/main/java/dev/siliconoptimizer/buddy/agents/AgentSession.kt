@@ -165,6 +165,9 @@ data class AgentSession(
             approvals = waiting + arrivedSince,
             settled = settled + vanished.map { it.approval.id } + abandoned,
             resolutions = vanished.fold(if (otherTranscript) emptyList() else resolutions) { list, gone ->
+                // A read says only that it stopped waiting, not who answered or how. This
+                // phone's own answer, when it has one out, stands in until the reply to it
+                // says whether it was the one that landed.
                 val mine = answeredHere[gone.approval.id]
                 list.adding(
                     Resolution(
@@ -172,6 +175,7 @@ data class AgentSession(
                         decision = mine,
                         byThisPhone = mine != null,
                         note = notes[gone.approval.id],
+                        standIn = mine != null,
                     ),
                 )
             },
@@ -357,6 +361,10 @@ data class AgentSession(
                 val decided = state?.takeIf {
                     it == AgentEvent.ACCEPTED || it == AgentEvent.DECLINED
                 }
+                // This phone's answer being out is not the same as its answer being the one
+                // that landed: the owner may have answered at the Mac a moment earlier. Only
+                // a frame whose decision is the one this phone sent is credited to it — and
+                // the reply still has the last word, either way.
                 val mine = answeredHere[id]
                 copy(
                     approvals = approvals.filterNot { it.approval.id == id },
@@ -365,8 +373,8 @@ data class AgentSession(
                         Resolution(
                             approval = approvals.firstOrNull { it.approval.id == id }?.approval
                                 ?: approval,
-                            decision = decided ?: mine,
-                            byThisPhone = mine != null,
+                            decision = decided,
+                            byThisPhone = mine != null && mine == decided,
                             note = notes[id],
                         ),
                     ),
@@ -414,7 +422,11 @@ data class AgentSession(
             // It was this phone.
             return base.copy(
                 resolutions = resolutions.map {
-                    if (it.approval.id == id) it.copy(decision = decided, byThisPhone = true) else it
+                    if (it.approval.id == id) {
+                        it.copy(decision = decided, byThisPhone = true, standIn = false)
+                    } else {
+                        it
+                    }
                 },
             )
         }
@@ -428,20 +440,48 @@ data class AgentSession(
         )
     }
 
-    /** 404: answered already, or gone with its engine. The card goes, quietly. */
+    /**
+     * 404: answered already, or gone with its engine. The card goes, quietly — and if a
+     * frame or a read had already written it down as this phone's, it was not: nothing this
+     * phone sent was applied.
+     */
     fun approvalGone(id: String): AgentSession = copy(
         approvals = approvals.filterNot { it.approval.id == id },
         settled = settled + id,
+        resolutions = disowning(id, note = null),
         notes = notes - id,
     )
 
     /**
      * 409: the Mac has something to say about this card — answered there first, still being
      * screened, or its engine stopped. The sentence goes on the card, and the Mac is asked
-     * what is true now: the card stays only if it is still waiting.
+     * what is true now: the card stays only if it is still waiting. A card that has already
+     * come down keeps the sentence under how it came down, and is no longer this phone's.
      */
     fun approvalConflict(id: String, message: String): AgentSession =
-        copy(notes = notes + (id to message)).needing(Sync.CatchUp)
+        if (id in settled) {
+            copy(resolutions = disowning(id, note = message), notes = notes - id).needing(Sync.CatchUp)
+        } else {
+            copy(notes = notes + (id to message)).needing(Sync.CatchUp)
+        }
+
+    /**
+     * The Mac turned this phone's answer away: a resolution that credited it is corrected.
+     * A decision the Mac said stands; one this phone's own answer stood in for is unknown
+     * again.
+     */
+    private fun disowning(id: String, note: String?): List<Resolution> = resolutions.map {
+        if (it.approval.id != id) {
+            it
+        } else {
+            it.copy(
+                decision = if (it.standIn) null else it.decision,
+                byThisPhone = false,
+                standIn = false,
+                note = note ?: it.note,
+            )
+        }
+    }
 
     /**
      * Something wants the Mac asked. [at] is the sequence of the frame that asked, when a
@@ -488,13 +528,16 @@ data class TrackedApproval(val approval: AgentApproval, val seq: Long)
  *
  * [decision] is `accepted` or `declined` when somebody said which, and null when the phone
  * only knows it stopped waiting — answered while the stream was down, or gone with a
- * stopped engine.
+ * stopped engine. [standIn] is true while that decision is this phone's own answer standing
+ * in for the Mac's word — a read showed the card gone while the answer was out — so a
+ * refusal of that answer can take it back.
  */
 data class Resolution(
     val approval: AgentApproval,
     val decision: String?,
     val byThisPhone: Boolean,
     val note: String?,
+    val standIn: Boolean = false,
 )
 
 /** What a session needs from the Mac next. Ordered: a reload covers a catch-up. */

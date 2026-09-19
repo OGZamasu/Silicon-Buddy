@@ -27,7 +27,12 @@ import dev.siliconoptimizer.buddy.transport.TransportError
  * sensitive content — which is not the default. So an approval notification never carries
  * the command, the paths, the tool's arguments, the engine's reason or any output: only
  * which engine, what kind of thing it wants to do, and what the Mac's guardrail made of it.
- * What exactly it wants is in the app, after unlocking.
+ *
+ * And because the command is not on it, nothing on it can approve the command: allowing
+ * something nobody has read — whatever the guardrail said, "would block" and "not
+ * screened" included — is not an answer. Its buttons are Decline, which is safe to give
+ * blind, and Review, which opens that card in the app after unlocking; Accept is only ever
+ * pressed there, under the command it runs.
  */
 data class ApprovalNotice(
     val engine: String,
@@ -50,12 +55,12 @@ data class ApprovalNotice(
  * phone, the system asks for the owner's fingerprint or PIN before the intent is sent — and
  * the receiver checks again, because a notification listener can send it without the system
  * UI. On an older Android there is no such thing, and a button that answered from a locked
- * shade would answer for whoever is holding the phone — so there the one button is "Open",
+ * shade would answer for whoever is holding the phone — so there the one button is Review,
  * and the decision is made in the app, on an unlocked phone.
  */
 data class NoticeAction(
     val label: String,
-    /** `accept`, `decline`, or null for the button that only opens the session. */
+    /** `decline`, or null for the button that opens the card in the app. Never `accept`. */
     val decision: String?,
     val authenticationRequired: Boolean,
     val opensApp: Boolean,
@@ -84,6 +89,12 @@ object AgentNotifications {
     /** Android 12 is where a notification action can demand the device be unlocked. */
     const val AUTHENTICATED_ACTIONS_SDK = 31
 
+    const val DECLINE = "Decline"
+    const val REVIEW = "Review"
+
+    /** Under the verdict: where the command is, and where accepting it happens. */
+    const val REVIEW_HINT = "Review it to see exactly what it wants; you accept it in the app."
+
     /** High bytes of the notification numbers, so the kinds never collide. */
     private const val APPROVAL_IDS = 0x5A
     private const val SETTLED_IDS = 0x5B
@@ -91,22 +102,23 @@ object AgentNotifications {
     fun notice(engine: String, approval: AgentApproval, sdk: Int): ApprovalNotice {
         val verdict = AgentNotices.verdict(approval.screening.verdict)
         val authenticated = sdk >= AUTHENTICATED_ACTIONS_SDK
+        val review = NoticeAction(REVIEW, null, authenticationRequired = authenticated, opensApp = true)
         return ApprovalNotice(
             engine = engine,
             approvalID = approval.id,
             notificationID = notificationID(engine, approval.id),
             title = AgentNotices.headline(engine, approval),
             text = verdict,
-            detail = "$verdict. Open Silicon Buddy to see exactly what, before you answer.",
+            detail = "$verdict. $REVIEW_HINT",
             actions = if (authenticated) {
                 listOf(
-                    NoticeAction("Decline", AgentApprovalDecision.DECLINE, authenticationRequired = true, opensApp = false),
-                    NoticeAction("Accept", AgentApprovalDecision.ACCEPT, authenticationRequired = true, opensApp = false),
+                    NoticeAction(DECLINE, AgentApprovalDecision.DECLINE, authenticationRequired = true, opensApp = false),
+                    review,
                 )
             } else {
-                // Both buttons would only open the app on Android 10 and 11, so there is one,
-                // and it says so.
-                listOf(NoticeAction("Open", null, authenticationRequired = false, opensApp = true))
+                // Android 10 and 11 cannot make a button wait for the owner's unlock, so
+                // nothing is answered from their shade: the one button opens the card.
+                listOf(review)
             },
         )
     }
@@ -126,7 +138,7 @@ object AgentNotifications {
         (APPROVAL_IDS shl 24) or ("$engine:$approvalID".hashCode() and 0x00FFFFFF)
 
     /**
-     * Where "Accepted on this phone" goes after a button in the shade was pressed. Its own
+     * Where "Declined on this phone" goes after a button in the shade was pressed. Its own
      * number rather than the approval's: the watcher takes the approval's notification
      * down the moment the Mac confirms the answer, and that must not take the confirmation
      * with it.
@@ -182,12 +194,15 @@ object AgentNotifications {
     private val scheme = Regex("(?i)\\b(bearer|basic)\\s+[A-Za-z0-9._~+/=-]+")
 
     /**
-     * `password=…`, `DB_PASSWORD=…`, `OPENAI_API_KEY: …`, `X-Api-Key: …`. The name may carry
-     * any prefix — `\b` alone never matches after `_`, which is how `GITHUB_TOKEN` slipped by.
+     * `password=…`, `DB_PASSWORD=…`, `OPENAI_API_KEY: …`, `X-Api-Key: …`, `SECRET_KEY=…`,
+     * `STRIPE_KEY=…`, and a bare `key=…` — which is also `?key=…` in a URL, where the rest of
+     * the URL goes with it: a secret can hold an `&`. The name may carry any prefix — `\b`
+     * alone never matches after `_`, which is how `GITHUB_TOKEN` slipped by — and anything
+     * ending `_KEY` or `-key` counts; `monkey` does not.
      */
     private val assignment = Regex(
         "(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_]*(?:token|secret|password|passwd|pwd|pass|" +
-            "api[_-]?key|access[_-]?key|private[_-]?key|auth|credentials?))" +
+            "api[_-]?key|access[_-]?key|private[_-]?key|auth|credentials?|[_-]key)|key)" +
             "(\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*'|\\S+)",
     )
 
@@ -248,6 +263,9 @@ object ApprovalReplies {
     const val ACCEPTED = "Accepted on this phone."
     const val DECLINED = "Declined on this phone."
     const val LOCKED = "Unlock your phone to answer. Nothing was sent."
+
+    /** An Accept from a notification an earlier build posted: accepting happens in the app. */
+    const val ACCEPT_IN_APP = "Open Silicon Buddy to accept it, where you can see exactly what it wants. Nothing was sent."
     const val NO_MAC = "No Mac is paired with this phone any more."
     const val UNPAIRED = "This phone is no longer paired with your Mac. Open Silicon Buddy to pair it again."
     const val NOT_ALLOWED = "This phone may not answer agents on your Mac. Pair it again with full control."
@@ -313,7 +331,8 @@ class AgentNotifier(private val context: Context) {
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "When Codex or Pi on your Mac is waiting for you to allow " +
-                    "something. Accepting or declining asks you to unlock the phone first."
+                    "something. Review opens it in the app, where it can be accepted; " +
+                    "declining from here asks you to unlock the phone first."
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             },
         )
@@ -341,7 +360,7 @@ class AgentNotifier(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setOnlyAlertOnce(true)
             .setAutoCancel(false)
-            .setContentIntent(openSession(context, notice.engine, notice.notificationID))
+            .setContentIntent(openSession(context, notice.engine, notice.notificationID, notice.approvalID))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL, AgentNotifications.PUBLIC_APPROVAL))
         actions(context, notice).forEach { builder.addAction(it) }
@@ -372,7 +391,7 @@ class AgentNotifier(private val context: Context) {
             .setSilent(true)
             .setAutoCancel(true)
             .setTimeoutAfter(SETTLED_TIMEOUT_MS)
-            .setContentIntent(openSession(context, engine, notificationID))
+            .setContentIntent(openSession(context, engine, notificationID, approvalID))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL, AgentNotifications.PUBLIC_ANSWERED))
             .build()
@@ -452,15 +471,16 @@ class AgentNotifier(private val context: Context) {
             .build()
 
     companion object {
-        /** How long "Accepted" stays in the shade after an answer from a notification. */
+        /** How long "Declined" stays in the shade after an answer from a notification. */
         const val SETTLED_TIMEOUT_MS = 8_000L
 
         /**
          * The notification's buttons.
          *
-         * On Android 12 and later each is a broadcast to [ApprovalActionReceiver] and
-         * demands the device be unlocked first. Before that, the one button opens the
-         * session — the decision is then made in the app, on an unlocked phone.
+         * On Android 12 and later Decline is a broadcast to [ApprovalActionReceiver] and
+         * Review opens the card in the app, and both demand the device be unlocked first.
+         * Before that, the one button is Review — the decision is then made in the app, on
+         * an unlocked phone.
          *
          * Public so a test can build them on the JVM, where every `PendingIntent` is null
          * and what is being checked is the flag, not the intent.
@@ -470,7 +490,7 @@ class AgentNotifier(private val context: Context) {
                 val intent = context?.let {
                     val decision = action.decision
                     if (action.opensApp || decision == null) {
-                        openSession(it, notice.engine, notice.notificationID * 4 + index + 1)
+                        openSession(it, notice.engine, notice.notificationID * 4 + index + 1, notice.approvalID)
                     } else {
                         ApprovalActionReceiver.intent(it, notice, decision)
                     }
@@ -483,13 +503,17 @@ class AgentNotifier(private val context: Context) {
                     .build()
             }
 
-        /** Opens the Agents tab on [engine]'s session. A request for a screen, nothing more. */
-        fun openSession(context: Context, engine: String?, requestCode: Int): PendingIntent {
+        /**
+         * Opens the Agents tab on [engine]'s session, with [approvalID]'s card the one in
+         * front when it is still waiting. A request for a screen, nothing more.
+         */
+        fun openSession(context: Context, engine: String?, requestCode: Int, approvalID: String? = null): PendingIntent {
             val intent = Intent(context, MainActivity::class.java)
                 .setAction(Intent.ACTION_MAIN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 .putExtra(MainActivity.EXTRA_OPEN, MainActivity.OPEN_AGENTS)
                 .apply { knownEngine(engine)?.let { putExtra(MainActivity.EXTRA_ENGINE, it) } }
+                .apply { approvalID?.let { putExtra(MainActivity.EXTRA_APPROVAL, it) } }
             return PendingIntent.getActivity(
                 context, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

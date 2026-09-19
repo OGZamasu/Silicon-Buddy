@@ -236,14 +236,15 @@ class AgentWatchService : Service() {
 }
 
 /**
- * Accept or Decline, pressed on an approval notification.
+ * Decline, pressed on an approval notification.
  *
- * Only ever reached on Android 12 and later, from actions built with
+ * Only ever reached on Android 12 and later, from an action built with
  * `setAuthenticationRequired(true)`. That flag is enforced by the system's own UI, not by the
  * intent: a notification listener or a watch bridge can send the same intent on a locked
  * phone. So the lock is checked here as well, and a locked phone answers nothing. Not
  * exported: nothing outside this app can address it. The answer goes to the Mac once and
  * the notification says what came of it, in one of [ApprovalReplies]' fixed sentences.
+ * What it does is [answerFromShade]'s; this is only its Android end.
  */
 class ApprovalActionReceiver : BroadcastReceiver() {
 
@@ -256,12 +257,15 @@ class ApprovalActionReceiver : BroadcastReceiver() {
         ) ?: return
         val app = context.applicationContext
         val notifier = AgentNotifier(app)
-        val locked = app.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
+        val keyguard = app.getSystemService(KeyguardManager::class.java)
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val transport = if (locked) null else TokenStore(app).load()?.let { ControlClient(it) }
-                val reply = answerFromShade(answer, locked, transport)
+                val reply = answerFromShade(
+                    answer,
+                    isDeviceLocked = { keyguard?.isDeviceLocked },
+                    connect = { TokenStore(app).load()?.let { ControlClient(it) } },
+                )
                 val text = reply.text
                 if (text == null) {
                     notifier.cancel(AgentNotifications.notificationID(answer.engine, answer.id))

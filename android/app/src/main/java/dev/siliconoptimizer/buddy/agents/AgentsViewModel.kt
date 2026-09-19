@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import dev.siliconoptimizer.buddy.transport.AgentApproval
 import dev.siliconoptimizer.buddy.transport.AgentApprovalDecision
 import dev.siliconoptimizer.buddy.transport.AgentEngines
 import dev.siliconoptimizer.buddy.transport.AgentEvent
@@ -99,8 +100,16 @@ class AgentsViewModel : ViewModel() {
 
     // MARK: - Reading the Mac
 
+    /**
+     * Bumped by [reset]. A session screen still showing afterwards — a phone paired again
+     * while it was open — registers itself again, since what was watched went with the reset.
+     */
+    var resets by mutableStateOf(0)
+        private set
+
     /** A different Mac, or none: everything on screen belonged to the last one. */
     fun reset() {
+        resets++
         refreshJob?.cancel()
         board = AgentBoard.empty
         unavailable = null
@@ -185,8 +194,9 @@ class AgentsViewModel : ViewModel() {
     /**
      * The Mac no longer knows this phone. Said once, and nothing is asked of it again until
      * the phone is paired again — which is a new Mac as far as this model is concerned.
+     * Called from outside too: a 401 on any route is the same news.
      */
-    private fun markUnpaired() {
+    fun markUnpaired() {
         unpaired = true
         unavailable = UNPAIRED
     }
@@ -409,6 +419,23 @@ class AgentsViewModel : ViewModel() {
                 schedule()
             }
         }
+    }
+
+    /** Per engine, the approval a notification's Review asked to see first. */
+    private val focused = mutableStateMapOf<String, String>()
+
+    /** Review on a notification: [id]'s card is the one in front while it waits. */
+    fun focus(engine: String, id: String) {
+        focused[engine] = id
+    }
+
+    /**
+     * The card the session screen shows: the one a notification's Review asked for while it
+     * is still waiting, and otherwise the one that has waited longest.
+     */
+    fun shownApproval(engine: String): AgentApproval? {
+        val pending = board.session(engine).pending
+        return pending.firstOrNull { it.id == focused[engine] } ?: pending.firstOrNull()
     }
 
     /**

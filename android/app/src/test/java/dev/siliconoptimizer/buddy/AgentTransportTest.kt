@@ -7,7 +7,9 @@ import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.ServerConfig
 import dev.siliconoptimizer.buddy.transport.ServerEvent
 import dev.siliconoptimizer.buddy.transport.TransportError
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -346,5 +348,59 @@ class AgentTransportTest {
         )
         val received = client.events().take(2).toList()
         assertEquals(listOf(ServerEvent.Resync(null), ServerEvent.Resync(null)), received)
+    }
+
+    /**
+     * Letting go of `/events` has to reach the socket at once, not at the Mac's next
+     * heartbeat. The watcher stops following when a turn ends and the app closes its stream
+     * when it leaves the screen; both used to wait in a read blocked in the kernel, because
+     * the stream hung its close off `invokeOnCompletion` — which only runs once the job has
+     * finished, that is, after the read it was meant to interrupt. As for a render, what is
+     * checked is the moment: the collector gives up, and the connection is told then.
+     */
+    @Test
+    fun `giving up on the event stream reaches the connection at once`() {
+        val silent = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = java.util.concurrent.LinkedBlockingQueue<java.net.Socket>()
+        val abandoned = java.util.concurrent.CountDownLatch(1)
+        val listener = kotlin.concurrent.thread(isDaemon = true) {
+            runCatching {
+                val socket = silent.accept()
+                // The head and one heartbeat, then nothing: a Mac between heartbeats.
+                socket.getOutputStream().apply {
+                    write(
+                        ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" +
+                            "event: heartbeat\ndata: {}\n\n").toByteArray(),
+                    )
+                    flush()
+                }
+                accepted.put(socket)
+            }
+        }
+        // Its own scope, so a read the JVM's connection will not interrupt cannot hold the
+        // suite open.
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        try {
+            val client = ControlClient(
+                ServerConfig("127.0.0.1", silent.localPort, token = "device-token"),
+                abandon = { abandoned.countDown(); runCatching { it.disconnect() } },
+            )
+            val heard = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val following = scope.launch {
+                client.events().collect { if (it is ServerEvent.Beat) heard.complete(Unit) }
+            }
+            kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(10_000) { heard.await() } }
+            assertEquals("still open, and quiet", 1L, abandoned.count)
+            following.cancel()
+            assertTrue(
+                "a stream given up on must close its connection now, not after the next heartbeat",
+                abandoned.await(5, java.util.concurrent.TimeUnit.SECONDS),
+            )
+        } finally {
+            scope.cancel()
+            listener.interrupt()
+            runCatching { accepted.poll()?.close() }
+            silent.close()
+        }
     }
 }

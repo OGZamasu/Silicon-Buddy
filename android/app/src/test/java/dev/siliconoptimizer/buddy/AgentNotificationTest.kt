@@ -123,7 +123,8 @@ class AgentNotificationTest {
         )
         val detail = AgentNotifications.notice("codex", screened, sdk = 36).detail
         assertTrue(detail.startsWith("Screened: would block"))
-        assertTrue(detail.contains("Open Silicon Buddy"))
+        assertTrue("it says where the command is, and where it is accepted", detail.contains("Review"))
+        assertTrue(detail.contains("accept it in the app"))
         assertFalse("the reason is the engine's words about the command", detail.contains("in this folder"))
     }
 
@@ -139,15 +140,31 @@ class AgentNotificationTest {
 
     // MARK: - Who may press the buttons
 
+    /**
+     * The command is not on the notification, so nothing on it can allow the command: an
+     * approval of something nobody read is not an answer, whatever the guardrail said.
+     * Decline can be given blind; Review opens the card, and Accept is pressed there.
+     */
+    @Test
+    fun `the shade offers Decline and Review, and never Accept`() {
+        for (verdict in listOf(AgentScreening.ACT, AgentScreening.CONFIRM, AgentScreening.BLOCK, AgentScreening.UNAVAILABLE)) {
+            val waiting = approval("C1").copy(screening = AgentScreening(verdict, "Jev"))
+            for (sdk in listOf(29, 30, 31, 36)) {
+                val actions = AgentNotifications.notice("codex", waiting, sdk = sdk).actions
+                assertTrue("$verdict on $sdk", actions.none { it.decision == AgentApprovalDecision.ACCEPT })
+                assertTrue("$verdict on $sdk", actions.none { it.label.contains("Accept") })
+                assertEquals("$verdict on $sdk", AgentNotifications.REVIEW, actions.last().label)
+            }
+        }
+    }
+
     @Test
     fun `on Android 12 and later both buttons demand the phone be unlocked`() {
         val notice = AgentNotifications.notice("codex", approval("C1"), sdk = 31)
-        assertEquals(listOf("Decline", "Accept"), notice.actions.map { it.label })
-        assertEquals(
-            listOf(AgentApprovalDecision.DECLINE, AgentApprovalDecision.ACCEPT),
-            notice.actions.map { it.decision },
-        )
-        assertTrue(notice.actions.all { it.authenticationRequired && !it.opensApp })
+        assertEquals(listOf("Decline", "Review"), notice.actions.map { it.label })
+        assertEquals(listOf(AgentApprovalDecision.DECLINE, null), notice.actions.map { it.decision })
+        assertTrue(notice.actions.all { it.authenticationRequired })
+        assertEquals("Decline answers from the shade; Review opens the card", listOf(false, true), notice.actions.map { it.opensApp })
     }
 
     /**
@@ -159,13 +176,13 @@ class AgentNotificationTest {
         val actions = AgentNotifier.actions(null, AgentNotifications.notice("codex", approval("C1"), sdk = 36))
         assertEquals(2, actions.size)
         assertTrue(actions.all { it.isAuthenticationRequired })
-        assertTrue("an answer from the shade does not open the app", actions.none { it.showsUserInterface })
+        assertEquals("Decline stays in the shade; Review opens the app", listOf(false, true), actions.map { it.showsUserInterface })
     }
 
     @Test
-    fun `before Android 12 the one button opens the app, and says so`() {
+    fun `before Android 12 the one button opens the card in the app`() {
         val notice = AgentNotifications.notice("codex", approval("C1"), sdk = 30)
-        assertEquals("both would only open the app, so there is one", listOf("Open"), notice.actions.map { it.label })
+        assertEquals("nothing is answered from a shade that cannot ask for the unlock", listOf("Review"), notice.actions.map { it.label })
         assertTrue(notice.actions.all { it.opensApp && !it.authenticationRequired && it.decision == null })
         val actions = AgentNotifier.actions(null, notice)
         assertTrue(actions.all { it.showsUserInterface })

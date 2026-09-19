@@ -246,4 +246,28 @@ class EventFeedTest {
         feed.pause()
         assertFalse(feed.resume())
     }
+
+    /** A stream that throws instead of emitting: a Mac without the route, or one that refused. */
+    private class Refusing(private val error: dev.siliconoptimizer.buddy.transport.TransportError) : HangingTransport() {
+        override fun events(): Flow<ServerEvent> = flow { throw error }
+    }
+
+    /** 401 on the stream: the Mac no longer knows this phone, and asking instead cannot help. */
+    @Test
+    fun `a refused token stops the stream without falling back to polling`() = runTest {
+        feed.start(Refusing(dev.siliconoptimizer.buddy.transport.TransportError.Unauthorized))
+        assertTrue(feed.unauthorized)
+        assertFalse("polling a Mac that refuses this phone is refused too, every few seconds", feed.mustPoll)
+        assertFalse(feed.isLive)
+        // Paired again: a new start is a new chance.
+        feed.start(Scripted(listOf(ServerEvent.StatusChanged(status))))
+        assertFalse(feed.unauthorized)
+    }
+
+    @Test
+    fun `a Mac without the stream is polled instead`() = runTest {
+        feed.start(Refusing(dev.siliconoptimizer.buddy.transport.TransportError.RouteUnavailable("/events")))
+        assertTrue(feed.mustPoll)
+        assertFalse(feed.unauthorized)
+    }
 }

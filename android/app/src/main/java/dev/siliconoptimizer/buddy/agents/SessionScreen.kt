@@ -5,7 +5,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
-import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -121,7 +120,7 @@ fun SessionScreen(
 
     // Opening a session is following it: it is the moment an approval could need this
     // person while the phone is in their pocket, so it is when notifications are asked for.
-    LaunchedEffect(engine) {
+    LaunchedEffect(engine, model.resets) {
         model.watch(engine)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifier.isAllowed) {
             askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -158,7 +157,10 @@ fun SessionScreen(
         // transcript instead of on top of it, so neither is squeezed to a sliver.
         val beside = maxWidth >= 600.dp
         val cardWidth = minOf(400.dp, maxWidth * 0.42f)
-        val waiting = session.pending.firstOrNull()
+        val waiting = model.shownApproval(engine)
+        // Nothing another app draws is shown over this window while a card waits for an
+        // answer, so nothing can sit on top of Accept to steer a tap onto it.
+        HideOverlays(active = waiting != null)
         val card: @Composable (Modifier, Boolean) -> Unit = { cardModifier, fillHeight ->
             waiting?.let { approval ->
                 ApprovalCard(
@@ -253,6 +255,21 @@ private fun NoRecentsScreenshot() {
     DisposableEffect(activity) {
         activity.setRecentsScreenshotEnabled(false)
         onDispose { activity.setRecentsScreenshotEnabled(true) }
+    }
+}
+
+/**
+ * Android 12's `setHideOverlayWindows`: while [active], windows other apps draw over this one
+ * — chat heads, floating widgets, anything with "display over other apps" — are hidden, so
+ * none can cover Accept. The system's own windows are unaffected.
+ */
+@Composable
+private fun HideOverlays(active: Boolean) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+    val window = LocalContext.current.findActivity()?.window ?: return
+    DisposableEffect(window, active) {
+        if (active) window.setHideOverlayWindows(true)
+        onDispose { if (active) window.setHideOverlayWindows(false) }
     }
 }
 
@@ -610,7 +627,10 @@ private fun ApprovalCard(
     onObscured: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val guard = rememberObscuredTouchGuard()
+    val touches = remember { ObscuredTouches() }
+    // One modifier for the card's life: a new pointer filter on every recomposition would
+    // start the press it is watching over.
+    val guard = remember(touches) { Modifier.obscuredTouches(touches) }
     Card(
         modifier = modifier.padding(horizontal = 12.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
@@ -689,14 +709,14 @@ private fun ApprovalCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedButton(
-                    onClick = { if (guard.obscured()) onObscured() else onAnswer(false) },
+                    onClick = { if (touches.take()) onObscured() else onAnswer(false) },
                     enabled = enabled && answering == null,
-                    modifier = guard.modifier,
+                    modifier = guard,
                 ) { Text("Decline") }
                 Button(
-                    onClick = { if (guard.obscured()) onObscured() else onAnswer(true) },
+                    onClick = { if (touches.take()) onObscured() else onAnswer(true) },
                     enabled = enabled && answering == null,
-                    modifier = guard.modifier,
+                    modifier = guard,
                 ) { Text("Accept") }
                 if (answering != null) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -706,27 +726,13 @@ private fun ApprovalCard(
     }
 }
 
-/**
- * Tapjacking: another app drawing over this one to steer a tap onto Accept. Android marks a
- * touch that passed through somebody else's window; this remembers whether the last press
- * on a guarded button did, and the button refuses it. An accessibility action is not a
- * touch and is never refused.
- */
-private class ObscuredTouchGuard(val modifier: Modifier, val obscured: () -> Boolean)
-
+/** Feeds every touch on a guarded button to [touches], and lets the button have it. */
 @OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun rememberObscuredTouchGuard(): ObscuredTouchGuard = remember {
-    var lastObscured = false
-    val flags = MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
-    ObscuredTouchGuard(
-        modifier = Modifier.pointerInteropFilter { event ->
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) lastObscured = (event.flags and flags) != 0
-            false
-        },
-        obscured = { lastObscured },
-    )
-}
+private fun Modifier.obscuredTouches(touches: ObscuredTouches): Modifier =
+    pointerInteropFilter { event ->
+        touches.touched(event.actionMasked, event.flags)
+        false
+    }
 
 @Composable
 private fun Resolutions(engine: String, resolutions: List<Resolution>, onDismiss: () -> Unit) {

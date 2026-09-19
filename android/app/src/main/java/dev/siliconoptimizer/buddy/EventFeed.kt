@@ -107,6 +107,10 @@ class EventFeed : ViewModel() {
     var mustPoll by mutableStateOf(false)
         private set
 
+    /** The Mac refused this phone's token on the stream (401). Cleared by a new [start]. */
+    var unauthorized by mutableStateOf(false)
+        private set
+
     /**
      * When the next attempt is due, while the stream is down. Null when it is up.
      *
@@ -165,6 +169,7 @@ class EventFeed : ViewModel() {
     fun start(transport: ControlTransport?) {
         stop()
         paused = null
+        unauthorized = false
         current = transport
         // A new connection does not follow on from the old one: whatever the sessions heard
         // before this, the frames after it are a new run.
@@ -235,10 +240,16 @@ class EventFeed : ViewModel() {
                 }
                 isLive = false
             } catch (error: TransportError) {
-                // Pre-M0 Mac, or a token that stopped working. Either way the screens
-                // have to ask rather than wait.
                 isLive = false
-                mustPoll = true
+                if (error is TransportError.Unauthorized) {
+                    // The Mac no longer knows this phone. Asking instead of listening would
+                    // only be refused the same way, every few seconds: nothing polls.
+                    unauthorized = true
+                    mustPoll = false
+                } else {
+                    // A Mac without `/events`: the screens have to ask rather than wait.
+                    mustPoll = true
+                }
             }
         }
     }

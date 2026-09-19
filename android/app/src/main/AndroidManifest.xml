@@ -20,6 +20,12 @@
       notification permission the approvals need anyway.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <!--
+      While an agent's approval card is on screen, other apps' overlays are not drawn over
+      it (Window.setHideOverlayWindows, Android 12+), so nothing can sit on top of Accept.
+      A normal permission, granted at install.
+    -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 

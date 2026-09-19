@@ -120,30 +120,38 @@ about; what reaches the phone is what it left to a person, with its verdict — 
 review: destructive" — exactly as the Mac's card shows it. One card at a time, oldest
 first, its Accept and Decline pinned below a body that scrolls, so they stay in reach at
 any text size and on a phone turned on its side, where the card stands beside the
-transcript. A tap that passed through another app's window is refused rather than sent.
-Answered at the Mac first, the card says so and comes down; gone for any other reason, it
-comes down quietly; and a card answered on the Mac while the phone was looking comes down
-by itself, saying which way it went — and whose answer it was, even when the Mac's frame
-beats the reply to this phone's own. The tab's badge — which a screen reader says too —
-counts what is waiting, and so does the Quick Settings tile. If the Mac stops knowing this
-phone (a 401), the tab stops asking and offers to pair again.
+transcript. While a card is on screen, other apps' overlays are hidden (Android 12 and
+later), and a press that went through another app's window at the point pressed is
+refused rather than sent — a window over some other part of the screen, a video call in a
+corner, refuses nothing, and neither does the next answer from a keyboard or switch
+access. Answered at the Mac first, the card says so and comes down; gone for any other
+reason, it comes down quietly; and a card answered on the Mac while the phone was looking
+comes down by itself, saying which way it went and whose answer it was: this phone's only
+when the Mac's word matches what this phone sent, and never once the Mac has turned that
+answer away. The tab's badge — which a screen reader says too — counts what is waiting,
+and so does the Quick Settings tile. If the Mac stops knowing this phone (a 401), the app
+stops asking it anything — the agents, the metrics, the status — and offers to pair
+again.
 
-**In your pocket.** Leave the app while a turn is running in a session you opened, and
-a foreground service keeps watching it (`remoteMessaging`, the type Android 14 has for
+**In your pocket.** Leave the app while a turn is running in a session you opened, and a
+foreground service keeps watching it (`remoteMessaging`, the type Android 14 has for
 carrying on a conversation that lives on another device). Each approval gets one
 notification saying which engine wants to do what kind of thing — "Codex wants to run a
 command" — and what the guardrail made of it, and nothing else: not the command, not the
 paths, not the reason, not any output. Android shows a notification's content on the lock
 screen unless you have chosen to hide sensitive content there, which is not the default,
-so what exactly the agent wants stays in the app, after unlocking. On Android 12 and later
-Accept and Decline require the phone to be unlocked (`setAuthenticationRequired`), and the
-app checks again when the answer arrives — a notification listener or a watch can press a
-button without the system's prompt — refusing on a locked phone; on older Android the one
-button is "Open". The service lets go when the turn ends; when nothing has come from the
-Mac for a minute, however often the stream has been dialled again, so a Mac relaunching or
-a phone changing networks does not end it; at once if the Mac says this phone is no longer
-paired, saying so; when the notification is dismissed; or when the app comes back. On
-Android 13 and later a session screen leaves no Recents thumbnail.
+so what exactly the agent wants stays in the app, after unlocking. For the same reason
+nothing in the shade can allow it: its buttons are Decline, which is safe to give without
+reading, and Review, which opens the app on that approval's card, where Accept is — under
+the command it would run. On Android 12 and later both require the phone to be unlocked
+(`setAuthenticationRequired`), and the app checks the lock again when a Decline arrives —
+a notification listener or a watch can press a button without the system's prompt —
+refusing on a locked phone after giving a fresh unlock a second to register; on older
+Android the one button is Review. The service lets go when the turn ends; when nothing
+has come from the Mac for a minute, however often the stream has been dialled again, so a
+Mac relaunching or a phone changing networks does not end it; at once if the Mac says
+this phone is no longer paired, saying so; when the notification is dismissed; or when
+the app comes back. On Android 13 and later a session screen leaves no Recents thumbnail.
 
 **Runs without asking.** When the Mac says a session asks nobody — Pi with the guardrail
 off, Codex under "never ask" — the session carries a banner that cannot be dismissed,

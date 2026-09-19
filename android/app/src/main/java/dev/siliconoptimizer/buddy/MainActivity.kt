@@ -183,8 +183,12 @@ class MainActivity : ComponentActivity() {
         // An approval's notification opens its session. The same kind of request: a
         // screen, never a decision.
         if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_AGENTS) {
-            // An engine this build does not know is dropped, not opened.
-            return LinkArrival.OpenAgents(knownEngine(intent.getStringExtra(EXTRA_ENGINE)))
+            // An engine this build does not know is dropped, not opened; an approval id only
+            // chooses which waiting card is in front, and is never sent anywhere.
+            return LinkArrival.OpenAgents(
+                knownEngine(intent.getStringExtra(EXTRA_ENGINE)),
+                intent.getStringExtra(EXTRA_APPROVAL)?.takeIf { it.isNotBlank() && it.length <= 128 },
+            )
         }
         val data = intent?.data ?: return null
         // `siliconbuddy://` means three things now: a pairing code, a composer to open,
@@ -213,6 +217,7 @@ class MainActivity : ComponentActivity() {
         const val OPEN_QUEUE = "queue"
         const val OPEN_AGENTS = "agents"
         const val EXTRA_ENGINE = "dev.siliconoptimizer.buddy.ENGINE"
+        const val EXTRA_APPROVAL = "dev.siliconoptimizer.buddy.APPROVAL"
     }
 }
 
@@ -229,7 +234,7 @@ sealed interface LinkArrival {
     data object OpenQueue : LinkArrival
 
     /** Show the Agents tab, on one engine's session when it names one. */
-    data class OpenAgents(val engine: String?) : LinkArrival
+    data class OpenAgents(val engine: String?, val approvalID: String? = null) : LinkArrival
 }
 
 private enum class Destination(val label: String) {
@@ -319,6 +324,10 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 if (app.canControl) {
                     destination = Destination.Agents
                     openAgent = arrival.engine
+                    // Review on a notification: that card, not whichever has waited longest.
+                    val engine = arrival.engine
+                    val approval = arrival.approvalID
+                    if (engine != null && approval != null) agents.focus(engine, approval)
                 }
                 arriving.value = null
             }
@@ -374,6 +383,19 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 is AgentFeed.Frame -> agents.apply(feed.event)
                 AgentFeed.Broken -> agents.streamBroken()
             }
+        }
+    }
+    // A 401 on any route is the Mac saying it no longer knows this phone, and that is as
+    // true of every other route: nothing polls, nothing streams, nothing reads, until the
+    // phone is paired again — which starts all of it afresh above.
+    val revoked = agents.unpaired || events.unauthorized || dashboard.unpaired
+    LaunchedEffect(revoked) {
+        if (revoked) {
+            agents.markUnpaired()
+            dashboard.markUnpaired()
+            media.stopFollowing()
+            events.stop()
+            app.noteRevoked()
         }
     }
     // Frames dropped for this phone may have been about anything it shows: the Mac asks

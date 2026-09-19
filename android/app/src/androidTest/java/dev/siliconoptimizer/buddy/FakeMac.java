@@ -25,14 +25,16 @@ import java.util.concurrent.TimeUnit;
  * NoSuchMethodError before it tests anything. Nothing here can go missing that way.
  *
  * It speaks the little of the control API the Agents tab needs: pairing, health, status,
- * the event stream with `agent` frames, the two sessions, and answering the one approval
- * Codex is holding. Everything else is the Mac's 404, which the app already treats as a
- * route this Mac does not have.
+ * the event stream with `agent` frames, the two sessions, and answering the approvals Codex
+ * is holding — one, or two when a test needs to tell them apart. Everything else is the
+ * Mac's 404, which the app already treats as a route this Mac does not have.
  */
 final class FakeMac implements Closeable {
 
     static final String TOKEN = "device-test-token";
     static final String APPROVAL = "5D8B2F01-9A3C-4E67-8B21-0C4D5E6F7A81";
+    /** The second approval, a file change, asked after the first when there are two. */
+    static final String SECOND = "8C2E4A60-1B3D-4F58-9A7C-2D3E4F5A6B7C";
     static final String CODEX_EPOCH = "4B1D6C3E-2A9F-4E70-8D51-7C6B5A493827";
     static final String PI_EPOCH = "1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9";
 
@@ -43,9 +45,17 @@ final class FakeMac implements Closeable {
 
     /** How the approval was answered, and from where; null while it is still waiting. */
     volatile String decision;
+    /** The same for the second, when there is one. */
+    volatile String secondDecision;
+    private final boolean second;
     private int seq = 41;
 
     FakeMac() throws IOException {
+        this(false);
+    }
+
+    FakeMac(boolean second) throws IOException {
+        this.second = second;
         socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
         Thread accept = new Thread(this::acceptLoop, "fake-mac");
         accept.setDaemon(true);
@@ -81,9 +91,18 @@ final class FakeMac implements Closeable {
 
     // MARK: - What it answers
 
+    /** What Codex is holding, oldest first. */
+    private synchronized List<String> pending() {
+        List<String> waiting = new java.util.ArrayList<>();
+        if (decision == null) waiting.add(APPROVAL_JSON);
+        if (second && secondDecision == null) waiting.add(SECOND_JSON);
+        return waiting;
+    }
+
     private synchronized String summary(String engine) {
         boolean codex = "codex".equals(engine);
-        boolean waiting = codex && decision == null;
+        int held = codex ? pending().size() : 0;
+        boolean waiting = held > 0;
         return "{\"engine\":\"" + engine + "\",\"state\":\"" + (codex ? "running" : "stopped") + "\","
             + (codex ? "\"threadID\":\"0199F2C1-4A7E-4C3B-9D15-6E2A8B0C1D3F\"," : "")
             + "\"epoch\":\"" + (codex ? CODEX_EPOCH : PI_EPOCH) + "\","
@@ -93,7 +112,7 @@ final class FakeMac implements Closeable {
             + "\"approvals\":\"" + (codex ? "screened" : "unattended") + "\","
             + "\"sandbox\":\"" + (codex ? "workspace-write" : "none") + "\","
             + "\"turnActive\":" + waiting + ","
-            + "\"pendingApprovals\":" + (waiting ? 1 : 0) + ","
+            + "\"pendingApprovals\":" + held + ","
             + "\"itemCount\":" + (codex ? (decision == null ? 3 : 4) : 0) + ","
             + "\"updatedAt\":\"2026-09-19T10:12:44Z\"}";
     }
@@ -113,10 +132,16 @@ final class FakeMac implements Closeable {
             + "\"screening\":{\"verdict\":\"confirm\",\"summary\":\"Jev: review\"},"
             + "\"requestedAt\":\"2026-09-19T10:12:36Z\"}";
 
+    private static final String SECOND_JSON =
+        "{\"id\":\"" + SECOND + "\",\"kind\":\"fileChange\",\"summary\":\"Sources/Lisbon/Itinerary.swift\","
+            + "\"reason\":\"Codex asks before changing files in this folder.\","
+            + "\"screening\":{\"verdict\":\"confirm\",\"summary\":\"Jev: review\"},"
+            + "\"requestedAt\":\"2026-09-19T10:12:40Z\"}";
+
     private synchronized String detail(String engine) {
         boolean codex = "codex".equals(engine);
         String items = codex ? (decision == null ? ITEMS : ITEMS + "," + COMMAND) : "";
-        String approvals = codex && decision == null ? APPROVAL_JSON : "";
+        String approvals = codex ? String.join(",", pending()) : "";
         return "{\"session\":" + summary(engine) + ",\"items\":[" + items + "],\"approvals\":["
             + approvals + "],\"seq\":" + seq + ",\"epoch\":\"" + (codex ? CODEX_EPOCH : PI_EPOCH)
             + "\",\"complete\":true,\"omitted\":0}";
@@ -126,15 +151,22 @@ final class FakeMac implements Closeable {
         for (BlockingQueue<String> stream : streams) stream.add(frame);
     }
 
-    /** The phone answered: the card comes down on every screen, the turn runs and ends. */
-    private synchronized void answer(String how) {
-        decision = how;
+    /**
+     * The phone answered: the card comes down on every screen, the first approval's command
+     * runs, and once nothing is held the turn ends.
+     */
+    private synchronized void answer(String id, String how) {
+        boolean first = APPROVAL.equals(id);
+        if (first) decision = how;
+        else secondDecision = how;
         String state = "accept".equals(how) ? "accepted" : "declined";
         String head = "{\"engine\":\"codex\",\"epoch\":\"" + CODEX_EPOCH + "\",";
         publish(head + "\"kind\":\"approval\",\"seq\":" + (++seq) + ",\"approval\":"
-            + APPROVAL_JSON + ",\"state\":\"" + state + "\"}");
-        publish(head + "\"kind\":\"item\",\"seq\":" + (++seq) + ",\"item\":" + COMMAND + "}");
-        publish(head + "\"kind\":\"turn\",\"seq\":" + (++seq) + ",\"turnActive\":false}");
+            + (first ? APPROVAL_JSON : SECOND_JSON) + ",\"state\":\"" + state + "\"}");
+        if (first) publish(head + "\"kind\":\"item\",\"seq\":" + (++seq) + ",\"item\":" + COMMAND + "}");
+        if (pending().isEmpty()) {
+            publish(head + "\"kind\":\"turn\",\"seq\":" + (++seq) + ",\"turnActive\":false}");
+        }
     }
 
     // MARK: - The little of HTTP it speaks
@@ -213,14 +245,16 @@ final class FakeMac implements Closeable {
                 reply(output, 200, "{\"sessions\":[" + summary("codex") + "," + summary("pi") + "]}");
             } else if (path.equals("/agent/sessions/codex") || path.equals("/agent/sessions/pi")) {
                 reply(output, 200, detail(path.substring("/agent/sessions/".length())));
-            } else if (method.equals("POST") && path.equals("/agent/sessions/codex/approvals/" + APPROVAL)) {
-                if (decision != null) {
-                    reply(output, 404, "{\"error\":\"No approval with id " + APPROVAL + " is waiting. It was answered already, or never existed.\"}");
+            } else if (method.equals("POST") && (path.equals("/agent/sessions/codex/approvals/" + APPROVAL)
+                || (second && path.equals("/agent/sessions/codex/approvals/" + SECOND)))) {
+                String id = path.substring("/agent/sessions/codex/approvals/".length());
+                if ((APPROVAL.equals(id) ? decision : secondDecision) != null) {
+                    reply(output, 404, "{\"error\":\"No approval with id " + id + " is waiting. It was answered already, or never existed.\"}");
                     return;
                 }
                 String how = text.contains("\"accept\"") ? "accept" : "decline";
-                answer(how);
-                reply(output, 200, "{\"id\":\"" + APPROVAL + "\",\"decision\":\""
+                answer(id, how);
+                reply(output, 200, "{\"id\":\"" + id + "\",\"decision\":\""
                     + ("accept".equals(how) ? "accepted" : "declined") + "\",\"session\":" + summary("codex") + "}");
             } else {
                 reply(output, 404, "{\"error\":\"Unknown endpoint " + method + " " + path + "\"}");
@@ -246,13 +280,13 @@ final class FakeMac implements Closeable {
      * turn, and every pending approval, all at the current sequence — and no rows.
      */
     private synchronized void opening(BlockingQueue<String> queue) {
-        boolean waiting = decision == null;
+        List<String> held = pending();
         String codex = "{\"engine\":\"codex\",\"epoch\":\"" + CODEX_EPOCH + "\",\"seq\":" + seq + ",";
         String pi = "{\"engine\":\"pi\",\"epoch\":\"" + PI_EPOCH + "\",\"seq\":" + seq + ",";
         queue.add(codex + "\"kind\":\"state\",\"state\":\"running\"}");
-        queue.add(codex + "\"kind\":\"turn\",\"turnActive\":" + waiting + "}");
-        if (waiting) {
-            queue.add(codex + "\"kind\":\"approval\",\"approval\":" + APPROVAL_JSON + ",\"state\":\"pending\"}");
+        queue.add(codex + "\"kind\":\"turn\",\"turnActive\":" + !held.isEmpty() + "}");
+        for (String approval : held) {
+            queue.add(codex + "\"kind\":\"approval\",\"approval\":" + approval + ",\"state\":\"pending\"}");
         }
         queue.add(pi + "\"kind\":\"state\",\"state\":\"stopped\"}");
         queue.add(pi + "\"kind\":\"turn\",\"turnActive\":false}");

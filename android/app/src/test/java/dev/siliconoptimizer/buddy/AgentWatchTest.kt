@@ -6,11 +6,13 @@ import dev.siliconoptimizer.buddy.agents.AgentWatch
 import dev.siliconoptimizer.buddy.agents.ApprovalNotice
 import dev.siliconoptimizer.buddy.agents.ApprovalReplies
 import dev.siliconoptimizer.buddy.agents.ShadeAnswer
+import dev.siliconoptimizer.buddy.agents.ShadeReply
 import dev.siliconoptimizer.buddy.agents.WatchEnding
 import dev.siliconoptimizer.buddy.agents.WatchPolicy
 import dev.siliconoptimizer.buddy.agents.WatchSink
 import dev.siliconoptimizer.buddy.agents.answerFromShade
 import dev.siliconoptimizer.buddy.agents.knownEngine
+import dev.siliconoptimizer.buddy.agents.lockedNow
 import dev.siliconoptimizer.buddy.transport.AgentApproval
 import dev.siliconoptimizer.buddy.transport.AgentApprovalResult
 import dev.siliconoptimizer.buddy.transport.AgentEvent
@@ -164,6 +166,7 @@ class AgentWatchTest {
     fun `every sentence the shade can show is free of addresses and paths`() {
         val all = listOf(
             ApprovalReplies.ACCEPTED, ApprovalReplies.DECLINED, ApprovalReplies.LOCKED,
+            ApprovalReplies.ACCEPT_IN_APP,
             ApprovalReplies.NO_MAC, ApprovalReplies.UNPAIRED, ApprovalReplies.NOT_ALLOWED,
             ApprovalReplies.ANSWERED_ON_THE_MAC, ApprovalReplies.STILL_SCREENING,
             ApprovalReplies.ENGINE_STOPPED, ApprovalReplies.NOT_TAKEN, ApprovalReplies.UNREACHABLE,
@@ -488,37 +491,94 @@ class AgentWatchTest {
         }
     }
 
-    private val accept = ShadeAnswer("codex", "A1", "accept")
+    private val decline = ShadeAnswer("codex", "A1", "decline")
+
+    /** Unlocked, a Mac to send to, and a count of how often the token was read. */
+    private var connects = 0
+
+    private suspend fun press(
+        answer: ShadeAnswer,
+        mac: Answering?,
+        locked: () -> Boolean? = { false },
+    ): ShadeReply = answerFromShade(answer, isDeviceLocked = locked, connect = { connects++; mac })
 
     @Test
-    fun `a locked phone sends nothing and keeps the approval for later`() = runTest {
+    fun `a locked phone sends nothing, reads no token, and keeps the approval for later`() = runTest {
         val mac = Answering()
-        val reply = answerFromShade(accept, locked = true, transport = mac)
+        val reply = press(decline, mac, locked = { true })
         assertEquals(ApprovalReplies.LOCKED, reply.text)
         assertTrue(reply.keepApproval)
         assertTrue(mac.answers.isEmpty())
+        assertEquals(0, connects)
         assertTrue(AgentAnswers.of("codex").isEmpty())
+    }
+
+    /** A keyguard that cannot be asked is not an unlocked phone. */
+    @Test
+    fun `a phone whose lock cannot be read counts as locked`() = runTest {
+        val mac = Answering()
+        val reply = press(decline, mac, locked = { null })
+        assertEquals(ApprovalReplies.LOCKED, reply.text)
+        assertTrue(mac.answers.isEmpty())
+        assertTrue(lockedNow(true))
+        assertTrue(lockedNow(null))
+        assertFalse(lockedNow(false))
+    }
+
+    /**
+     * The prompt a Decline raises can hand the press over a moment before Android has
+     * recorded the unlock. The lock is asked again a second later; unlocked by then, the
+     * press goes through.
+     */
+    @Test
+    fun `an unlock that lands a moment after the press is waited for, once`() = runTest {
+        val mac = Answering()
+        var asked = 0
+        val reply = press(decline, mac, locked = { asked++ == 0 })
+        assertEquals(ApprovalReplies.DECLINED, reply.text)
+        assertEquals(listOf("codex/A1/decline"), mac.answers)
+        assertEquals(2, asked)
+        assertEquals("asked again after the recheck, not before", ShadeAnswer.LOCK_RECHECK_MS, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `an unlocked phone is not kept waiting`() = runTest {
+        val mac = Answering()
+        var asked = 0
+        press(decline, mac, locked = { asked++; false })
+        assertEquals(1, asked)
+        assertEquals(0L, testScheduler.currentTime)
     }
 
     @Test
     fun `no Mac to send to says so`() = runTest {
-        val reply = answerFromShade(accept, locked = false, transport = null)
+        val reply = press(decline, mac = null)
         assertEquals(ApprovalReplies.NO_MAC, reply.text)
         assertFalse(reply.keepApproval)
         assertTrue(AgentAnswers.of("codex").isEmpty())
     }
 
+    /**
+     * Accept is pressed in the app, under the command it allows. One arriving from the
+     * shade — a notification an earlier build posted — sends nothing and says where to go.
+     */
     @Test
-    fun `an answer that landed is this phone's, from before it was sent`() = runTest {
+    fun `an Accept from the shade is never sent`() = runTest {
         val mac = Answering()
-        assertEquals(ApprovalReplies.ACCEPTED, answerFromShade(accept, locked = false, transport = mac).text)
-        assertEquals(listOf("codex/A1/accept"), mac.answers)
-        assertEquals("recorded before the request went", mapOf("A1" to "accepted"), mac.creditedDuring)
-        assertEquals(mapOf("A1" to "accepted"), AgentAnswers.of("codex"))
-        assertEquals(
-            ApprovalReplies.DECLINED,
-            answerFromShade(ShadeAnswer("codex", "A2", "decline"), locked = false, transport = mac).text,
-        )
+        val reply = press(ShadeAnswer("codex", "A1", "accept"), mac)
+        assertEquals(ApprovalReplies.ACCEPT_IN_APP, reply.text)
+        assertTrue(mac.answers.isEmpty())
+        assertEquals(0, connects)
+        assertTrue(AgentAnswers.of("codex").isEmpty())
+    }
+
+    @Test
+    fun `a decline that landed is this phone's, from before it was sent`() = runTest {
+        val mac = Answering()
+        assertEquals(ApprovalReplies.DECLINED, press(decline, mac).text)
+        assertEquals(listOf("codex/A1/decline"), mac.answers)
+        assertEquals("recorded before the request went", mapOf("A1" to "declined"), mac.creditedDuring)
+        assertEquals(mapOf("A1" to "declined"), AgentAnswers.of("codex"))
     }
 
     @Test
@@ -533,7 +593,7 @@ class AgentWatchTest {
         )
         for ((error, sentence) in cases) {
             mac.error = error
-            val reply = answerFromShade(accept, locked = false, transport = mac)
+            val reply = press(decline, mac)
             assertEquals(error.toString(), sentence, reply.text)
             assertTrue(error.toString(), AgentAnswers.of("codex").isEmpty())
         }
@@ -542,7 +602,7 @@ class AgentWatchTest {
     @Test
     fun `a card that is gone comes down without a word`() = runTest {
         val mac = Answering().apply { error = TransportError.NotFound("No approval A1 is waiting.") }
-        val reply = answerFromShade(accept, locked = false, transport = mac)
+        val reply = press(decline, mac)
         assertNull(reply.text)
         assertFalse(reply.keepApproval)
     }
@@ -550,21 +610,24 @@ class AgentWatchTest {
     @Test
     fun `a Mac that does not answer in time is given up on inside the receiver's ten seconds`() = runTest {
         val mac = Answering().apply { hangs = true }
-        val reply = answerFromShade(accept, locked = false, transport = mac)
+        val reply = press(decline, mac)
         assertEquals(ApprovalReplies.TOO_SLOW, reply.text)
         assertEquals(ShadeAnswer.ANSWER_TIMEOUT_MS, testScheduler.currentTime)
-        assertTrue(ShadeAnswer.ANSWER_TIMEOUT_MS < 10_000)
+        assertTrue(
+            "a recheck and a slow Mac together still end inside goAsync's ten seconds",
+            ShadeAnswer.LOCK_RECHECK_MS + ShadeAnswer.ANSWER_TIMEOUT_MS < 10_000,
+        )
         assertTrue(AgentAnswers.of("codex").isEmpty())
     }
 
     @Test
     fun `only what this build put on a button is taken from an intent`() {
-        assertEquals(accept, ShadeAnswer.from("codex", "A1", "accept"))
+        assertEquals(decline, ShadeAnswer.from("codex", "A1", "decline"))
         assertEquals(ShadeAnswer("pi", "A1", "decline"), ShadeAnswer.from("pi", "A1", "decline"))
-        assertNull(ShadeAnswer.from("claude", "A1", "accept"))
-        assertNull(ShadeAnswer.from("codex", " ", "accept"))
-        assertNull(ShadeAnswer.from("codex", "x".repeat(ShadeAnswer.MAX_ID + 1), "accept"))
+        assertNull(ShadeAnswer.from("claude", "A1", "decline"))
+        assertNull(ShadeAnswer.from("codex", " ", "decline"))
+        assertNull(ShadeAnswer.from("codex", "x".repeat(ShadeAnswer.MAX_ID + 1), "decline"))
         assertNull(ShadeAnswer.from("codex", "A1", "approve"))
-        assertNull(ShadeAnswer.from("codex", null, "accept"))
+        assertNull(ShadeAnswer.from("codex", null, "decline"))
     }
 }
