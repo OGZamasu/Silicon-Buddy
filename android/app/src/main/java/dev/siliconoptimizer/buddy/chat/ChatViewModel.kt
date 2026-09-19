@@ -12,6 +12,7 @@ import dev.siliconoptimizer.buddy.transport.ChatRequest
 import dev.siliconoptimizer.buddy.transport.ChatStreamEvent
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
+import dev.siliconoptimizer.buddy.reach.VerdictMatching
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -404,26 +405,23 @@ class ChatViewModel(
     /**
      * Attaches an answer check to the reply it belongs to.
      *
-     * By the Mac's message id when it names one and this transcript came from the Mac,
-     * so a check that arrives after the person has sent something else still lands on
-     * the right reply. A transcript this device kept has ids of its own that the Mac
-     * has never seen, and a check for a conversation that is not open belongs to a
-     * screen that is not here — in both cases the newest finished reply is the only
-     * sensible answer, and it is right whenever the Mac checks a reply as it finishes.
+     * By the Mac's message id when it names one, so a check that arrives after the
+     * person has sent something else still lands on the right reply.
+     *
+     * A named id that matches nothing here is dropped rather than guessed at. It means
+     * the check is about a message this screen does not have — an older one scrolled
+     * out of a transcript the device kept, or a reply in a conversation that was
+     * reopened since — and stamping it on the newest reply would put the Mac's words
+     * under an answer it never read.
+     *
+     * Only an unnamed check falls back to the newest finished reply, which is right
+     * whenever the Mac checks a reply as it finishes, and is the only thing a
+     * device-kept transcript can do: its ids are its own and the Mac has never seen them.
      */
     fun apply(verdict: dev.siliconoptimizer.buddy.transport.Verdict) {
         val conversation = current ?: return
-        if (!verdict.conversationID.isNullOrEmpty() &&
-            verdict.conversationID != conversation.id
-        ) {
-            return
-        }
-        val exact = verdict.messageID?.takeIf { it.isNotEmpty() }?.let { id ->
-            conversation.messages.indexOfFirst { it.id == id }.takeIf { it >= 0 }
-        }
-        val index = exact ?: conversation.messages.indexOfLast {
-            it.role == ChatMessage.ROLE_ASSISTANT && !it.isStreaming && it.content.isNotEmpty()
-        }
+        if (!VerdictMatching.belongs(verdict, conversation.id)) return
+        val index = VerdictMatching.index(verdict, conversation.messages)
         if (index < 0) return
         val messages = conversation.messages.toMutableList()
         messages[index] = messages[index].copy(verdict = verdict)
