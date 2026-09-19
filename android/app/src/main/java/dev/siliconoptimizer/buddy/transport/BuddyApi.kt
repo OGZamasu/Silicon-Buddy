@@ -246,6 +246,11 @@ sealed interface ServerEvent {
     data class Disconnected(
         val attempt: Int,
         val retryInMillis: Long,
-        val reason: String?,
+        /**
+         * `TransportError.logSummary`: a fixed tag such as "unreachable", never the
+         * error's own message. The message names the Mac's tailnet address, and the
+         * whole point of this field is that it gets logged.
+         */
+        val summary: String?,
     ) : ServerEvent
 }

@@ -127,8 +127,14 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
         if (!TailnetHost.isAllowed(config.host)) {
             // Worth a line: this is the gate that makes a scanned QR safe, and "the app
             // refused to dial that host" and "the host did not answer" look identical
-            // from the outside.
-            android.util.Log.w(LOG, "refusing $method $path: host is not on the tailnet")
+            // from the outside. The route only, though — not the address that was
+            // refused, and not the rest of the path, because `/conversations/<id>` is
+            // the owner's data and a host is the owner's tailnet.
+            android.util.Log.w(
+                LOG,
+                "refusing $method /${path.trimStart('/').substringBefore('/')}: " +
+                    "host is not on the tailnet",
+            )
             throw TransportError.Forbidden(TailnetHost.EXPLANATION)
         }
         if (authorized && config.token.isEmpty()) throw TransportError.NotConfigured
@@ -307,15 +313,18 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
             // heartbeat and drops would pin the delay at a second and this client would
             // knock twenty times a minute, forever.
             val openedAt = System.currentTimeMillis()
-            var reason: String? = null
+            var summary: String? = null
             // The open is logged as well as the drop. A stream that is up says nothing
             // on its own, so without this line "connected and quiet" and "never dialled"
             // look identical in logcat — and those are the two answers anyone reading it
             // is trying to tell apart.
+            //
+            // Whether it is resuming, not from where: the id is the Mac's own text and
+            // nothing server-supplied goes in a log line.
             android.util.Log.i(
                 LOG,
                 "/events opening (attempt $attempt" +
-                    (lastEventID?.let { ", resuming after $it" } ?: "") + ")",
+                    (if (lastEventID != null) ", resuming" else "") + ")",
             )
             try {
                 stream(
@@ -343,7 +352,10 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                 }
             } catch (error: TransportError) {
                 if (error.isMissingRoute || error is TransportError.Unauthorized) throw error
-                reason = error.message
+                // `logSummary`, never `message`: `Unreachable` puts the Mac's tailnet
+                // address in its message by construction, and this value is on its way
+                // to logcat and to a field called `summary` for the same reason.
+                summary = error.logSummary
             }
             attempt = nextAttempt(attempt, System.currentTimeMillis() - openedAt)
             val retryIn = reconnectDelayMillis(attempt)
@@ -354,9 +366,9 @@ class ControlClient(private val config: ServerConfig) : ControlTransport {
                 LOG,
                 "/events dropped after ${System.currentTimeMillis() - openedAt}ms " +
                     "(attempt $attempt, retrying in ${retryIn}ms)" +
-                    (reason?.let { ": $it" } ?: ""),
+                    (summary?.let { ": $it" } ?: ""),
             )
-            emit(ServerEvent.Disconnected(attempt, retryIn, reason))
+            emit(ServerEvent.Disconnected(attempt, retryIn, summary))
             kotlinx.coroutines.delay(retryIn)
         }
     }

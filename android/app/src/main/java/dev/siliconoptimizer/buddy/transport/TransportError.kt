@@ -92,6 +92,40 @@ sealed class TransportError(message: String) : Exception(message) {
         else -> this
     }
 
+    /**
+     * What may be written to a log: the shape of the failure and nothing else.
+     *
+     * `message` is written for the person looking at the screen, and several of these
+     * carry the Mac's tailnet address in it — `Unreachable` by construction, `Forbidden`
+     * when Android refuses cleartext — while others carry whatever text the Mac put in
+     * an error body. logcat is a different audience: it survives the moment, it goes
+     * into bug reports, and an address on the owner's tailnet is not a thing to leave
+     * lying around in one. So nothing here interpolates a host, a path, a conversation
+     * id or any server-supplied text; a status code is as specific as it gets.
+     *
+     * Kept exhaustive deliberately — a new case has to choose its own tag rather than
+     * fall into a branch that might print something.
+     */
+    val logSummary: String
+        get() = when (this) {
+            is Unreachable -> "unreachable"
+            is AppNotRunning -> "app not running"
+            is TimedOut -> "timed out"
+            is Unauthorized -> "unauthorized"
+            is Forbidden -> "forbidden"
+            is Conflict -> "conflict"
+            is TooLarge -> "too large"
+            is ChunkedNotAccepted -> "chunked not accepted"
+            is NotFound -> "not found"
+            is RouteUnavailable -> "route unavailable"
+            is BadRequest -> "bad request"
+            is Busy -> "busy"
+            is Server -> "server error $status"
+            is Decoding -> "decoding failed"
+            is NotConfigured -> "not configured"
+            is Cancelled -> "cancelled"
+        }
+
     /** What to offer the person, when there is something to offer. */
     val recovery: String?
         get() = when (this) {
