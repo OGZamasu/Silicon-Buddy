@@ -336,7 +336,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
                         ConversationList(chat, app) { openConversation = it }
                     } else {
-                        LaunchedEffect(openConversation) {
+                        // Keyed on readiness as well as on the id: a restored id
+                        // arrives before the Mac has said whether it keeps conversations
+                        // at all, and opening then yields an empty transcript with the
+                        // right title. Re-runs once the answer is in.
+                        LaunchedEffect(openConversation, chat.askedAboutConversations) {
                             openConversation?.let { chat.open(it, app.transport) }
                         }
                         ChatScreen(app, chat, Modifier.fillMaxSize())
@@ -430,6 +434,17 @@ private fun SettingsScreen(
     events: EventFeed,
     onPair: () -> Unit,
 ) {
+    // A clock that runs only while the stream is down, so the "next try in Ns" line
+    // counts down instead of freezing on the number it was given. It stops the moment
+    // the stream is back, which is why it is keyed on `retryAt` rather than left ticking.
+    var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(events.retryAt) {
+        while (events.retryAt != null) {
+            tick = System.currentTimeMillis()
+            kotlinx.coroutines.delay(500)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -488,10 +503,11 @@ private fun SettingsScreen(
                 when {
                     events.isLive -> "Streaming from /events"
                     events.mustPoll -> "Polling — this Mac has no /events"
-                    events.retryInMillis != null -> {
-                        val seconds = ((events.retryInMillis ?: 0L) + 999) / 1000
-                        "Reconnecting — next try in ${seconds}s"
-                    }
+                    events.retryAt != null ->
+                        // `tick` is read here so this line recomposes once a second and
+                        // the countdown actually counts down rather than freezing on
+                        // whatever it said when the stream dropped.
+                        "Reconnecting — next try in ${events.secondsUntilRetry(tick)}s"
                     else -> "Not started"
                 },
             )

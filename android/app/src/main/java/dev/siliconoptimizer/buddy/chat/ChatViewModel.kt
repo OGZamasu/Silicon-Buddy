@@ -53,7 +53,15 @@ class ChatViewModel(
         private set
     var usesRemoteConversations by mutableStateOf(false)
         private set
-    private var askedAboutConversations = false
+    /**
+     * Whether `/conversations` has been asked about yet.
+     *
+     * Observable because a screen has to wait for it. Until the question has been put to
+     * the Mac, `usesRemoteConversations` is false because nothing is known — not because
+     * the Mac keeps no conversations — and the two are indistinguishable from outside.
+     */
+    var askedAboutConversations by mutableStateOf(false)
+        private set
 
     /** How much history to send when the phone is the one keeping it. */
     var historyLimit = 24
@@ -141,6 +149,19 @@ class ChatViewModel(
     }
 
     fun open(id: String, transport: ControlTransport?) {
+        // With a Mac, nothing opens until it has been asked what it keeps.
+        //
+        // The id can arrive before the answer does: it is saved across process death, so
+        // after One UI kills the app it is restored and handed straight back here while
+        // `usesRemoteConversations` is still false-because-unknown. The remote branch
+        // below is skipped, the local store has nothing under that id, and the fallback
+        // invents `Conversation(id = id)` — a real conversation replaced by an empty
+        // transcript wearing its id. Waiting costs one round trip; `loadConversations`
+        // is already in flight, and the caller re-runs this when the answer lands.
+        //
+        // Only with a Mac, though. Unpaired, local is the only place a conversation can
+        // be, there is nothing to wait for, and waiting would mean never opening one.
+        if (transport != null && !askedAboutConversations) return
         viewModelScope.launch {
             if (usesRemoteConversations && transport != null) {
                 try {

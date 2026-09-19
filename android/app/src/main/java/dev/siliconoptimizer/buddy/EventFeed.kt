@@ -47,14 +47,24 @@ class EventFeed : ViewModel() {
         private set
 
     /**
-     * How long until the next attempt, while the stream is down. Null when it is up.
+     * When the next attempt is due, while the stream is down. Null when it is up.
      *
-     * The client reconnects by itself, so nothing here has to act on this — but a screen
-     * that says "Streaming from /events" during an outage is telling the owner the one
-     * thing they would check it for, wrongly.
+     * A moment rather than a duration: a stored "4000ms" read a second later is a second
+     * wrong, and this is what a countdown is drawn from. The client reconnects by itself,
+     * so nothing here has to act on it — but a screen that says "Streaming from /events"
+     * during an outage is telling the owner the one thing they would check it for,
+     * wrongly.
      */
-    var retryInMillis by mutableStateOf<Long?>(null)
+    var retryAt by mutableStateOf<Long?>(null)
         private set
+
+    /** Whatever the drop was, as a fixed tag. Never the error's message, which names the Mac. */
+    var lastDropSummary by mutableStateOf<String?>(null)
+        private set
+
+    /** Seconds until the next attempt, rounded up, or null while the stream is up. */
+    fun secondsUntilRetry(now: Long = System.currentTimeMillis()): Long? =
+        retryAt?.let { maxOf(0L, (it - now + 999) / 1000) }
 
     /** The backoff step the client has reached; 0 while connected. */
     var reconnectAttempt by mutableStateOf(0)
@@ -75,12 +85,18 @@ class EventFeed : ViewModel() {
                     if (event is ServerEvent.Disconnected) {
                         isLive = false
                         reconnectAttempt = event.attempt
-                        retryInMillis = event.retryInMillis
+                        retryAt = System.currentTimeMillis() + event.retryInMillis
+                        lastDropSummary = event.summary
+                        // The stream is down, so there is no "last event" any longer.
+                        // Leaving the old timestamp makes a dead stream read as one that
+                        // was alive a moment ago.
+                        lastEvent = null
                         return@collect
                     }
                     isLive = true
                     reconnectAttempt = 0
-                    retryInMillis = null
+                    retryAt = null
+                    lastDropSummary = null
                     lastEvent = System.currentTimeMillis()
                     when (event) {
                         is ServerEvent.StatusChanged -> status = event.status
@@ -123,7 +139,8 @@ class EventFeed : ViewModel() {
         job?.cancel()
         job = null
         isLive = false
-        retryInMillis = null
+        retryAt = null
+        lastDropSummary = null
         reconnectAttempt = 0
     }
 

@@ -30,7 +30,7 @@ import kotlinx.coroutines.flow.flow
  * that hangs is the case the widget's own deadline exists for, and nothing that talks
  * to a socket can produce it on demand.
  */
-class HangingTransport : ControlTransport {
+open class HangingTransport : ControlTransport {
 
     private suspend fun hang(): Nothing = awaitCancellation()
 
