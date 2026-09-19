@@ -20,7 +20,7 @@ import java.net.UnknownHostException
  */
 class LogRedactionTest {
 
-    private val host = "100.102.153.19"
+    private val host = "100.64.0.9"
 
     /** Every case, so a new one cannot quietly inherit a branch that prints something. */
     private val everyError: List<TransportError> = listOf(
@@ -92,7 +92,7 @@ class LogRedactionTest {
 
     /**
      * The messages must keep naming the host — this is not an argument for stripping it
-     * everywhere. The screen is where it belongs, because "can't reach 100.102.153.19"
+     * everywhere. The screen is where it belongs, because "can't reach 100.64.0.9"
      * is how somebody works out that they paired with the wrong machine.
      */
     @Test
