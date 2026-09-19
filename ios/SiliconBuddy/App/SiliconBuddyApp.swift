@@ -13,11 +13,20 @@ struct SiliconBuddyApp: App {
                 .task { await app.refreshReachability() }
                 .onOpenURL { url in
                     // A link is a request, not an instruction. Anything can open a URL
-                    // in this app — a web page, a message, a QR on a poster — so this
-                    // only ever gets as far as asking. `PairingInvite.parse` has already
+                    // in this app — a web page, a message, a QR on a poster, this app's
+                    // own widget — so this only ever gets as far as asking, or as far
+                    // as filling the composer in. `PairingInvite.parse` has already
                     // refused any host that is not on the tailnet by the time we are here.
                     do {
-                        app.pendingInvite = try PairingInvite.parse(url.absoluteString)
+                        switch try BuddyLink.parse(url.absoluteString) {
+                        case .pair(let invite):
+                            app.pendingInvite = invite
+                        case .compose(let text):
+                            app.pendingCompose = ComposeRequest(text: text)
+                        case .conversation(let id):
+                            app.pendingCompose = ComposeRequest(text: nil)
+                            Task { await chat.open(id: id, using: app.transport) }
+                        }
                     } catch {
                         badLink = LinkRefusal(message: error.localizedDescription)
                     }

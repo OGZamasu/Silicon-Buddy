@@ -31,6 +31,13 @@ targets:
     platform: iOS
     sources:
       - path: SiliconBuddy
+    # The two extensions ride inside the app bundle. Building the app builds them, and
+    # installing it on a Simulator registers the widget and the share sheet with it.
+    dependencies:
+      - target: SiliconBuddyWidgets
+        embed: true
+      - target: SiliconBuddyShare
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.siliconoptimizer.buddy
@@ -38,12 +45,58 @@ targets:
         # "Silicon Buddy". A product name with a space in it breaks TEST_HOST.
         PRODUCT_NAME: SiliconBuddy
         INFOPLIST_FILE: SiliconBuddy/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SiliconBuddy/SiliconBuddy.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: NO
         SUPPORTS_MACCATALYST: NO
         DEVELOPMENT_ASSET_PATHS: ""
+
+  # The widget and the share sheet compile the app's own Transport and Reach sources
+  # rather than linking a framework. Three small targets compiling the same dozen files
+  # is less machinery than an embedded framework, and it keeps the extensions honest:
+  # they get the app's `TailnetHost` and the app's `TokenStore`, so a request from a
+  # widget passes exactly the gate a request from the app does.
+  SiliconBuddyWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SiliconBuddyWidgets
+      - path: SiliconBuddy/Transport
+      - path: SiliconBuddy/Reach
+      - path: SiliconBuddy/Pairing/TokenStore.swift
+      - path: SiliconBuddy/Pairing/PairingInvite.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.siliconoptimizer.buddy.widgets
+        PRODUCT_NAME: SiliconBuddyWidgets
+        INFOPLIST_FILE: SiliconBuddyWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SiliconBuddyWidgets/SiliconBuddyWidgets.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+  SiliconBuddyShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SiliconBuddyShare
+      - path: SiliconBuddy/Transport
+      - path: SiliconBuddy/Reach
+      - path: SiliconBuddy/Pairing/TokenStore.swift
+      - path: SiliconBuddy/Pairing/PairingInvite.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.siliconoptimizer.buddy.share
+        PRODUCT_NAME: SiliconBuddyShare
+        INFOPLIST_FILE: SiliconBuddyShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SiliconBuddyShare/SiliconBuddyShare.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
   SiliconBuddyTests:
     type: bundle.unit-test
@@ -69,6 +122,8 @@ schemes:
     build:
       targets:
         SiliconBuddy: all
+        SiliconBuddyWidgets: all
+        SiliconBuddyShare: all
         SiliconBuddyTests: [test]
     run:
       config: Debug
