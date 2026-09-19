@@ -29,6 +29,12 @@ class EventFeed : ViewModel() {
         private set
     val downloads = mutableStateMapOf<String, DownloadProgress>()
     val jobs = mutableStateMapOf<String, JobProgress>()
+
+    /**
+     * The last answer check the Mac published, by conversation. Kept rather than
+     * consumed: the chat screen may not be on screen when it arrives.
+     */
+    val verdicts = mutableStateMapOf<String, dev.siliconoptimizer.buddy.transport.Verdict>()
     var lastEvent by mutableStateOf<Long?>(null)
         private set
 
@@ -68,6 +74,13 @@ class EventFeed : ViewModel() {
                                 setOf("finished", "failed", "cancelled")
                             if (done) jobs.remove(event.progress.id)
                             else jobs[event.progress.id] = event.progress
+                        }
+                        is ServerEvent.Checked -> {
+                            // Keyed by conversation, because that is the only key the
+                            // transcript shares with the Mac today: `StoredMessage`
+                            // carries no id, so a per-message match is not possible
+                            // until the Mac exports one.
+                            verdicts[event.verdict.conversationID.orEmpty()] = event.verdict
                         }
                         is ServerEvent.Beat -> Unit
                     }

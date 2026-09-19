@@ -123,7 +123,47 @@ data class ChatMetrics(
 @Serializable
 data class TokenEvent(val text: String)
 
-/** What `POST /chat/stream` sends, one per SSE `event:` name. */
+/**
+ * What the Mac's answer checking made of a reply once it was written.
+ *
+ * It arrives after the answer — on `GET /events`, and sometimes on the chat stream too
+ * — so it is never something to wait for: the reply is finished at `finished` and this
+ * decorates it afterwards, or never.
+ */
+@Serializable
+data class Verdict(
+    val conversationID: String? = null,
+    val messageID: String? = null,
+    /** The Mac's own word: "ok", "weak", "escalated". Rendered, not interpreted. */
+    val verdict: String,
+    val reasons: List<String>? = null,
+    /** The model it was handed to instead, when it was escalated. */
+    val escalatedTo: String? = null,
+) {
+    /**
+     * One line for the message footer. The Mac's vocabulary is not frozen, so an
+     * unrecognised verdict is shown as itself rather than swallowed.
+     */
+    val summary: String
+        get() = when {
+            !escalatedTo.isNullOrEmpty() -> "Checked — escalated to $escalatedTo"
+            else -> when (verdict.lowercase()) {
+                "ok", "pass", "answered" -> "Checked — answers the question"
+                "weak", "partial" -> "Checked — only partly answers"
+                "fail", "failed", "wrong" -> "Checked — does not answer"
+                else -> "Checked — $verdict"
+            }
+        }
+}
+
+/**
+ * What `POST /chat/stream` sends, one per SSE `event:` name.
+ *
+ * Not a closed set. The Mac grows event names — `verdict` arrived with Jev's answer
+ * checking — and a client that treated an unknown one as an error would break on the
+ * upgrade rather than on the downgrade. Anything not listed here is skipped, and
+ * `finished` ends the reply whatever follows it.
+ */
 sealed interface ChatStreamEvent {
     data class Token(val text: String) : ChatStreamEvent
     data class Reasoning(val text: String) : ChatStreamEvent
@@ -169,5 +209,8 @@ sealed interface ServerEvent {
     data class StatusChanged(val status: Status) : ServerEvent
     data class Download(val progress: DownloadProgress) : ServerEvent
     data class Job(val progress: JobProgress) : ServerEvent
+
+    /** An answer the Mac has since checked. */
+    data class Checked(val verdict: Verdict) : ServerEvent
     data class Beat(val at: String?) : ServerEvent
 }

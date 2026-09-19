@@ -11,6 +11,7 @@ import dev.siliconoptimizer.buddy.transport.ChatMetrics
 import dev.siliconoptimizer.buddy.transport.ChatRequest
 import dev.siliconoptimizer.buddy.transport.ChatStreamEvent
 import dev.siliconoptimizer.buddy.transport.ControlTransport
+import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -223,7 +224,19 @@ class ChatViewModel(
             run(placeholderID, transport)
             isSending = false
             sendingSince = null
+            noteLastExchange(text)
         }
+    }
+
+    /**
+     * Leaves the exchange where the widget, the tile and the Assistant find it. Only
+     * the text: a picture is not something a widget has room for.
+     */
+    private fun noteLastExchange(question: String) {
+        val answer = current?.messages?.lastOrNull {
+            it.role == ChatMessage.ROLE_ASSISTANT && it.content.isNotEmpty()
+        }?.content ?: return
+        SnapshotStore(getApplication()).note(question, answer)
     }
 
     fun cancel() {
@@ -319,6 +332,7 @@ class ChatViewModel(
     /** Drains one SSE stream into the placeholder message. */
     private suspend fun consume(stream: Flow<ChatStreamEvent>, messageID: String): Outcome {
         var sawAnything = false
+        var finished = false
         try {
             stream.collect { event ->
                 sawAnything = true
@@ -329,14 +343,23 @@ class ChatViewModel(
                     is ChatStreamEvent.Reasoning -> update(messageID) {
                         it.copy(reasoning = (it.reasoning ?: "") + event.text)
                     }
-                    is ChatStreamEvent.Finished -> update(messageID) {
-                        it.copy(
-                            metrics = event.metrics,
-                            isStreaming = false,
-                            failure = truncationNote(
-                                it.content, event.metrics.generatedTokens, maxTokens,
-                            ),
-                        )
+                    is ChatStreamEvent.Finished -> {
+                        update(messageID) {
+                            it.copy(
+                                metrics = event.metrics,
+                                isStreaming = false,
+                                failure = truncationNote(
+                                    it.content, event.metrics.generatedTokens, maxTokens,
+                                ),
+                            )
+                        }
+                        // `finished` is the end of the reply, whatever else the Mac
+                        // sends after it. Jev's answer checking appends a `verdict`
+                        // frame, and a client that kept the composer closed until the
+                        // socket closed would sit on a finished answer waiting for a
+                        // check it can get from `/events` instead.
+                        finished = true
+                        throw StreamFinished
                     }
                     is ChatStreamEvent.Failed -> {
                         update(messageID) { it.copy(failure = event.message, isStreaming = false) }
@@ -344,6 +367,8 @@ class ChatViewModel(
                     }
                 }
             }
+        } catch (failure: StreamFinished) {
+            return Outcome.Answered
         } catch (failure: TransportError) {
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
@@ -363,7 +388,37 @@ class ChatViewModel(
             return Outcome.Failed
         }
         // A stream that ends without one event is not an answer; try the next thing.
-        return if (sawAnything) Outcome.Answered else Outcome.MissingRoute
+        return if (sawAnything || finished) Outcome.Answered else Outcome.MissingRoute
+    }
+
+    /**
+     * Thrown to leave `collect` the moment `finished` arrives. A flow has no `break`,
+     * and cancelling the collector is the documented way to stop one early.
+     */
+    private object StreamFinished : kotlinx.coroutines.CancellationException("finished")
+
+    /**
+     * Attaches an answer check to the reply it belongs to.
+     *
+     * Matched on the conversation alone: `StoredMessage` carries no id, so there is
+     * nothing to match a message id against until the Mac exports one. The newest
+     * verdict therefore decorates the newest assistant message, which is the one it is
+     * about in every case the Mac produces today.
+     */
+    fun apply(verdict: dev.siliconoptimizer.buddy.transport.Verdict) {
+        val conversation = current ?: return
+        if (!verdict.conversationID.isNullOrEmpty() &&
+            verdict.conversationID != conversation.id
+        ) {
+            return
+        }
+        val index = conversation.messages.indexOfLast {
+            it.role == ChatMessage.ROLE_ASSISTANT && !it.isStreaming && it.content.isNotEmpty()
+        }
+        if (index < 0) return
+        val messages = conversation.messages.toMutableList()
+        messages[index] = messages[index].copy(verdict = verdict)
+        current = conversation.copy(messages = messages)
     }
 
     private fun update(messageID: String, change: (ChatMessage) -> ChatMessage) {

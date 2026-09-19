@@ -3,6 +3,7 @@ package dev.siliconoptimizer.buddy.chat
 import android.content.Context
 import dev.siliconoptimizer.buddy.transport.ChatMessageWire
 import dev.siliconoptimizer.buddy.transport.ChatMetrics
+import dev.siliconoptimizer.buddy.transport.Verdict
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -27,6 +28,11 @@ data class ChatMessage(
     val metrics: ChatMetrics? = null,
     /** Set when the generation failed, with the Mac's words. */
     val failure: String? = null,
+    /**
+     * What the Mac's answer checking made of this reply, if it checked it. It arrives
+     * after the answer is finished and is never waited for.
+     */
+    val verdict: Verdict? = null,
 ) {
     val wire: ChatMessageWire get() = ChatMessageWire(role, content, images)
 
