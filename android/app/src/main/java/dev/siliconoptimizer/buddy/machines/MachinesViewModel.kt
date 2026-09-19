@@ -125,14 +125,24 @@ object Machines {
         headline = if (peer.reachable) "Answering" else "Not answering",
         detail = peer.error ?: peer.capabilities
             .filter { it.ready }
-            .map { it.kind }
+            .map { kindName(it.kind) }
             .distinct()
             .takeIf { it.isNotEmpty() }
-            ?.joinToString(", ") { it.replaceFirstChar { c -> c.uppercase(Locale.US) } },
+            ?.joinToString(", "),
         address = host(peer.baseURL),
         lanes = peer.capabilities.map { Lane(it.id, it.kind, it.ready) },
         blindSpot = PEER_BLIND_SPOT,
     )
+
+    /** The Mac's word for a lane, as a person would read it. */
+    fun kindName(kind: String): String = when (kind.lowercase()) {
+        "llm" -> "Language"
+        "image" -> "Image"
+        "video" -> "Video"
+        "mesh" -> "3D"
+        "audio" -> "Audio"
+        else -> kind.replaceFirstChar { it.uppercase(Locale.US) }
+    }
 
     /** The host, not the whole URL: a port and a scheme say nothing on a phone. */
     fun host(baseURL: String): String =

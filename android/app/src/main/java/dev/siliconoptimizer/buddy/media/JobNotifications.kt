@@ -67,7 +67,9 @@ object JobNotifications {
                 title = "Your $noun is ready",
                 body = listOfNotNull(
                     next.title.takeIf { it.isNotBlank() },
-                    next.file ?: next.outputDirectory,
+                    // The file, once the queue has named it; until then the folder it
+                    // is being written to, which is what the event alone knows.
+                    next.file ?: next.outputDirectory?.let { "saved in $it" },
                 ).joinToString(" — ").ifBlank { "Rendered on the Mac." },
                 isFailure = false,
             )

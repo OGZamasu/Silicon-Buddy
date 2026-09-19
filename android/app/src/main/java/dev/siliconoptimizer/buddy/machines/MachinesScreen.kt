@@ -100,6 +100,16 @@ fun MachinesScreen(
     }
 }
 
+/** The Mac's word for a lane, as a person would read it. Unknown ones show as sent. */
+private fun laneHeading(kind: String): String = when (kind.lowercase()) {
+    "llm" -> "Language models"
+    "image" -> "Image"
+    "video" -> "Video"
+    "mesh" -> "3D"
+    "audio" -> "Audio"
+    else -> kind.replaceFirstChar { it.uppercase() }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MachineCard(machine: Machine) {
@@ -144,7 +154,7 @@ private fun MachineCard(machine: Machine) {
             HorizontalDivider()
             machine.lanesByKind.forEach { (kind, lanes) ->
                 Text(
-                    kind.replaceFirstChar { it.uppercase() },
+                    laneHeading(kind),
                     style = MaterialTheme.typography.labelMedium,
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
