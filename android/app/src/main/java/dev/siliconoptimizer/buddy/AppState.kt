@@ -10,6 +10,8 @@ import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
+import dev.siliconoptimizer.buddy.widget.BuddyWidget
+import androidx.glance.appwidget.updateAll
 import dev.siliconoptimizer.buddy.transport.ConnectivityProbe
 import dev.siliconoptimizer.buddy.transport.DeviceScope
 import dev.siliconoptimizer.buddy.transport.TailnetHost
@@ -118,6 +120,11 @@ class AppState(application: Application) : AndroidViewModel(application) {
     fun forget() {
         tokens.forget()
         snapshots.clear()
+        // And redraw, so "forget this Mac" is true on the home screen too rather than
+        // at the widget's next scheduled refresh half an hour later.
+        viewModelScope.launch {
+            runCatching { BuddyWidget().updateAll(getApplication()) }
+        }
         config = null
         status = null
         reachability = Reachability.Unknown

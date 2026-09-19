@@ -59,7 +59,14 @@
 	</dict>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- The app's exception, for the app's reason. TailnetHost is the gate. -->
+		<!--
+		  The same exception the app carries, and for the same reason: the Mac's
+		  control API is plain HTTP on a tailnet address, ATS matches domains rather
+		  than address ranges, and NSAllowsLocalNetworking does not cover 100.64/10.
+		  The narrowing is TailnetHost, which every request from this extension
+		  passes through as well — see SharedConfiguration.load, which refuses to
+		  build a transport for a host outside it however the host got there.
+		-->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>

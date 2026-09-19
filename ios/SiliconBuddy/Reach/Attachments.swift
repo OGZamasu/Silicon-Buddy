@@ -47,8 +47,14 @@ public enum ImagePreparation {
             edge *= 0.75
             compression = max(0.4, compression - 0.15)
         }
-        return resize(image, maxEdge: edge).jpegData(compressionQuality: 0.4)
-            .map(ChatAttachment.init(jpeg:))
+        // The last attempt is only worth returning if it is finally inside the cap.
+        // Handing back an oversized one made `attach` refuse it a moment later with a
+        // different message, and left `ShareNormaliser` to drop it silently — a picture
+        // that vanished between being chosen and being sent.
+        guard let last = resize(image, maxEdge: edge).jpegData(compressionQuality: 0.4),
+              last.count <= SendLimits.maximumImageBytes
+        else { return nil }
+        return ChatAttachment(jpeg: last)
     }
 
     static func resize(_ image: UIImage, maxEdge: CGFloat) -> UIImage {

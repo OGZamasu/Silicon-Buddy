@@ -51,9 +51,11 @@ Decided 2026-09-18 with the owner.
   reply read back and a toggle for that.
 - Not done: the Control Center control, and "Start a video…" — the video routes are
   M3's, and an intent that starts a render before the queue view exists would be a
-  button with nowhere to look at the result. `POST /jev`, `POST /recommend` and the
-  three other routes the Mac grew alongside this are in `contract/` but are not
-  mirrored by either app yet; they belong to M3's node and recommend pages.
+  button with nowhere to look at the result. Six routes the Mac grew alongside this —
+  `GET`/`POST /jev`, `GET /jev/calibration`, `POST /jev/calibrate`,
+  `GET /jev/guardrails/recent` and the task-shaped `POST /recommend` — are in
+  `contract/` but are not mirrored by either app yet; they belong to M3's node and
+  recommend pages.
 
 ### M3 — Media jobs and machines
 - Image, video, 3D from the phone on the Mac or the node; queue view; progress (Live Activity on iOS, ongoing notification on Android); results saved to the phone.

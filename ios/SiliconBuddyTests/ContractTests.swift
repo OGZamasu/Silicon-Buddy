@@ -224,17 +224,13 @@ final class ContractTests: XCTestCase {
     /// each one documents, are the Mac's answers as of the last refresh. When they
     /// change, `contract/refresh.sh` is the fix — not this list.
     static let expectedFixtures: Set<String> = [
-            // Routes the Mac grew for Jev's own settings, its calibration and the
-            // guardrail's recent screenings, plus the task-shaped `POST /recommend`.
-            // Listed so the export is accounted for; no type here mirrors them yet,
-            // because nothing in this app speaks them — the Jev settings are the Mac's
-            // own business and the node and recommend pages arrive in M3.
-            "GET__jev",
-            "GET__jev_calibration",
-            "GET__jev_guardrails_recent",
-            "POST__jev",
-            "POST__jev_calibrate",
-            "POST__recommend",
+        // The last six are routes the Mac grew for Jev's own settings, its
+        // calibration, the guardrail's recent screenings and the task-shaped
+        // `POST /recommend`. Listed so the export is accounted for; no type here
+        // mirrors them yet, because nothing in this app speaks them — the Jev
+        // settings are the Mac's own business and the pages that would use the
+        // other two arrive in M3. Mirroring a type nothing calls is a guess that
+        // rots.
         "DELETE__buddy_devices__id_",
         "GET__buddy_devices",
         "GET__catalog",
@@ -244,6 +240,9 @@ final class ContractTests: XCTestCase {
         "GET__health",
         "GET__image_models",
         "GET__installed",
+        "GET__jev",
+        "GET__jev_calibration",
+        "GET__jev_guardrails_recent",
         "GET__mesh_models",
         "GET__metrics",
         "GET__profile",
@@ -263,10 +262,13 @@ final class ContractTests: XCTestCase {
         "POST__image_generate",
         "POST__image_plan",
         "POST__install",
+        "POST__jev",
+        "POST__jev_calibrate",
         "POST__load",
         "POST__mesh_generate",
         "POST__mesh_plan",
         "POST__plan",
+        "POST__recommend",
         "POST__unload",
         "POST__v1_systemone",
         "POST__video_generate",
