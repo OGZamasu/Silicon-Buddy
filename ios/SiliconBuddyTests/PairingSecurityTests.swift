@@ -12,7 +12,7 @@ final class PairingSecurityTests: XCTestCase {
         for host in [
             "127.0.0.1", "127.1.2.3", "localhost", "::1",
             "10.0.2.2",                     // the Android emulator's name for its host
-            "100.64.0.1", "100.118.191.4", "100.127.255.254",
+            "100.64.0.1", "100.100.100.100", "100.127.255.254",
             "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12:4843:cd96:625a:1",
             "[fd7a:115c:a1e0::1]",
         ] {
@@ -58,9 +58,9 @@ final class PairingSecurityTests: XCTestCase {
 
     func testATailnetPairingLinkParses() throws {
         let invite = try PairingInvite.parse(
-            "siliconbuddy://pair?host=100.118.191.4&port=8788&code=418203"
+            "siliconbuddy://pair?host=100.100.100.100&port=8788&code=418203"
         )
-        XCTAssertEqual(invite.host, "100.118.191.4")
+        XCTAssertEqual(invite.host, "100.100.100.100")
     }
 
     func testTheRefusalExplainsItself() {

@@ -9,8 +9,8 @@ class PairingInviteTest {
 
     @Test
     fun `parses the Mac's QR code`() {
-        val invite = PairingInvite.parse("siliconbuddy://pair?host=100.118.191.4&port=8788&code=418203")
-        assertEquals("100.118.191.4", invite.host)
+        val invite = PairingInvite.parse("siliconbuddy://pair?host=100.100.100.100&port=8788&code=418203")
+        assertEquals("100.100.100.100", invite.host)
         assertEquals(8788, invite.port)
         assertEquals("418203", invite.code)
     }

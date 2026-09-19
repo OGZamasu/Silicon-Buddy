@@ -4,8 +4,8 @@ import XCTest
 final class PairingInviteTests: XCTestCase {
 
     func testParsesTheMacsQRCode() throws {
-        let invite = try PairingInvite.parse("siliconbuddy://pair?host=100.118.191.4&port=8788&code=418203")
-        XCTAssertEqual(invite.host, "100.118.191.4")
+        let invite = try PairingInvite.parse("siliconbuddy://pair?host=100.100.100.100&port=8788&code=418203")
+        XCTAssertEqual(invite.host, "100.100.100.100")
         XCTAssertEqual(invite.port, 8788)
         XCTAssertEqual(invite.code, "418203")
     }

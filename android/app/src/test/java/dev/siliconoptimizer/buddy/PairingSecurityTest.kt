@@ -28,7 +28,7 @@ class PairingSecurityTest {
         listOf(
             "127.0.0.1", "127.1.2.3", "localhost", "::1",
             "10.0.2.2", // the emulator's name for its host
-            "100.64.0.1", "100.118.191.4", "100.127.255.254",
+            "100.64.0.1", "100.100.100.100", "100.127.255.254",
             "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12:4843:cd96:625a:1",
             "[fd7a:115c:a1e0::1]",
         ).forEach { assertTrue("$it should be reachable", TailnetHost.isAllowed(it)) }
@@ -70,8 +70,8 @@ class PairingSecurityTest {
     @Test
     fun `a tailnet pairing link parses`() {
         assertEquals(
-            "100.118.191.4",
-            PairingInvite.parse("siliconbuddy://pair?host=100.118.191.4&port=8788&code=418203").host,
+            "100.100.100.100",
+            PairingInvite.parse("siliconbuddy://pair?host=100.100.100.100&port=8788&code=418203").host,
         )
     }
 
