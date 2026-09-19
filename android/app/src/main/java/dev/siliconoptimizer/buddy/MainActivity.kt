@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -268,7 +269,19 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             }
         },
     ) { padding ->
-        Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+        // `consumeWindowInsets` is the half that is easy to leave out, and leaving it
+        // out is visible: Scaffold hands down padding for the navigation bar and the
+        // bottom bar, and then `ChatScreen`'s `imePadding()` measures the keyboard from
+        // the bottom of the *window* and adds all of it again. The composer ends up
+        // floating a navigation bar's height above the keyboard with dead space under
+        // it. Consuming the padding here tells the descendants that much is already
+        // dealt with, so `imePadding()` only adds the rest.
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding),
+        ) {
             if (wide) {
                 // A tablet has room for the conversation list beside the transcript.
                 NavigationRail {
