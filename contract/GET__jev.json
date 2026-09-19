@@ -77,14 +77,14 @@
       },
       {
         "available" : false,
-        "built" : false,
+        "built" : true,
         "calls" : 0,
-        "displayName" : "Skill selection",
+        "displayName" : "Tool selection and pruning",
         "enabled" : false,
         "estimatedUSD" : 0,
         "id" : "skillSelection",
         "inputTokens" : 0,
-        "summary" : "Chooses which tools and skills an agent should be offered for the task in hand."
+        "summary" : "Tool selection and pruning: suggests which tool or skill fits the turn, and which history a small model still needs."
       },
       {
         "available" : false,

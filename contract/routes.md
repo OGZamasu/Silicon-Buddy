@@ -34,11 +34,22 @@ token: they govern what this Mac spends, so a paired phone may read both, and
 the matching `GET /jev` and `GET /jev/calibration`, without being able to
 change either.
 
+`POST /buddy/invitations` and `DELETE /buddy/invitations` take that same control
+token, and for a stronger reason: minting a pairing code admits the *next*
+device to this Mac. A phone that could mint one could pair the phone after it
+without the owner ever seeing a code, so these two are answered on the Mac's own
+loopback listener only and are not reachable from the tailnet at all — at any
+device scope, and with any token. A minted code carries the tailnet listener's
+address and port, lives five minutes and is spent once; with that listener down
+the mint is a 409 rather than a code pointing nowhere.
+
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/buddy/pair` | none | Spend the six-digit code on screen for a device token of your own. |
 | `GET` | `/buddy/devices` | control | The paired devices, without their token hashes. |
 | `DELETE` | `/buddy/devices/{id}` | control | Revoke one device. Its token stops working at once, streams included. |
+| `POST` | `/buddy/invitations` | control | Mint the pairing code the Mac's own Settings window would show. |
+| `DELETE` | `/buddy/invitations` | control | Cancel the code on screen. Succeeds whether or not one was open. |
 | `POST` | `/chat/stream` | device | The same body as /chat, answered token by token. _(SSE)_ |
 | `GET` | `/events` | device | What the Mac is doing: loaded model, downloads, render jobs. _(SSE)_ |
 | `GET` | `/conversations` | device | Every conversation on the Mac, newest first. |

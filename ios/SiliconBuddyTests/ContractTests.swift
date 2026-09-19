@@ -224,6 +224,12 @@ final class ContractTests: XCTestCase {
     /// each one documents, are the Mac's answers as of the last refresh. When they
     /// change, `contract/refresh.sh` is the fix — not this list.
     static let expectedFixtures: Set<String> = [
+        // Two routes the Mac grew so that tests and CLIs can pair at all: pairing
+        // codes used to be mintable only from its own Settings window. They are
+        // loopback-and-control-token only, which means no device can ever reach them
+        // — this app included, whatever it is holding. Listed because the export is
+        // the whole export; deliberately not mirrored, because a type for a route
+        // this app is forbidden to call would be a type nothing can ever use.
         // The last six are routes the Mac grew for Jev's own settings, its
         // calibration, the guardrail's recent screenings and the task-shaped
         // `POST /recommend`. Listed so the export is accounted for; no type here
@@ -232,6 +238,7 @@ final class ContractTests: XCTestCase {
         // other two arrive in M3. Mirroring a type nothing calls is a guess that
         // rots.
         "DELETE__buddy_devices__id_",
+        "DELETE__buddy_invitations",
         "GET__buddy_devices",
         "GET__catalog",
         "GET__conversations",
@@ -253,6 +260,7 @@ final class ContractTests: XCTestCase {
         "GET__video_models",
         "GET__video_queue",
         "POST__benchmark",
+        "POST__buddy_invitations",
         "POST__buddy_pair",
         "POST__chat",
         "POST__chat_stream",

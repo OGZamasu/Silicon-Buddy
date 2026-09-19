@@ -16,7 +16,7 @@
   "request" : null,
   "response" : {
     "exposure" : {
-      "address" : "100.115.9.42",
+      "address" : "100.64.0.9",
       "listening" : true,
       "port" : 8788,
       "requested" : true
