@@ -18,6 +18,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -54,6 +56,11 @@ import dev.siliconoptimizer.buddy.chat.ChatScreen
 import dev.siliconoptimizer.buddy.chat.ChatViewModel
 import dev.siliconoptimizer.buddy.dashboard.DashboardScreen
 import dev.siliconoptimizer.buddy.dashboard.DashboardViewModel
+import dev.siliconoptimizer.buddy.machines.MachinesScreen
+import dev.siliconoptimizer.buddy.machines.MachinesViewModel
+import dev.siliconoptimizer.buddy.media.CreateScreen
+import dev.siliconoptimizer.buddy.media.MediaNotifier
+import dev.siliconoptimizer.buddy.media.MediaViewModel
 import dev.siliconoptimizer.buddy.modelsui.ModelsScreen
 import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
@@ -102,6 +109,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun read(intent: Intent?): LinkArrival? {
+        // A finished render's notification opens the queue. Not a link: nothing outside
+        // this app can send it, and it asks for a screen rather than for an action.
+        if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_QUEUE) return LinkArrival.OpenQueue
         val data = intent?.data ?: return null
         // `siliconbuddy://` means three things now: a pairing code, a composer to open,
         // and a conversation to show. All three are requests rather than instructions —
@@ -122,6 +132,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    companion object {
+        /** Which screen a notification wants open. */
+        const val EXTRA_OPEN = "dev.siliconoptimizer.buddy.OPEN"
+        const val OPEN_QUEUE = "queue"
+    }
 }
 
 /** What arrived on a `siliconbuddy://` link. */
@@ -132,10 +148,14 @@ sealed interface LinkArrival {
     /** Open the composer, with this typed into it. Never sent. */
     data class Compose(val text: String?) : LinkArrival
     data class OpenConversation(val id: String) : LinkArrival
+
+    /** Show the render queue: where a job that just finished can be looked at. */
+    data object OpenQueue : LinkArrival
 }
 
 private enum class Destination(val label: String) {
-    Dashboard("Dashboard"), Models("Models"), Chat("Chat"), Settings("Settings"),
+    Dashboard("Mac"), Create("Create"), Machines("Machines"), Models("Models"),
+    Chat("Chat"), Settings("Settings"),
     ;
 
     companion object {
@@ -159,6 +179,8 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     val models: ModelsViewModel = viewModel()
     val chat: ChatViewModel = viewModel()
     val events: EventFeed = viewModel()
+    val media: MediaViewModel = viewModel()
+    val machines: MachinesViewModel = viewModel()
 
     // Saved rather than merely remembered. Two things take this activity away and bring
     // it back: a configuration change the manifest does not absorb — font scale is the
@@ -194,6 +216,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 openConversation = arrival.id
                 arriving.value = null
             }
+            LinkArrival.OpenQueue -> {
+                destination = Destination.Create
+                media.tab = MediaViewModel.Tab.Queue
+                arriving.value = null
+            }
             null -> Unit
         }
     }
@@ -226,8 +253,19 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         dashboard.refresh(app.transport, app)
         dashboard.startLiveUpdates(app.transport)
         models.refresh(app.transport)
+        media.reset()
+        media.refresh(app.transport)
+        machines.reset()
+        machines.refresh(app.transport)
         chat.loadConversations(app.transport)
         events.start(app.transport)
+    }
+
+    // Renders finish minutes after they were asked for, and on whatever screen happens
+    // to be in front. The queue hears about it here, once, and says so.
+    val notifier = remember(context) { MediaNotifier(context) }
+    LaunchedEffect(Unit) {
+        events.jobEvents.collect { media.apply(it, notifier) }
     }
 
     // What the Mac pushes, when it can push.
@@ -248,6 +286,8 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     Text(
                         when (destination) {
                             Destination.Dashboard -> "Silicon Buddy"
+                            Destination.Create -> "Create"
+                            Destination.Machines -> "Machines"
                             Destination.Models -> "Models"
                             Destination.Chat -> chat.current?.title ?: "Chat"
                             Destination.Settings -> "Settings"
@@ -269,6 +309,16 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             openConversation = chat.current?.id
                         }) {
                             Icon(Icons.Filled.Add, contentDescription = "New conversation")
+                        }
+                        Destination.Machines -> IconButton(onClick = {
+                            machines.refresh(app.transport)
+                        }) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        }
+                        Destination.Create -> IconButton(onClick = {
+                            media.refresh(app.transport)
+                        }) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
                         else -> Unit
                     }
@@ -331,6 +381,8 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                     onPair = { pairing = true },
                     modifier = Modifier.fillMaxSize(),
                 )
+                Destination.Create -> CreateScreen(app, media, Modifier.fillMaxSize())
+                Destination.Machines -> MachinesScreen(app, machines, Modifier.fillMaxSize())
                 Destination.Models -> ModelsScreen(app, models, events, Modifier.fillMaxSize())
                 Destination.Chat -> {
                     if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
@@ -385,6 +437,8 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
 
 private fun iconFor(destination: Destination) = when (destination) {
     Destination.Dashboard -> Icons.Filled.Speed
+    Destination.Create -> Icons.Filled.AutoAwesome
+    Destination.Machines -> Icons.Filled.Hub
     Destination.Models -> Icons.Filled.Layers
     Destination.Chat -> Icons.AutoMirrored.Filled.Chat
     Destination.Settings -> Icons.Filled.Settings

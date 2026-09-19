@@ -13,6 +13,9 @@ import dev.siliconoptimizer.buddy.transport.ServerEvent
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -29,6 +32,18 @@ class EventFeed : ViewModel() {
         private set
     val downloads = mutableStateMapOf<String, DownloadProgress>()
     val jobs = mutableStateMapOf<String, JobProgress>()
+
+    /**
+     * Every `job` event, terminal ones included.
+     *
+     * The map above is "what is running now", which is what the dashboard wants; the
+     * queue and the notifications want the moment a render finished or failed, and that
+     * is exactly the event the map drops. One stream for the app, two shapes of it.
+     */
+    private val _jobEvents = MutableSharedFlow<JobProgress>(
+        replay = 0, extraBufferCapacity = 64,
+    )
+    val jobEvents: SharedFlow<JobProgress> = _jobEvents.asSharedFlow()
 
     /**
      * The last answer check the Mac published, by conversation. Kept rather than
@@ -108,10 +123,14 @@ class EventFeed : ViewModel() {
                             }
                         }
                         is ServerEvent.Job -> {
+                            // The Mac's own words for a render that is over. "completed"
+                            // is the video queue's; the others are what the image and
+                            // mesh lanes say.
                             val done = event.progress.status.lowercase() in
-                                setOf("finished", "failed", "cancelled")
+                                setOf("finished", "completed", "failed", "cancelled")
                             if (done) jobs.remove(event.progress.id)
                             else jobs[event.progress.id] = event.progress
+                            _jobEvents.tryEmit(event.progress)
                         }
                         is ServerEvent.Checked -> {
                             // Keyed by conversation, because that is the only key the
