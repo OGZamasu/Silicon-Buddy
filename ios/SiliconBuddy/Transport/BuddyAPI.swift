@@ -302,10 +302,17 @@ public enum BuddyAPI {
         public var bytesPerSecond: Double?
         /// The Mac's own 0–1, which knows about resumed downloads and this does not.
         public var fraction: Double?
+        /// Why it stopped, when it failed — or "Removed from the Mac before it finished."
+        public var error: String?
+        /// What an unfinished transfer with more than one step is doing: a model the Mac
+        /// keeps for the phone is `fetching`, then `checking`, and `moving` when the library
+        /// moves. Absent when it is done, and on the Mac's own model downloads.
+        public var stage: String?
 
         public init(
             id: String, name: String, bytesReceived: Int64, bytesExpected: Int64?,
-            bytesPerSecond: Double? = nil, fraction: Double? = nil
+            bytesPerSecond: Double? = nil, fraction: Double? = nil, error: String? = nil,
+            stage: String? = nil
         ) {
             self.id = id
             self.name = name
@@ -313,7 +320,12 @@ public enum BuddyAPI {
             self.bytesExpected = bytesExpected
             self.bytesPerSecond = bytesPerSecond
             self.fraction = fraction
+            self.error = error
+            self.stage = stage
         }
+
+        /// Whether this is the Mac fetching one of the phone's own models.
+        public var isPhoneModel: Bool { id.hasPrefix(OnDeviceAPI.downloadEventPrefix) }
 
         /// The fraction the Mac gave, or one worked out from the byte counts.
         public var progress: Double? {

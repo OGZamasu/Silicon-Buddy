@@ -182,6 +182,55 @@ were: after the last frame read before the gap and before anything newer, one pe
 gap. Fetch what you show again with the cursor from that last frame — it sits just
 before the gap, so the answer holds exactly what was dropped.
 
+## Models for the phone
+
+`/ondevice/models` is how a phone gets the small model it runs by itself when the
+Mac is out of reach, without ever leaving the tailnet: the Mac fetches the file
+from Hugging Face and serves it. Each entry is pinned — repository, commit, file,
+`sizeBytes` and `sha256` — and carries what the phone needs to run it
+(`recommended`: threads for the prompt and for writing, context length, free
+memory needed, `thinking`) and what a real phone measured (`measured`).
+`measured` is one benchmark on the owner's phone: `tokensPerSecond` at
+`recommended.threadsGenerate`, the `threadSweep` it was picked from,
+`promptTokensPerSecond`, and `secondsToFirstWord300` — an estimate
+(`firstWordEstimated: true`), 300 ÷ the prompt speed rounded up to a tenth.
+`sustainedTokensPerSecond` is null when it was not measured, and
+`sustainedMeasured` says which. `peakMemoryBytes` was taken at no more than
+`peakMemoryContextTokens`. `recommended.minFreeMemoryBytes` is a gate: the
+weights, which are memory-mapped and get no margin, plus the rest of the peak
+grown to the recommended context with a quarter on top.
+
+`onMac.state` is `absent`, `downloading`, `ready` or `failed`. While downloading,
+`stage` says what the Mac is doing — `fetching`, `checking` (hashing what it has)
+or `moving` (following the model library to a new folder) — and `fraction` how
+far it has got; on a failure that kept a partial, `fraction` is how much the Mac
+has. A failure carries `reason`, a sentence to show, and `failure`, one of
+`diskFull` (free space on the Mac), `checksumMismatch` (deleted; a retry starts
+over), `network` and `interrupted` (a retry resumes or checks), `server`,
+`driveMissing` (the drive the Mac's model library is on is not connected) or
+`other`. A model whose move to a new library folder could not finish reads
+`failed` too — `diskFull` when the new drive has no room, and it moves by itself
+once there is; `other` otherwise, and a prepare tries the move again.
+
+`POST .../{id}/prepare` answers **202** with the entry while the fetch is on its
+way — started now, resumed, or already running, which it never restarts — and
+**200** once it is ready; a Mac without room is a **507** before a byte moves, and
+one whose library drive is unplugged a **503** naming it (as are the file and
+`DELETE`). Progress is on `/events` as `download` frames whose `id` is
+`ondevice:<id>`, sent only to full-control devices and this Mac: in progress they
+carry `stage`; done is `fraction: 1` with no `stage` and no `error`; a failure
+carries the `error`, and a removal says so. `GET .../{id}/file` is 409 until the
+Mac has the file *verified*, then answers bytes with the SHA-256 as the `ETag`
+and in `X-Content-SHA256`. Resume with `Range: bytes=N-` and `If-Range` set to
+the `ETag`: a 206 is exactly the rest, and a **200 means the file changed** —
+discard the partial and keep the whole body. Check the digest at the end; if it
+does not match, call `POST .../{id}/prepare?verify=1` once, then fetch again from
+zero (`verify` takes `1`/`true`, or `0`/`false` for an ordinary prepare). A Mac with
+no network fails a fetch at once; a Hub that never answers, after 60 seconds.
+`DELETE .../{id}` removes the Mac's copy and any partial, including one a move
+left in a former folder. Ids are catalogue keys and nothing else — anything else
+is a 404. Full scope only, and the swarm secret is refused with its own sentence.
+
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | `POST` | `/buddy/pair` | none | Spend the six-digit code on screen for a device token of your own. |
@@ -240,3 +289,7 @@ before the gap, so the answer holds exactly what was dropped.
 | `GET` | `/media/{id}` | device | The file itself. Answers bytes, not JSON: the content type of the result, `Accept-Ranges: bytes`, an `ETag`, 206 for a `Range` and 304 for a matching `If-None-Match`. A chat-only device may fetch preview images but not the renders themselves. |
 | `POST` | `/uploads` | device | Send a picture or a short clip, and get back the two ids that let a render start from it. Raw bytes or multipart; at most 24 MiB; kept for seven days. |
 | `GET` | `/swarm/peers/{name}/status` | device | One peer asked now rather than remembered: its `/v1/node` and `/v1/gguf`, fetched with this Mac's credential for it. The credential is never in the answer. |
+| `GET` | `/ondevice/models` | device | The models a phone can run by itself, pinned to exact bytes, and the state of this Mac's copy of each: absent, downloading, ready or failed. |
+| `POST` | `/ondevice/models/{id}/prepare` | device | Have the Mac fetch the pinned file from Hugging Face and verify it. 202 with the entry while it is on its way — started now, resumed, or already running — and 200 once it is ready. Progress arrives on /events as `download` frames with the id `ondevice:<id>`. `?verify=1` has the Mac hash a ready copy again first: call it once when the file you fetched does not hash to `sha256`, then fetch from zero. |
+| `GET` | `/ondevice/models/{id}/file` | device | The verified file. Answers bytes, not JSON: `application/octet-stream`, `Content-Length`, `Accept-Ranges: bytes`, an `ETag` that is the quoted SHA-256, `X-Content-SHA256` and `Content-Disposition: attachment`. 206 for a `Range` — `bytes=N-` resumes with exactly the rest — and 304 for a matching `If-None-Match`. Resume with `If-Range` set to the `ETag`: a 200 to that request means the file is not the one you started, so discard the partial and keep the whole body. |
+| `DELETE` | `/ondevice/models/{id}` | device | Delete the Mac's copy and any partial download, stopping a fetch in flight. Idempotent; answers the entry as it now is. |

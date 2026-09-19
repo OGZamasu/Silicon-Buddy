@@ -17,6 +17,9 @@
 -keep class dev.siliconoptimizer.buddy.AgentsScreenTest { *; }
 -keep class dev.siliconoptimizer.buddy.AgentsScreenTest$* { *; }
 -keep class dev.siliconoptimizer.buddy.FakeMac { *; }
+-keep class dev.siliconoptimizer.buddy.OnDeviceModelTest { *; }
+-keep class dev.siliconoptimizer.buddy.OnDeviceModelTest$* { *; }
+-keep class dev.siliconoptimizer.buddy.StandInMac { *; }
 -keepclasseswithmembers class * { @org.junit.Test <methods>; }
 
 # Compile-only annotations the test libraries reference and that never exist at runtime.

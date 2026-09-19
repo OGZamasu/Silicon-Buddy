@@ -41,6 +41,11 @@ public enum TransportError: Error, Equatable, Sendable {
     case rangeNotSatisfiable(String)
     /// 429: the Mac is already doing as much of this as it will do at once.
     case busy(String)
+    /// 503: the Mac cannot reach something it needs for this right now — the drive its
+    /// model library lives on, for the models it keeps for the phone. Its sentence names it.
+    case unavailable(String)
+    /// 507: the Mac has no room for what was asked, said before anything moved.
+    case insufficientStorage(String)
     /// Any other HTTP status, with whatever the Mac said.
     case server(status: Int, message: String)
     /// The body did not match the contract.
@@ -83,6 +88,10 @@ extension TransportError: LocalizedError {
             message.isEmpty ? "That part of the file is not there any more." : message
         case .busy(let message):
             message
+        case .unavailable(let message):
+            message.isEmpty ? "The Mac can't do that right now." : message
+        case .insufficientStorage(let message):
+            message.isEmpty ? "The Mac has no room for that." : message
         case .server(let status, let message):
             message.isEmpty ? "The Mac returned an error (\(status))." : message
         case .decoding(let detail):
@@ -105,6 +114,7 @@ extension TransportError: LocalizedError {
         case .tooLarge: "Send fewer or smaller pictures."
         case .notFound: "It may have been deleted on the Mac."
         case .badRequest: "Load a model from the Models tab."
+        case .insufficientStorage: "Free some space on the Mac, then try again."
         default: nil
         }
     }
@@ -181,6 +191,8 @@ extension TransportError {
         case 415: return .unsupportedMedia(message)
         case 416: return .rangeNotSatisfiable(message)
         case 429: return .busy(message.isEmpty ? "The Mac is busy." : message)
+        case 503: return .unavailable(message)
+        case 507: return .insufficientStorage(message)
         default: return .server(status: status, message: message)
         }
     }

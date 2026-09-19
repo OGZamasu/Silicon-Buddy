@@ -47,6 +47,23 @@
 -keep class androidx.camera.camera2.Camera2Config { *; }
 
 
+# --- The phone's own model (M5) ----------------------------------------------
+#
+# The JNI entry points and the sink native code calls back are kept by the llama module's
+# consumer rules; CI checks seeds.txt for them. Two more things are reached by name:
+#
+# The download job and service are named in the manifest, which R8 reads — but the job is
+# also scheduled by ComponentName, so both are kept explicitly rather than trusted to that.
+-keep class dev.siliconoptimizer.buddy.ondevice.ModelDownloadJobService { *; }
+-keep class dev.siliconoptimizer.buddy.ondevice.ModelDownloadService { *; }
+-keep class dev.siliconoptimizer.buddy.ondevice.ModelDownloadReceiver { *; }
+#
+# The instrumented tests drive the engine through this, by name, on the minified build —
+# see its KDoc. Strings and numbers in and out, so the Java tests need nothing else.
+-keep class dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe {
+    public static *;
+}
+
 # --- so the app can be instrumented ------------------------------------------
 #
 # `androidx.tracing` is on the app's classpath but unused, so R8 removes it. The

@@ -18,6 +18,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # llama.cpp b11053, for the phone's own model (M5).
+          submodules: true
 
       - uses: actions/setup-java@v4
         with:
@@ -56,14 +59,20 @@ jobs:
             fi
           done
 
-          # 48 after M2.1, 62 after M3's media types, 75 with M4's agent sessions. Raise
-          # it with every wire type added: a floor that lags lets a lost serializer through.
+          # 48 after M2.1, 62 after M3's media types, 75 with M4's agent sessions, 83
+          # with M5's phone models. Raise it with every wire type added: a floor that lags
+          # lets a lost serializer through.
           serializers=$(grep -oE '^[A-Za-z0-9_.]+\$\$serializer' "$seeds" | sort -u | wc -l)
           echo "kept $serializers serializers"
-          if [ "$serializers" -lt 75 ]; then
-            echo "::error::only $serializers serializers kept, expected at least 75"
+          if [ "$serializers" -lt 83 ]; then
+            echo "::error::only $serializers serializers kept, expected at least 83"
             exit 1
           fi
+          # The JNI entry points are bound by name; renamed, the phone's model is an
+          # UnsatisfiedLinkError. scripts/ci-android.sh checks each one — the local CI,
+          # since Actions cannot run here.
+          grep -qE "^dev\.siliconoptimizer\.buddy\.llama\.LlamaNative: .* nativeGenerate\(" "$seeds" || {
+            echo "::error::LlamaNative's JNI methods were not kept"; exit 1; }
           # The agent frames arrive only by name through kotlinx.serialization, like the
           # rest of the wire; losing one means the Agents tab silently shows nothing.
           for type in AgentEvent AgentSessionDetail AgentSessionSummary AgentApproval ResyncEvent; do
@@ -82,9 +91,10 @@ jobs:
           echo "release APK: $((bytes / 1048576)) MB"
           # Release was 75 MB unminified. A regression here means R8 or the resource
           # shrinker stopped running, which is the same failure as the keep rules in
-          # reverse — worth failing on rather than noticing in six months.
-          if [ "$bytes" -gt 31457280 ]; then
-            echo "::error::release APK is $((bytes / 1048576)) MB; R8 has probably stopped running"
+          # reverse — worth failing on rather than noticing in six months. The budget is
+          # 30 MB with llama.cpp's libraries in it (M5).
+          if [ "$bytes" -gt 30000000 ]; then
+            echo "::error::release APK is $bytes bytes, over the 30 MB budget"
             exit 1
           fi
 
@@ -108,6 +118,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-java@v4
         with:

@@ -273,6 +273,77 @@ final class ContractTests: XCTestCase {
     }
 
 
+    // MARK: - M5: the models the Mac keeps for the phone (types only on iOS for now)
+
+    func testThePhonesModelsArePinnedWithTheMacsCopyAndARealPhonesNumbers() throws {
+        let list = try roundTrip(OnDeviceAPI.PhoneModelList.self, "GET__ondevice_models")
+        let qwen = try XCTUnwrap(list.models.first { $0.isDefault })
+        XCTAssertEqual(qwen.id, "qwen3.5-2b-q4_0")
+        XCTAssertEqual(qwen.sizeBytes, 1_296_764_000)
+        XCTAssertEqual(qwen.sha256, "91c102fc9a86de80e427057ee938e1e34fcaf3bba956b7296e252406e05f36f6")
+        XCTAssertEqual(qwen.source.commit, "7d26695454df6de5fbcce2e58681e62dae06ce43")
+        XCTAssertTrue(qwen.onMac.isReady)
+        XCTAssertEqual(qwen.recommended.threadsPrompt, 6)
+        XCTAssertEqual(qwen.recommended.threadsGenerate, 4)
+        XCTAssertEqual(qwen.recommended.contextLength, 4096)
+        XCTAssertEqual(qwen.recommended.minFreeMemoryBytes, 3_100_000_000)
+        XCTAssertFalse(qwen.recommended.thinking)
+        XCTAssertEqual(qwen.measured?.secondsToFirstWord300, 2.5)
+        XCTAssertNil(qwen.measured?.sustainedTokensPerSecond, "not measured is not claimed")
+        let gemma = try XCTUnwrap(list.models.first { !$0.isDefault })
+        XCTAssertTrue(gemma.slowerOnPhone)
+        XCTAssertEqual(gemma.recommended.minFreeMemoryBytes, 4_700_000_000)
+        XCTAssertEqual(gemma.onMac.state, "failed")
+        XCTAssertEqual(gemma.onMac.failure, "network")
+    }
+
+    func testPrepareAndDeleteAnswerTheEntryItself() throws {
+        let prepared = try roundTrip(OnDeviceAPI.PhoneModel.self, "POST__ondevice_models__id__prepare")
+        XCTAssertEqual(prepared.downloadEventID, "ondevice:\(prepared.id)")
+        try roundTrip(OnDeviceAPI.PhoneModel.self, "DELETE__ondevice_models__id_")
+        XCTAssertEqual(try fixture("POST__ondevice_models__id__prepare")["request"], JSONValue.null)
+        XCTAssertEqual(try fixture("GET__ondevice_models__id__file")["response"], JSONValue.null, "the file is bytes")
+    }
+
+    func testThePhoneModelRefusalsMapToCasesOfTheirOwn() throws {
+        func mapped(_ name: String, _ status: String) throws -> TransportError? {
+            let body = try JSONEncoder().encode(try XCTUnwrap(try fixture(name)["errors"]?[status]))
+            return TransportError.from(status: Int(status)!, body: body, path: "/x")
+        }
+        guard case .conflict? = try mapped("GET__ondevice_models__id__file", "409") else {
+            return XCTFail("409 is the Mac's copy not being ready yet")
+        }
+        guard case .rangeNotSatisfiable? = try mapped("GET__ondevice_models__id__file", "416") else {
+            return XCTFail("416 is a range past the end")
+        }
+        guard case .unavailable(let drive)? = try mapped("GET__ondevice_models__id__file", "503") else {
+            return XCTFail("503 is the Mac's library drive being gone")
+        }
+        XCTAssertTrue(drive.contains("is not connected"))
+        guard case .insufficientStorage? = try mapped("POST__ondevice_models__id__prepare", "507") else {
+            return XCTFail("507 is no room on the Mac")
+        }
+    }
+
+    func testTheMacFetchingAPhoneModelArrivesAsDownloadFramesWithAStage() throws {
+        let fetching = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model")
+        XCTAssertTrue(fetching.isPhoneModel)
+        XCTAssertEqual(fetching.stage, "fetching")
+        let checking = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model checking")
+        XCTAssertEqual(checking.stage, "checking")
+        let moving = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model moving")
+        XCTAssertEqual(moving.stage, "moving")
+        let ready = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model ready")
+        XCTAssertNil(ready.stage, "done has no stage")
+        XCTAssertEqual(ready.progress, 1)
+        let failed = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model failed")
+        XCTAssertTrue(failed.error?.contains("checksum") == true)
+        let removed = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "eventVariants.download.phone model removed")
+        XCTAssertEqual(removed.error, "Removed from the Mac before it finished.")
+        let mac = try roundTrip(BuddyAPI.DownloadProgress.self, "GET__events", "events.download")
+        XCTAssertFalse(mac.isPhoneModel, "the Mac's own downloads are not the phone's")
+    }
+
     // MARK: - The M4 routes: the Mac's agent sessions (types only on iOS for now)
 
     func testAgentSessionList() throws {
@@ -388,6 +459,10 @@ final class ContractTests: XCTestCase {
         "POST__agent_sessions__engine__new 403 swarm",
         "POST__agent_sessions__engine__start 403 swarm",
         "POST__agent_sessions__engine__start 409 stopping",
+        "DELETE__ondevice_models__id_ 403 swarm",
+        "GET__ondevice_models 403 swarm",
+        "GET__ondevice_models__id__file 403 swarm",
+        "POST__ondevice_models__id__prepare 403 swarm",
     ]
 
     /// The refusals a status can carry beyond the one in `errors`, read strictly: each is
@@ -455,6 +530,11 @@ final class ContractTests: XCTestCase {
         "DELETE__agent_sessions__engine_",
         "DELETE__buddy_devices__id_",
         "DELETE__buddy_invitations",
+        // M5: the models the Mac keeps for the phone, mirrored in `OnDeviceAPI.swift`.
+        "DELETE__ondevice_models__id_",
+        "GET__ondevice_models",
+        "GET__ondevice_models__id__file",
+        "POST__ondevice_models__id__prepare",
         "GET__agent_sessions",
         "GET__agent_sessions__engine_",
         "GET__buddy_devices",
@@ -566,7 +646,9 @@ final class ContractTests: XCTestCase {
             }
         }
         XCTAssertEqual(
-            seen, [400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500],
+            // 503 and 507 arrived with the phone's models: the Mac's library drive gone,
+            // and no room on the Mac.
+            seen, [400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500, 503, 507],
             "The statuses the Mac documents changed — run contract/refresh.sh, then map them"
         )
     }

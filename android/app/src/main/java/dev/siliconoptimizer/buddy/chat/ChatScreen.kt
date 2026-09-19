@@ -75,7 +75,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
+import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ui.Format
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -181,7 +189,28 @@ fun ChatScreen(
 
     Column(modifier = modifier.fillMaxSize().imePadding()) {
         val messages = model.current?.messages.orEmpty()
-        if (messages.isEmpty()) {
+        val onPhone = model.current?.onDevice == true
+        if (messages.isEmpty() && onPhone) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("Ask this phone", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    "The model on this phone answers here, without your Mac. It reads text only, " +
+                        "and nothing here leaves the phone unless you send it to your Mac.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    model.storageNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
+        } else if (messages.isEmpty()) {
             Column(
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -227,12 +256,59 @@ fun ChatScreen(
                         },
                         onCopy = { copyToClipboard(context, message.content) },
                         onShare = { share(context, message.content) },
+                        // The failed Mac reply carries the same offer as the banner.
+                        onAnswerOnPhone = if (model.offer?.failedMessageID == message.id) {
+                            { model.answerOnPhone() }
+                        } else {
+                            null
+                        },
                     )
                 }
             }
         }
 
         HorizontalDivider()
+
+        model.offer?.let { offer ->
+            PhoneOfferBanner(
+                modelLabel = offer.model.label,
+                canRetry = offer.question != null && app.transport != null,
+                onAnswer = { model.answerOnPhone() },
+                onRetry = { model.retryOnMac(app.transport) },
+            )
+        }
+        model.refusal?.let { refusal ->
+            RefusalBanner(
+                message = refusal.message,
+                alternative = refusal.alternative?.label,
+                onAlternative = { model.useAlternative() },
+                onDismiss = { model.dismissRefusal() },
+            )
+        }
+        var confirmingSend by remember { mutableStateOf(false) }
+        // The chat's own view of the Mac — the last send, the probe, the event stream — not
+        // the probe alone, which can be minutes old.
+        if (model.macIsBack && app.isPaired) {
+            MacIsBackBanner(
+                canSend = model.sendableCount > 0,
+                onNewMacConversation = { model.newMacConversation(app.transport) },
+                onSendToMac = { confirmingSend = true },
+            )
+        }
+        if (confirmingSend) {
+            AlertDialog(
+                onDismissRequest = { confirmingSend = false },
+                title = { Text("Send to your Mac?") },
+                text = { Text(OnDeviceNotices.sendToMacQuestion(model.sendableCount, app.macDisplayName)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmingSend = false
+                        model.sendToMac(app.transport)
+                    }) { Text("Send ${model.sendableCount}") }
+                },
+                dismissButton = { TextButton(onClick = { confirmingSend = false }) { Text("Keep it here") } },
+            )
+        }
 
         if (voice.state is VoiceState.Listening) {
             voice.partial?.takeIf { it.isNotEmpty() }?.let { heard ->
@@ -301,11 +377,12 @@ fun ChatScreen(
                         ),
                     )
                 },
-                enabled = model.attachments.size < SendLimits.MAX_ATTACHMENTS,
+                enabled = model.attachments.size < SendLimits.MAX_ATTACHMENTS && !onPhone,
             ) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "Attach a picture")
             }
             IconButton(
+                enabled = !onPhone,
                 onClick = {
                     if (hasCamera) {
                         showCamera = true
@@ -322,7 +399,7 @@ fun ChatScreen(
             OutlinedTextField(
                 value = model.draft,
                 onValueChange = { model.draft = it },
-                placeholder = { Text("Message") },
+                placeholder = { Text(if (onPhone) "Ask this phone" else "Message") },
                 modifier = Modifier.weight(1f),
                 maxLines = 6,
             )
@@ -385,13 +462,19 @@ private fun MessageBubble(
     onToggleReasoning: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
+    onAnswerOnPhone: (() -> Unit)? = null,
 ) {
     val isUser = message.role == ChatMessage.ROLE_USER
+    val fromPhone = message.isFromPhone
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .semantics {
-                contentDescription = if (isUser) "You said" else "The model replied"
+                contentDescription = when {
+                    isUser -> "You said"
+                    fromPhone -> "This phone's model replied"
+                    else -> "The model replied"
+                }
             },
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
@@ -453,14 +536,25 @@ private fun MessageBubble(
             }
         }
 
+        // Every answer the phone wrote says so, on the answer itself — not in a setting, not
+        // in a banner that scrolls away. Drawn before the text, so it is read first too.
+        if (fromPhone) PhoneChip(message.originLabel ?: "this phone's model")
+
         if (message.content.isNotEmpty()) {
             Column(
                 modifier = Modifier
-                    .background(
-                        if (isUser) {
-                            MaterialTheme.colorScheme.primaryContainer
+                    .then(
+                        if (fromPhone) {
+                            Modifier.border(1.dp, MaterialTheme.colorScheme.tertiary, RoundedCornerShape(14.dp))
                         } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
+                            Modifier
+                        },
+                    )
+                    .background(
+                        when {
+                            isUser -> MaterialTheme.colorScheme.primaryContainer
+                            fromPhone -> MaterialTheme.colorScheme.tertiaryContainer
+                            else -> MaterialTheme.colorScheme.surfaceContainerHigh
                         },
                         RoundedCornerShape(14.dp),
                     )
@@ -512,6 +606,12 @@ private fun MessageBubble(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            onAnswerOnPhone?.let { answer ->
+                TextButton(onClick = answer) {
+                    Icon(Icons.Filled.PhoneAndroid, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text("  ${OnDeviceNotices.ANSWER_ON_PHONE}")
+                }
+            }
         }
 
         message.verdict?.let { verdict ->
@@ -540,10 +640,115 @@ private fun MessageBubble(
 
         message.metrics?.takeIf { it.generatedTokens > 0 }?.let {
             Text(
-                "${it.generatedTokens} tokens · ${Format.rate(it.tokensPerSecond)}",
+                "${it.generatedTokens} tokens · ${Format.rate(it.tokensPerSecond)}" +
+                    (it.timeToFirstToken?.takeIf { fromPhone && it > 0 }
+                        ?.let { first -> String.format(java.util.Locale.US, " · first word %.1f s", first) } ?: ""),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline,
             )
+        }
+    }
+}
+
+/** "On this phone · Qwen3.5 2B", on every answer the phone wrote. */
+@Composable
+private fun PhoneChip(label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .padding(bottom = 4.dp)
+            .background(MaterialTheme.colorScheme.tertiary, RoundedCornerShape(50))
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .semantics { contentDescription = OnDeviceNotices.chip(label) },
+    ) {
+        Icon(
+            Icons.Filled.PhoneAndroid,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onTertiary,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            " ${OnDeviceNotices.chip(label)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onTertiary,
+        )
+    }
+}
+
+/** "Your Mac isn't answering. [Answer on this phone] [Try again]" — never silent. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PhoneOfferBanner(
+    modelLabel: String,
+    canRetry: Boolean,
+    onAnswer: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(OnDeviceNotices.MAC_NOT_ANSWERING, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "$modelLabel on this phone can answer instead. It stays on this phone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onAnswer) {
+                Icon(Icons.Filled.PhoneAndroid, contentDescription = null, modifier = Modifier.size(16.dp))
+                Text("  ${OnDeviceNotices.ANSWER_ON_PHONE}")
+            }
+            if (canRetry) OutlinedButton(onClick = onRetry) { Text(OnDeviceNotices.TRY_AGAIN) }
+        }
+    }
+}
+
+/** Why the phone would not answer, and the smaller model that would fit when it was memory. */
+@Composable
+private fun RefusalBanner(
+    message: String,
+    alternative: String?,
+    onAlternative: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            alternative?.let { TextButton(onClick = onAlternative) { Text("Use $it instead") } }
+            TextButton(onClick = onDismiss) { Text("OK") }
+        }
+    }
+}
+
+/** In a conversation the phone answered, once the Mac is reachable again. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MacIsBackBanner(
+    canSend: Boolean,
+    onNewMacConversation: () -> Unit,
+    onSendToMac: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            OnDeviceNotices.MAC_IS_BACK + " This conversation stays on the phone unless you send it.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onNewMacConversation) { Text(OnDeviceNotices.NEW_MAC_CONVERSATION) }
+            if (canSend) TextButton(onClick = onSendToMac) { Text(OnDeviceNotices.SEND_TO_MAC) }
         }
     }
 }

@@ -34,6 +34,13 @@ class EventFeed : ViewModel() {
     val jobs = mutableStateMapOf<String, JobProgress>()
 
     /**
+     * The newest frame for each model the Mac is fetching for this phone, by the model's
+     * catalogue id — done and failed ones included, which [downloads] drops, because the
+     * phone's Settings row wants to say how it ended.
+     */
+    val phoneModels = mutableStateMapOf<String, DownloadProgress>()
+
+    /**
      * Every `job` event, terminal ones included.
      *
      * The map above is "what is running now", which is what the dashboard wants; the
@@ -204,11 +211,13 @@ class EventFeed : ViewModel() {
                     when (event) {
                         is ServerEvent.StatusChanged -> status = event.status
                         is ServerEvent.Download -> {
-                            if ((event.progress.progress ?: 0.0) >= 1.0) {
+                            // Finished, failed or removed: no longer happening.
+                            if ((event.progress.progress ?: 0.0) >= 1.0 || event.progress.error != null) {
                                 downloads.remove(event.progress.id)
                             } else {
                                 downloads[event.progress.id] = event.progress
                             }
+                            event.progress.phoneModelID?.let { phoneModels[it] = event.progress }
                         }
                         is ServerEvent.Job -> {
                             // One vocabulary for "over", shared with the queue screen:
@@ -267,6 +276,7 @@ class EventFeed : ViewModel() {
         stop()
         status = null
         downloads.clear()
+        phoneModels.clear()
         jobs.clear()
         lastEvent = null
         mustPoll = false

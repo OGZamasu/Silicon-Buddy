@@ -33,13 +33,27 @@ data class ChatMessage(
      * after the answer is finished and is never waited for.
      */
     val verdict: Verdict? = null,
+    /**
+     * Who wrote this reply when it was not the Mac: `phone:<model id>`. Set on every answer
+     * the phone's own model wrote — it is what the chip under the bubble reads — and never on
+     * one from the Mac.
+     */
+    val origin: String? = null,
+    /** The phone model's name when it wrote this, so the chip outlives the model. */
+    val originLabel: String? = null,
 ) {
     val wire: ChatMessageWire get() = ChatMessageWire(role, content, images)
+
+    /** Written by the phone's own model rather than the Mac. */
+    val isFromPhone: Boolean get() = origin?.startsWith(PHONE_ORIGIN) == true
 
     companion object {
         const val ROLE_USER = "user"
         const val ROLE_ASSISTANT = "assistant"
         const val ROLE_SYSTEM = "system"
+
+        /** The prefix of [origin] for an answer the phone wrote: `phone:qwen3.5-2b-q4_0`. */
+        const val PHONE_ORIGIN = "phone:"
     }
 }
 
@@ -51,6 +65,13 @@ data class Conversation(
     val messages: List<ChatMessage> = emptyList(),
     /** What the Mac says, for a conversation it keeps and this device has not opened. */
     val remoteMessageCount: Int? = null,
+    /**
+     * Answered by the phone's own model, and kept only on the phone. Its id starts with
+     * `OnDeviceIds.PREFIX`, and nothing that talks to the Mac will take it.
+     */
+    val onDevice: Boolean = false,
+    /** Which of the phone's models answers here. */
+    val phoneModelID: String? = null,
 ) {
     val messageCount: Int
         get() = if (messages.isEmpty() && remoteMessageCount != null) {
@@ -80,7 +101,7 @@ data class Conversation(
  * the app usable on a train: the transcript is here, not only there. One JSON file,
  * because a handful of conversations is not a database.
  */
-class ConversationStore(private val directory: File) {
+class ConversationStore(val directory: File) {
 
     constructor(context: Context) : this(context.filesDir)
 

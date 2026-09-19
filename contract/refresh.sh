@@ -23,8 +23,12 @@ if [ ! -d "$checkout/.git" ]; then
     exit 1
 fi
 
-worktree="$(mktemp -d)/silicon-optimizer"
-export_dir="$(mktemp -d)/contract"
+# The export builds the Mac app's test target, which is gigabytes. macOS's `mktemp -d`
+# ignores TMPDIR, so the scratch folders are made under it explicitly: set TMPDIR to a
+# roomy drive and the whole build lands there.
+scratch="${TMPDIR:-/tmp}"
+worktree="$(mktemp -d "${scratch%/}/contract-refresh.XXXXXX")/silicon-optimizer"
+export_dir="$(mktemp -d "${scratch%/}/contract-export.XXXXXX")/contract"
 cleanup() {
     git -C "$checkout" worktree remove --force "$worktree" >/dev/null 2>&1 || true
     rm -rf "$(dirname "$worktree")" "$(dirname "$export_dir")"

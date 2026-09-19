@@ -156,6 +156,30 @@ interface ControlTransport {
     suspend fun answerAgentApproval(engine: String, id: String, decision: String): AgentApprovalResult =
         unsupported("/agent/sessions")
 
+    // M5: the small models the Mac keeps for this phone. Full scope, every one; a chat-only
+    // device is answered 403 and told why.
+
+    /** `GET /ondevice/models`: what this phone could run, and the Mac's copy of each. */
+    suspend fun phoneModels(): PhoneModelList = unsupported("/ondevice/models")
+
+    /**
+     * `POST /ondevice/models/{id}/prepare`: have the Mac fetch and verify the pinned file.
+     * [verify] asks it to hash a ready copy again — once, after this phone's own check of
+     * what it fetched failed.
+     */
+    suspend fun preparePhoneModel(id: String, verify: Boolean = false): PhoneModelPreparation =
+        unsupported("/ondevice/models")
+
+    /** `DELETE /ondevice/models/{id}`: the Mac's copy and any partial, gone. */
+    suspend fun removePhoneModel(id: String): PhoneModel = unsupported("/ondevice/models")
+
+    /**
+     * `GET /ondevice/models/{id}/file` from byte [from] on. With [ifRange] — the tag the
+     * partial was fetched under — a 200 means the partial belongs to another file.
+     */
+    suspend fun openPhoneModelFile(id: String, from: Long, ifRange: String?): PhoneModelStream =
+        unsupported("/ondevice/models")
+
     private fun unsupported(path: String): Nothing = throw TransportError.RouteUnavailable(path)
 }
 
@@ -270,7 +294,17 @@ class ControlClient(
         body: String? = null,
         authorized: Boolean = true,
         readTimeoutMs: Int = 30_000,
-    ): String = withContext(Dispatchers.IO) {
+    ): String = exchange(method, path, query, body, authorized, readTimeoutMs).second
+
+    /** [send], and the status it answered with — for the routes where 200 and 202 differ. */
+    private suspend fun exchange(
+        method: String,
+        path: String,
+        query: Map<String, String> = emptyMap(),
+        body: String? = null,
+        authorized: Boolean = true,
+        readTimeoutMs: Int = 30_000,
+    ): Pair<Int, String> = withContext(Dispatchers.IO) {
         // A render holds this connection open for minutes, and reading from a socket
         // blocks in the kernel, where a cancelled coroutine cannot reach it. A child
         // suspended in `awaitCancellation` is cancelled at once, on another thread, and
@@ -303,7 +337,7 @@ class ControlClient(
             val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
             coroutineContext.ensureActive()
             TransportError.from(status, text, path)?.let { throw it }
-            text
+            status to text
         } catch (error: IOException) {
             coroutineContext.ensureActive()
             throw TransportError.from(error, config.host)
@@ -423,6 +457,106 @@ class ControlClient(
     override suspend fun peerStatus(name: String): PeerNodeStatus {
         val path = "/swarm/peers/${pathComponent(name)}/status"
         return decode(send("GET", path, readTimeoutMs = 30_000), path)
+    }
+
+    // MARK: - The models the Mac keeps for this phone
+
+    override suspend fun phoneModels(): PhoneModelList =
+        decode(send("GET", "/ondevice/models", readTimeoutMs = 20_000), "/ondevice/models")
+
+    override suspend fun preparePhoneModel(id: String, verify: Boolean): PhoneModelPreparation {
+        val path = "/ondevice/models/${pathComponent(id)}/prepare"
+        return try {
+            // No body, but a length: `{}`, the way the agent verbs and `/unload` send one.
+            val (status, text) = exchange(
+                "POST", path,
+                query = if (verify) mapOf("verify" to "1") else emptyMap(),
+                body = "{}", readTimeoutMs = 60_000,
+            )
+            PhoneModelPreparation(decode(text, path), wasReady = status == 200)
+        } catch (error: TransportError.RouteUnavailable) {
+            // The list came from this Mac, so the route is there: a 404 is about the id.
+            throw error.asNotFound()
+        }
+    }
+
+    override suspend fun removePhoneModel(id: String): PhoneModel {
+        val path = "/ondevice/models/${pathComponent(id)}"
+        return try {
+            decode(send("DELETE", path, readTimeoutMs = 60_000), path)
+        } catch (error: TransportError.RouteUnavailable) {
+            throw error.asNotFound()
+        }
+    }
+
+    /**
+     * Opens the file for reading from [from]. The caller reads the body and closes it; a
+     * status other than 200 or 206 is thrown as the error it maps to — 409 while the Mac's
+     * copy is not verified yet, 416 for a range past the end, 503 while its drive is gone.
+     */
+    override suspend fun openPhoneModelFile(
+        id: String,
+        from: Long,
+        ifRange: String?,
+    ): PhoneModelStream = withContext(Dispatchers.IO) {
+        val path = "/ondevice/models/${pathComponent(id)}/file"
+        val socket = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+        val watcher = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                socket.get()?.let(abandon)
+            }
+        }
+        var handedOver = false
+        try {
+            // A read timeout rather than none: a Mac that stops sending mid-file is a
+            // stalled download to resume later, not a notification stuck at 40% forever.
+            val connection = open("GET", path, accept = "application/octet-stream", readTimeoutMs = 60_000)
+                .also { socket.set(it) }
+            // Byte ranges only, and never a compressed body: the offsets are the file's.
+            connection.setRequestProperty("Accept-Encoding", "identity")
+            if (from > 0) {
+                connection.setRequestProperty("Range", "bytes=$from-")
+                ifRange?.let { connection.setRequestProperty("If-Range", "\"$it\"") }
+            }
+            coroutineContext.ensureActive()
+            val status = connection.responseCode
+            if (status != 200 && status != 206) {
+                val text = connection.errorStream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+                val failure = when (val mapped = TransportError.from(status, text, path)) {
+                    // The Mac listed this id; a 404 is about the model, not the route.
+                    is TransportError.RouteUnavailable -> mapped.asNotFound()
+                    null -> TransportError.Server(status, text)
+                    else -> mapped
+                }
+                throw failure
+            }
+            val (start, total) = PhoneModelStream.parseContentRange(connection.getHeaderField("Content-Range"))
+            val length = connection.getHeaderField("Content-Length")?.trim()?.toLongOrNull() ?: -1L
+            val digest = connection.getHeaderField("X-Content-SHA256")?.trim()?.lowercase()
+                ?: PhoneModelStream.opaqueTag(connection.getHeaderField("ETag"))?.lowercase()
+            val stream = PhoneModelStream(
+                status = status,
+                contentLength = length,
+                rangeStart = if (status == 206) start else null,
+                totalBytes = if (status == 206) total else length.takeIf { it >= 0 },
+                sha256 = digest,
+                body = connection.inputStream,
+                release = { runCatching { connection.disconnect() } },
+            )
+            // Handed over: from here the caller reads it and closes it. The watcher below
+            // lets go of it first, or its own cleanup would hang up on the caller.
+            handedOver = true
+            socket.set(null)
+            stream
+        } catch (error: IOException) {
+            coroutineContext.ensureActive()
+            throw TransportError.from(error, config.host)
+        } finally {
+            watcher.cancel()
+            if (!handedOver) socket.get()?.disconnect()
+        }
     }
 
     // MARK: - Agent sessions
@@ -645,7 +779,10 @@ class ControlClient(
         conversationID: String,
         message: ChatMessageWire,
         maxTokens: Int?,
-    ): Flow<ChatStreamEvent> = chatEvents(
+    ): Flow<ChatStreamEvent> = if (OnDeviceIds.isOnDevice(conversationID)) {
+        // A conversation the phone answered itself never reaches the Mac by its id.
+        kotlinx.coroutines.flow.flow { throw TransportError.Forbidden(OnDeviceIds.REFUSAL) }
+    } else chatEvents(
         "/conversations/${pathComponent(conversationID)}/messages",
         json.encodeToString(
             NewMessageRequest(
@@ -894,6 +1031,7 @@ class ControlClient(
     )
 
     override suspend fun conversation(id: String): ConversationDetail {
+        if (OnDeviceIds.isOnDevice(id)) throw TransportError.Forbidden(OnDeviceIds.REFUSAL)
         val path = "/conversations/${pathComponent(id)}"
         return try {
             decode(send("GET", path, readTimeoutMs = 20_000), path)

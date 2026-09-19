@@ -26,6 +26,15 @@
       A normal permission, granted at install.
     -->
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+    <!--
+      The phone's own model (M5) comes from the Mac, 1.3 GB of it, and on Android 14 and
+      later that is a user-initiated data transfer job: the kind the system expects for a
+      large transfer the owner asked for, with its own notification. Both are normal
+      permissions, granted at install. The network state is how the job and the Android
+      10–13 service keep to Wi-Fi unless the owner said otherwise.
+    -->
+    <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
@@ -150,6 +159,23 @@
         -->
         <receiver
             android:name=".agents.ApprovalActionReceiver"
+            android:exported="false" />
+
+        <!--
+          A model for this phone, coming over from the Mac. Android 14+ runs it as a
+          user-initiated job; 10–13 as a dataSync foreground service. Neither is exported,
+          and Cancel on the notification reaches the receiver through this app's own intent.
+        -->
+        <service
+            android:name=".ondevice.ModelDownloadJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service
+            android:name=".ondevice.ModelDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".ondevice.ModelDownloadReceiver"
             android:exported="false" />
 
         <receiver

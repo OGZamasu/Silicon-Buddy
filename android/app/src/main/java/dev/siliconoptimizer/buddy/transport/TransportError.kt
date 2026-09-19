@@ -74,6 +74,15 @@ sealed class TransportError(message: String) : Exception(message) {
     /** 429: the Mac is already doing as much of this as it will do at once. */
     data class Busy(val detail: String) : TransportError(detail)
 
+    /**
+     * 503: the Mac cannot reach something it needs for this right now — the drive its
+     * model library lives on, for the models it keeps for the phone. Its sentence names it.
+     */
+    data class Unavailable(val detail: String) : TransportError(detail)
+
+    /** 507: the Mac has no room for what was asked, said before anything moved. */
+    data class InsufficientStorage(val detail: String) : TransportError(detail)
+
     data class Server(val status: Int, val detail: String) :
         TransportError(if (detail.isBlank()) "The Mac returned an error ($status)." else detail)
 
@@ -131,6 +140,8 @@ sealed class TransportError(message: String) : Exception(message) {
             is RouteUnavailable -> "route unavailable"
             is BadRequest -> "bad request"
             is Busy -> "busy"
+            is Unavailable -> "unavailable"
+            is InsufficientStorage -> "insufficient storage"
             is Server -> "server error $status"
             is Decoding -> "decoding failed"
             is NotConfigured -> "not configured"
@@ -150,6 +161,7 @@ sealed class TransportError(message: String) : Exception(message) {
             is RangeNotSatisfiable -> "Fetch it again from the beginning."
             is NotFound -> "It may have been deleted on the Mac."
             is BadRequest -> "Load a model from the Models tab."
+            is InsufficientStorage -> "Free some space on the Mac, then try again."
             else -> null
         }
 
@@ -205,6 +217,8 @@ sealed class TransportError(message: String) : Exception(message) {
                     detail.ifBlank { "That part of the file is not there any more." },
                 )
                 429 -> Busy(detail.ifBlank { "The Mac is busy." })
+                503 -> Unavailable(detail.ifBlank { "The Mac can't do that right now." })
+                507 -> InsufficientStorage(detail.ifBlank { "The Mac has no room for that." })
                 500 -> Server(500, detail.ifBlank { "The Mac could not finish that." })
                 else -> Server(status, detail)
             }

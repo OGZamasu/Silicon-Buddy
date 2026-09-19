@@ -43,6 +43,8 @@ import dev.siliconoptimizer.buddy.transport.PairRequest
 import dev.siliconoptimizer.buddy.transport.PairResponse
 import dev.siliconoptimizer.buddy.transport.PairedDevice
 import dev.siliconoptimizer.buddy.transport.PeerNodeStatus
+import dev.siliconoptimizer.buddy.transport.PhoneModel
+import dev.siliconoptimizer.buddy.transport.PhoneModelList
 import dev.siliconoptimizer.buddy.transport.Plan
 import dev.siliconoptimizer.buddy.transport.PlanRequest
 import dev.siliconoptimizer.buddy.transport.Profile
@@ -273,6 +275,90 @@ class ContractTest {
         roundTrip<Heartbeat>("GET__events", "events.heartbeat")
     }
 
+
+    // MARK: - M5: the models the Mac keeps for this phone
+
+    @Test
+    fun `the phone's models are pinned to exact bytes, with the Mac's copy and a real phone's numbers`() {
+        val list = roundTrip<PhoneModelList>("GET__ondevice_models")
+        val qwen = list.models.single { it.isDefault }
+        assertEquals("qwen3.5-2b-q4_0", qwen.id)
+        assertEquals(1_296_764_000L, qwen.sizeBytes)
+        assertEquals("91c102fc9a86de80e427057ee938e1e34fcaf3bba956b7296e252406e05f36f6", qwen.sha256)
+        assertEquals("7d26695454df6de5fbcce2e58681e62dae06ce43", qwen.source.commit)
+        assertTrue(qwen.onMac.isReady)
+        // What the phone runs it with: the Mac's numbers from the owner's own phone.
+        assertEquals(6, qwen.recommended.threadsPrompt)
+        assertEquals(4, qwen.recommended.threadsGenerate)
+        assertEquals(4096, qwen.recommended.contextLength)
+        // The weights with no margin — Android can page them back from the file — plus the
+        // rest of the measured peak grown to 4,096 tokens, plus a quarter.
+        assertEquals(3_100_000_000L, qwen.recommended.minFreeMemoryBytes)
+        assertFalse(qwen.recommended.thinking)
+        assertEquals(2.5, qwen.measured!!.secondsToFirstWord300, 1e-9)
+        assertNull("not measured is not claimed", qwen.measured!!.sustainedTokensPerSecond)
+        val gemma = list.models.single { !it.isDefault }
+        assertTrue(gemma.slowerOnPhone)
+        assertEquals(4_700_000_000L, gemma.recommended.minFreeMemoryBytes)
+        assertEquals(7.5, gemma.measured!!.sustainedTokensPerSecond!!, 1e-9)
+        assertTrue(gemma.measured!!.sustainedMeasured)
+        assertTrue(gemma.onMac.isFailed)
+        assertEquals("network", gemma.onMac.failure)
+        assertEquals(listOf("full"), scopes("GET__ondevice_models"))
+    }
+
+    @Test
+    fun `prepare and delete answer the entry itself`() {
+        val prepared = roundTrip<PhoneModel>("POST__ondevice_models__id__prepare")
+        assertEquals("ondevice:${prepared.id}", prepared.downloadEventID)
+        roundTrip<PhoneModel>("DELETE__ondevice_models__id_")
+        assertEquals(JsonNull, fixture("POST__ondevice_models__id__prepare")["request"])
+        for (name in listOf("POST__ondevice_models__id__prepare", "DELETE__ondevice_models__id_", "GET__ondevice_models__id__file")) {
+            assertEquals(listOf("full"), scopes(name))
+        }
+    }
+
+    @Test
+    fun `the file and prepare refusals reach the phone as cases it can act on`() {
+        val file = "GET__ondevice_models__id__file"
+        assertEquals(JsonNull, fixture(file)["response"])
+        assertTrue("409: not ready on the Mac yet", TransportError.from(409, part(file, "errors.409").toString(), "/x") is TransportError.Conflict)
+        assertTrue(TransportError.from(416, part(file, "errors.416").toString(), "/x") is TransportError.RangeNotSatisfiable)
+        val missing = TransportError.from(503, part(file, "errors.503").toString(), "/x")
+        assertTrue("503: the Mac's library drive is gone", missing is TransportError.Unavailable)
+        assertTrue("and the Mac's sentence names it", missing!!.message!!.contains("is not connected"))
+        val prepare = "POST__ondevice_models__id__prepare"
+        assertTrue("507: no room on the Mac", TransportError.from(507, part(prepare, "errors.507").toString(), "/x") is TransportError.InsufficientStorage)
+        assertTrue(TransportError.from(503, part(prepare, "errors.503").toString(), "/x") is TransportError.Unavailable)
+        assertTrue(TransportError.from(403, part(prepare, "errors.403").toString(), "/x") is TransportError.Forbidden)
+        assertTrue(
+            TransportError.from(403, part(prepare, "errorVariants.403.swarm").toString(), "/x")!!.message!!
+                .contains("swarm node may not"),
+        )
+    }
+
+    @Test
+    fun `the Mac fetching a phone model arrives as download frames with a stage`() {
+        val fetching = roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model")
+        assertTrue(fetching.isPhoneModel)
+        assertEquals("gemma-4-e2b-q4_0", fetching.phoneModelID)
+        assertEquals("fetching", fetching.stage)
+        assertEquals("checking", roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model checking").stage)
+        assertEquals("moving", roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model moving").stage)
+        val ready = roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model ready")
+        assertNull("done has no stage", ready.stage)
+        assertEquals(1.0, ready.progress!!, 1e-9)
+        val failed = roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model failed")
+        assertTrue(failed.error!!.contains("checksum"))
+        assertEquals(
+            "Removed from the Mac before it finished.",
+            roundTrip<DownloadProgress>("GET__events", "eventVariants.download.phone model removed").error,
+        )
+        assertFalse("the Mac's own downloads are not the phone's", roundTrip<DownloadProgress>("GET__events", "events.download").isPhoneModel)
+    }
+
+    private fun scopes(name: String): List<String> =
+        (fixture(name)["scopes"] as JsonArray).map { (it as JsonPrimitive).content }
 
     // MARK: - The M3 routes: starting work, and what comes back
 
@@ -609,6 +695,10 @@ class ContractTest {
             "POST__agent_sessions__engine__new 403 swarm",
             "POST__agent_sessions__engine__start 403 swarm",
             "POST__agent_sessions__engine__start 409 stopping",
+            "DELETE__ondevice_models__id_ 403 swarm",
+            "GET__ondevice_models 403 swarm",
+            "GET__ondevice_models__id__file 403 swarm",
+            "POST__ondevice_models__id__prepare 403 swarm",
         )
 
         /**
@@ -633,6 +723,11 @@ class ContractTest {
             "DELETE__agent_sessions__engine_",
             "DELETE__buddy_devices__id_",
             "DELETE__buddy_invitations",
+            // M5: the models the Mac keeps for this phone, mirrored in `OnDeviceApi.kt`.
+            "DELETE__ondevice_models__id_",
+            "GET__ondevice_models",
+            "GET__ondevice_models__id__file",
+            "POST__ondevice_models__id__prepare",
             "GET__agent_sessions",
             "GET__agent_sessions__engine_",
             "GET__buddy_devices",
@@ -735,7 +830,9 @@ class ContractTest {
         }
         assertEquals(
             "The statuses the Mac documents changed — run contract/refresh.sh, then map them",
-            setOf(400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500),
+            // 503 and 507 arrived with the phone's models: the Mac's library drive is gone,
+            // and the Mac has no room.
+            setOf(400, 401, 403, 404, 409, 411, 413, 415, 416, 429, 500, 503, 507),
             seen,
         )
     }

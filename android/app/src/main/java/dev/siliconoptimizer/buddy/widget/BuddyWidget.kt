@@ -61,7 +61,11 @@ class BuddyWidget : GlanceAppWidget() {
             stored = snapshots.read(),
             quickPrompt = snapshots.quickPrompt,
             quickAnswer = snapshots.quickAnswer,
+            phoneReady = dev.siliconoptimizer.buddy.ondevice.OnDeviceEngine.couldRun &&
+                runCatching { dev.siliconoptimizer.buddy.ondevice.ModelStore(context).installed().isNotEmpty() }
+                    .getOrDefault(false),
         )
+        if (config != null) snapshots.noteMacReachable(!entry.macUnreachable)
         provideContent { GlanceTheme { WidgetBody(context, entry) } }
     }
 
@@ -93,6 +97,22 @@ class BuddyWidget : GlanceAppWidget() {
                     // MainActivity by exactly the same door.
                     .clickable(actionStartActivity(composeIntent(context))),
             )
+            entry.statusLine?.let { line ->
+                Text(
+                    line,
+                    style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 12.sp),
+                    maxLines = 1,
+                    modifier = GlanceModifier.fillMaxWidth().padding(top = 2.dp),
+                )
+            }
+            entry.answerLabel?.let { label ->
+                Text(
+                    label,
+                    style = TextStyle(color = GlanceTheme.colors.secondary, fontSize = 11.sp),
+                    maxLines = 1,
+                    modifier = GlanceModifier.fillMaxWidth().padding(top = 4.dp),
+                )
+            }
             Text(
                 entry.body(if (wide) 180 else 90)
                     ?: entry.problem
@@ -107,7 +127,22 @@ class BuddyWidget : GlanceAppWidget() {
                     .padding(top = 4.dp)
                     .clickable(actionStartActivity(composeIntent(context))),
             )
-            if (entry.isPaired) {
+            if (entry.offersPhone) {
+                // Opens the app with "Answer on this phone" showing; answers nothing itself.
+                Text(
+                    dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices.ASK_ON_PHONE,
+                    style = TextStyle(
+                        color = GlanceTheme.colors.primary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                    modifier = GlanceModifier
+                        .padding(top = 8.dp)
+                        .clickable(actionStartActivity(askOnPhoneIntent(context)))
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            } else if (entry.isPaired) {
                 Row(modifier = GlanceModifier.fillMaxWidth().padding(top = 8.dp)) {
                     Text(
                         if (wide) BuddySnapshot.trim(entry.quickPrompt, 28) else "Ask",
@@ -148,6 +183,10 @@ class BuddyWidget : GlanceAppWidget() {
 
         fun composeIntent(context: Context): Intent =
             Intent(Intent.ACTION_VIEW, Uri.parse("siliconbuddy://ask"))
+                .setClass(context, MainActivity::class.java)
+
+        fun askOnPhoneIntent(context: Context): Intent =
+            Intent(Intent.ACTION_VIEW, Uri.parse(dev.siliconoptimizer.buddy.reach.BuddyLink.ASK_ON_PHONE_URI))
                 .setClass(context, MainActivity::class.java)
     }
 }

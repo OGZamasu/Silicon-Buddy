@@ -139,9 +139,11 @@ class TransportErrorTest {
 
     @Test
     fun `an unknown status carries its number`() {
+        // 502: nothing the Mac documents. (503 was the example here until the phone's models
+        // made it one — the Mac's library drive gone — with a case of its own.)
         assertEquals(
-            TransportError.Server(503, "gone fishing"),
-            TransportError.from(503, body("gone fishing"), "/status"),
+            TransportError.Server(502, "gone fishing"),
+            TransportError.from(502, body("gone fishing"), "/status"),
         )
     }
 

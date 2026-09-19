@@ -1,0 +1,131 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not fetch or manage the models this Mac keeps for your phone. They are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    }
+  },
+  "method" : "GET",
+  "path" : "\/ondevice\/models",
+  "request" : null,
+  "response" : {
+    "models" : [
+      {
+        "id" : "qwen3.5-2b-q4_0",
+        "isDefault" : true,
+        "label" : "Qwen3.5 2B",
+        "licence" : "Apache-2.0",
+        "measured" : {
+          "conditions" : "phone hot and charging",
+          "device" : "Galaxy S24 Ultra",
+          "firstWordEstimated" : true,
+          "peakMemoryBytes" : 2586836992,
+          "peakMemoryContextTokens" : 640,
+          "promptTokensPerSecond" : 122.90000000000001,
+          "runtime" : "llama.cpp b11053, CPU",
+          "secondsToFirstWord300" : 2.5,
+          "sustainedMeasured" : false,
+          "threadSweep" : [
+            {
+              "threads" : 4,
+              "tokensPerSecond" : 19.199999999999999
+            },
+            {
+              "threads" : 6,
+              "tokensPerSecond" : 17.199999999999999
+            }
+          ],
+          "tokensPerSecond" : 19.199999999999999
+        },
+        "onMac" : {
+          "state" : "ready"
+        },
+        "recommended" : {
+          "contextLength" : 4096,
+          "minFreeMemoryBytes" : 3100000000,
+          "thinking" : false,
+          "threadsGenerate" : 4,
+          "threadsPrompt" : 6
+        },
+        "sha256" : "91c102fc9a86de80e427057ee938e1e34fcaf3bba956b7296e252406e05f36f6",
+        "sizeBytes" : 1296764000,
+        "slowerOnPhone" : false,
+        "source" : {
+          "commit" : "7d26695454df6de5fbcce2e58681e62dae06ce43",
+          "file" : "Qwen_Qwen3.5-2B-Q4_0.gguf",
+          "repo" : "bartowski\/Qwen_Qwen3.5-2B-GGUF"
+        }
+      },
+      {
+        "id" : "gemma-4-e2b-q4_0",
+        "isDefault" : false,
+        "label" : "Gemma 4 E2B",
+        "licence" : "Apache-2.0",
+        "measured" : {
+          "conditions" : "phone hot and charging",
+          "device" : "Galaxy S24 Ultra",
+          "firstWordEstimated" : true,
+          "peakMemoryBytes" : 4336910336,
+          "peakMemoryContextTokens" : 640,
+          "promptTokensPerSecond" : 92.599999999999994,
+          "runtime" : "llama.cpp b11053, CPU",
+          "secondsToFirstWord300" : 3.2999999999999998,
+          "sustainedMeasured" : true,
+          "sustainedTokensPerSecond" : 7.5,
+          "threadSweep" : [
+            {
+              "threads" : 4,
+              "tokensPerSecond" : 14.1
+            },
+            {
+              "threads" : 6,
+              "tokensPerSecond" : 15.1
+            }
+          ],
+          "tokensPerSecond" : 15.1
+        },
+        "onMac" : {
+          "failure" : "network",
+          "fraction" : 0.25,
+          "reason" : "The Mac could not keep a connection to Hugging Face while fetching Gemma 4 E2B: the connection dropped. The Mac kept the 25% that arrived; prepare it again to resume.",
+          "state" : "failed"
+        },
+        "recommended" : {
+          "contextLength" : 4096,
+          "minFreeMemoryBytes" : 4700000000,
+          "thinking" : false,
+          "threadsGenerate" : 6,
+          "threadsPrompt" : 4
+        },
+        "sha256" : "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+        "sizeBytes" : 3349516256,
+        "slowerOnPhone" : true,
+        "source" : {
+          "commit" : "675cff42a74c774d6cb76f76d8eacb49b48c9b93",
+          "file" : "gemma-4-E2B_q4_0-it.gguf",
+          "repo" : "google\/gemma-4-E2B-it-qat-q4_0-gguf"
+        }
+      }
+    ]
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "The models a phone can run by itself, pinned to exact bytes, and the state of this Mac's copy of each: absent, downloading, ready or failed."
+}

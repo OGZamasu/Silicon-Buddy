@@ -22,10 +22,36 @@ data class BuddyWidgetEntry(
     val quickPrompt: String = QuickPrompt.DEFAULT,
     /** The answer to that preset, when the widget has run it. */
     val quickAnswer: String? = null,
+    /** The Mac did not answer the widget's own look just now. */
+    val macUnreachable: Boolean = false,
+    /** A verified model is on this phone, and this phone can run it. */
+    val phoneReady: Boolean = false,
 ) {
     /** The model line, or the reason there isn't one. */
     val headline: String
         get() = if (!isPaired) "Not paired" else snapshot?.modelLine ?: "Ask your Mac"
+
+    /**
+     * With the Mac out of reach and a model on the phone: say so, and offer "Ask on this
+     * phone" — which opens the app with the offer showing. The widget never answers on the
+     * phone by itself.
+     */
+    val offersPhone: Boolean get() = isPaired && macUnreachable && phoneReady
+
+    val statusLine: String?
+        get() = when {
+            offersPhone -> dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices.TILE_READY
+            macUnreachable -> dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices.MAC_UNREACHABLE
+            else -> null
+        }
+
+    /** "On this phone · Qwen3.5 2B" over an answer the phone wrote; nothing over the Mac's. */
+    val answerLabel: String?
+        get() = if (quickAnswer == null) {
+            snapshot?.lastAnswerOnPhone?.let { dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices.chip(it) }
+        } else {
+            null
+        }
 
     /**
      * What the body of the widget shows: the preset's answer if it has one, otherwise
@@ -54,6 +80,7 @@ object WidgetTimeline {
         quickPrompt: String,
         quickAnswer: String? = null,
         now: Long = System.currentTimeMillis(),
+        phoneReady: Boolean = false,
     ): BuddyWidgetEntry {
         if (transport == null) {
             return BuddyWidgetEntry(
@@ -72,6 +99,8 @@ object WidgetTimeline {
                     problem = TOO_SLOW,
                     quickPrompt = quickPrompt,
                     quickAnswer = quickAnswer,
+                    macUnreachable = true,
+                    phoneReady = phoneReady,
                 )
             BuddyWidgetEntry(
                 snapshot = (stored ?: BuddySnapshot()).copy(
@@ -94,9 +123,16 @@ object WidgetTimeline {
                 problem = problem(error),
                 quickPrompt = quickPrompt,
                 quickAnswer = quickAnswer,
+                macUnreachable = isOutOfReach(error),
+                phoneReady = phoneReady,
             )
         }
     }
+
+    /** The failures that mean the Mac is not there, rather than that it said no. */
+    fun isOutOfReach(error: Throwable): Boolean =
+        error is TransportError.Unreachable || error is TransportError.AppNotRunning ||
+            error is TransportError.TimedOut
 
     /**
      * What a widget says when the Mac is there but not answering in time. Its own
