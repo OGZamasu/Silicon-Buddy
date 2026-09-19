@@ -51,6 +51,10 @@ public final class AppModel {
     public init(defaults: UserDefaults = BuddyShared.defaults, tokens: TokenStore = TokenStore()) {
         self.defaults = defaults
         self.tokens = tokens
+        // Before anything is read out of it: what the shared container holds is the
+        // address of somebody's Mac and the last thing it said, and none of that
+        // belongs in a backup. Android's equivalent is data_extraction_rules.xml.
+        BuddyShared.excludeContainerFromBackup()
         self.config = Self.loadConfig(defaults: defaults, tokens: tokens)
         // On by default: a spoken question that answers silently is a worse experience
         // than one that answers out loud, and the toggle is one tap away in Settings.

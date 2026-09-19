@@ -43,6 +43,14 @@ The token lives in the Keychain under a shared access group on iOS, and in
 `EncryptedSharedPreferences` on Android where every surface is the same process. The
 address and the last answer live in an app group container; the token never does.
 
+None of it is backed up. On iOS the shared container is marked
+`isExcludedFromBackup`, which covers the group's preferences file inside it; on Android
+`res/xml/data_extraction_rules.xml` excludes every shared-preferences file from both
+cloud backup and device transfer. The token is stored device-only on both and so is
+never restored anywhere, and a backup that carried the address without it would restore
+half a pairing that cannot work. The last answer is a piece of a conversation and stays
+on the phone that heard it.
+
 ## Building
 
 Both apps talk to Silicon Optimizer over your tailnet, and to nothing else: every

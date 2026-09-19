@@ -81,7 +81,20 @@ public struct BuddySnapshot: Codable, Sendable, Equatable {
     }
 
     /// What the widget puts on its one line when nothing is loaded.
-    public var modelLine: String { loadedModelName ?? "Nothing loaded" }
+    public var modelLine: String { BuddySnapshot.headline(loadedModelName) }
+
+    /// A model name that fits on one line of a small widget.
+    ///
+    /// Names carry a parenthesised qualifier — "Qwen3 4B (MLX)", "Gemma 3 12B (it)" —
+    /// and a widget two icons wide truncates mid-bracket to "Qwen3 4B (…", which reads
+    /// like the name itself is broken. The qualifier is the least load-bearing part, so
+    /// it is what goes first, and only when keeping it would not have fitted anyway.
+    public static func headline(_ name: String?, limit: Int = 18) -> String {
+        guard let name, !name.isEmpty else { return "Nothing loaded" }
+        guard name.count > limit, let bracket = name.lastIndex(of: "(") else { return name }
+        let withoutQualifier = name[..<bracket].trimmingCharacters(in: .whitespaces)
+        return withoutQualifier.isEmpty ? name : withoutQualifier
+    }
 
     /// An answer trimmed to what a widget can actually show. Cutting on a word boundary
     /// rather than mid-syllable is the difference between a summary and a glitch.
@@ -151,7 +164,21 @@ public enum SnapshotStore {
         write(snapshot, to: defaults)
     }
 
+    /// Forgets everything about a Mac, the widget's own answer included.
+    ///
+    /// "Forget this Mac" has to mean it. The snapshot alone is not the whole of what
+    /// this Mac left behind: the widget's preset answer is a reply from that Mac
+    /// sitting on the Home Screen, and the preset question is a setting about it. A
+    /// re-pair that left either in place would show the last Mac's words under the new
+    /// one's name.
     public static func clear(from defaults: UserDefaults = BuddyShared.defaults) {
-        defaults.removeObject(forKey: SharedConfiguration.Keys.snapshot)
+        for key in [
+            SharedConfiguration.Keys.snapshot,
+            SharedConfiguration.Keys.quickAnswer,
+            SharedConfiguration.Keys.quickAskedAt,
+            SharedConfiguration.Keys.quickPrompt,
+        ] {
+            defaults.removeObject(forKey: key)
+        }
     }
 }
