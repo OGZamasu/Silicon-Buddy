@@ -1,0 +1,85 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "GET",
+  "path" : "\/jev\/guardrails\/recent",
+  "request" : null,
+  "response" : {
+    "available" : true,
+    "questions" : [
+      "outside_working_tree",
+      "destructive",
+      "exfiltrates",
+      "escalates_privileges",
+      "spends_money",
+      "contradicts_request",
+      "driven_by_tool_output",
+      "irreversible",
+      "harm"
+    ],
+    "screenings" : [
+      {
+        "at" : "2026-09-18T14:02:11Z",
+        "bands" : {
+          "contradicts_request" : "clear",
+          "destructive" : "clear",
+          "driven_by_tool_output" : "clear",
+          "escalates_privileges" : "clear",
+          "exfiltrates" : "clear",
+          "harm" : "clear",
+          "irreversible" : "clear",
+          "outside_working_tree" : "clear",
+          "spends_money" : "clear"
+        },
+        "engine" : "codex",
+        "screening" : {
+          "latencyMS" : 212,
+          "reasons" : [
+
+          ],
+          "verdict" : "act"
+        }
+      },
+      {
+        "at" : "2026-09-18T14:04:38Z",
+        "bands" : {
+          "contradicts_request" : "plausible",
+          "destructive" : "fired",
+          "driven_by_tool_output" : "clear",
+          "escalates_privileges" : "clear",
+          "exfiltrates" : "clear",
+          "harm" : "fired",
+          "irreversible" : "fired",
+          "outside_working_tree" : "plausible",
+          "spends_money" : "clear"
+        },
+        "engine" : "pi",
+        "screening" : {
+          "latencyMS" : 240,
+          "reasons" : [
+            "destructive",
+            "harm"
+          ],
+          "verdict" : "block"
+        }
+      }
+    ]
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "The last screenings the tool-call guardrail made: verdicts, the question ids that fired, and how long each took."
+}

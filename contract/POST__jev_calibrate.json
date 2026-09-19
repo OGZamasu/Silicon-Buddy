@@ -1,0 +1,96 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can start a calibration run. It spends Jev tokens and holds the loaded model, so it is started from Settings → TypeSafe (Jev) on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/jev\/calibrate",
+  "request" : null,
+  "response" : {
+    "agreement" : [
+      {
+        "agreed" : 22,
+        "compared" : 26,
+        "kind" : "noul",
+        "rate" : 0.84599999999999997
+      },
+      {
+        "agreed" : 27,
+        "compared" : 30,
+        "kind" : "choice",
+        "rate" : 0.90000000000000002
+      },
+      {
+        "agreed" : 19,
+        "compared" : 24,
+        "kind" : "score",
+        "rate" : 0.79200000000000004
+      }
+    ],
+    "bins" : [
+      {
+        "agreed" : 3,
+        "agreementRate" : 0.5,
+        "count" : 6,
+        "lower" : 0.40000000000000002,
+        "meanConfidence" : 0.45000000000000001,
+        "upper" : 0.5
+      },
+      {
+        "agreed" : 16,
+        "agreementRate" : 0.88900000000000001,
+        "count" : 18,
+        "lower" : 0.69999999999999996,
+        "meanConfidence" : 0.73999999999999999,
+        "upper" : 0.80000000000000004
+      },
+      {
+        "agreed" : 29,
+        "agreementRate" : 0.96699999999999997,
+        "count" : 30,
+        "lower" : 0.90000000000000002,
+        "meanConfidence" : 0.95999999999999996,
+        "upper" : 1
+      }
+    ],
+    "builtInCases" : 40,
+    "cases" : 40,
+    "choiceFloorMeasured" : true,
+    "comparisons" : 80,
+    "date" : "2026-09-18T09:41:00Z",
+    "escalationRate" : 0.20999999999999999,
+    "estimatedUSD" : 0.0012999999999999999,
+    "floors" : {
+      "choiceConfidence" : 0.71999999999999997,
+      "noulHigh" : 0.75,
+      "noulLow" : 0.25,
+      "scoreConfidence" : 0.81000000000000005
+    },
+    "inputTokens" : 31204,
+    "jevModel" : "jev-1.13.0",
+    "modelID" : "qwen3-coder-30b-q4_k_m",
+    "modelName" : "Qwen3-Coder 30B A3B",
+    "notes" : [
+      "Too few noul disagreements to place a middle band, so the cascade keeps the default one."
+    ],
+    "noulBandMeasured" : false,
+    "overallAgreementRate" : 0.84999999999999998,
+    "scoreFloorMeasured" : true,
+    "userCases" : 0
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Measure the local decision lane against Jev and retune the cascade."
+}

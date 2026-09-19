@@ -396,10 +396,13 @@ struct MessageBubble: View {
                             Text(reasons.joined(separator: " · "))
                                 .foregroundStyle(.tertiary)
                         }
+                        if let suggestion = verdict.suggestion, !suggestion.isEmpty {
+                            Text(suggestion).foregroundStyle(.tertiary)
+                        }
                     }
                 } icon: {
-                    Image(systemName: verdict.escalatedTo == nil
-                        ? "checkmark.seal" : "arrow.up.forward.circle")
+                    Image(systemName: verdict.verdict.lowercased() == "escalate"
+                        ? "arrow.up.forward.circle" : "checkmark.seal")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)

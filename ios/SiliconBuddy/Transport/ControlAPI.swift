@@ -321,16 +321,21 @@ public enum ControlAPI {
         public var promptTokens: Int
         public var generatedTokens: Int
         public var tokensPerSecond: Double
+        /// What the Mac's answer checking made of this reply, when it checked it. On
+        /// the buffered route it comes back with the answer rather than afterwards.
+        public var verification: BuddyAPI.Verdict?
 
         public init(
             content: String, reasoning: String?, promptTokens: Int,
-            generatedTokens: Int, tokensPerSecond: Double
+            generatedTokens: Int, tokensPerSecond: Double,
+            verification: BuddyAPI.Verdict? = nil
         ) {
             self.content = content
             self.reasoning = reasoning
             self.promptTokens = promptTokens
             self.generatedTokens = generatedTokens
             self.tokensPerSecond = tokensPerSecond
+            self.verification = verification
         }
     }
 
@@ -589,6 +594,29 @@ public enum ControlAPI {
     // MARK: - Swarm and node
 
     public struct SwarmView: Codable, Sendable, Equatable {
+        /// Whether this Mac is listening on its tailnet address, and where. The phone
+        /// is on the other end of exactly that socket, so "requested but not
+        /// listening" is the difference between a Mac that is off and one that is
+        /// broken.
+        public struct Exposure: Codable, Sendable, Equatable {
+            public var requested: Bool
+            public var listening: Bool
+            public var address: String?
+            public var port: Int?
+            public var problem: String?
+
+            public init(
+                requested: Bool, listening: Bool, address: String? = nil,
+                port: Int? = nil, problem: String? = nil
+            ) {
+                self.requested = requested
+                self.listening = listening
+                self.address = address
+                self.port = port
+                self.problem = problem
+            }
+        }
+
         public struct Peer: Codable, Sendable, Equatable, Identifiable {
             public var name: String
             public var baseURL: String
@@ -623,10 +651,14 @@ public enum ControlAPI {
         }
 
         public var peers: [Peer]
+        public var exposure: Exposure?
         public var polledSecondsAgo: Double?
 
-        public init(peers: [Peer], polledSecondsAgo: Double?) {
+        public init(
+            peers: [Peer], exposure: Exposure? = nil, polledSecondsAgo: Double?
+        ) {
             self.peers = peers
+            self.exposure = exposure
             self.polledSecondsAgo = polledSecondsAgo
         }
     }

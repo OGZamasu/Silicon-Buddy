@@ -503,7 +503,8 @@ private fun MessageBubble(
             Text(
                 verdict.summary +
                     (verdict.reasons?.takeIf { it.isNotEmpty() }
-                        ?.joinToString(" · ", prefix = " — ") ?: ""),
+                        ?.joinToString(" · ", prefix = " — ") ?: "") +
+                    (verdict.suggestion?.takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -1,0 +1,141 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No model in the catalog fits this machine."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/recommend",
+  "request" : {
+    "category" : "Vision",
+    "task" : "Reading scanned handwritten field notes into markdown."
+  },
+  "response" : {
+    "activeParameters" : "3B",
+    "alternatives" : [
+      {
+        "activeParameters" : "3B",
+        "author" : "Qwen",
+        "capabilities" : [
+          "code",
+          "tools"
+        ],
+        "category" : "code",
+        "id" : "qwen3.8-27b",
+        "isMoE" : true,
+        "license" : "Apache-2.0",
+        "maxContext" : 262144,
+        "name" : "Qwen3.8 27B",
+        "parameters" : "30B",
+        "quantizations" : [
+          "Q4_K_M",
+          "Q5_K_M",
+          "Q8_0"
+        ],
+        "rating" : 5,
+        "reason" : "needs code and tool calling; fits at Q6_K at ~24 tok\/s",
+        "recommendation" : {
+          "contextLength" : 16384,
+          "downloadBytes" : 20401094656,
+          "estimatedGenerationTokensPerSecond" : 89,
+          "estimatedPromptTokensPerSecond" : 1120,
+          "plan" : {
+            "budgetBytes" : 29200000000,
+            "computeBytes" : 325000000,
+            "expertsBytes" : 0,
+            "kvCacheBytes" : 1073741824,
+            "notes" : [
+              "Measured on this Mac's own disk speed."
+            ],
+            "residentBytes" : 21800000000,
+            "streamedFromDiskBytes" : 0,
+            "suggestions" : [
+              {
+                "cost" : "Shorter memory in long chats",
+                "detail" : "8K instead of 16K frees half a gigabyte.",
+                "savingBytes" : 536870912,
+                "title" : "Halve the context"
+              }
+            ],
+            "verdict" : "fits",
+            "weightsBytes" : 20401094656
+          },
+          "quantization" : "Q4_K_M",
+          "rationale" : "The strongest coding model inside this Mac's budget."
+        },
+        "summary" : "A coding model that fits a 36 GB Mac."
+      }
+    ],
+    "author" : "Qwen",
+    "capabilities" : [
+      "code",
+      "tools"
+    ],
+    "category" : "code",
+    "followedJev" : true,
+    "id" : "qwen3-coder-30b",
+    "isMoE" : true,
+    "license" : "Apache-2.0",
+    "maxContext" : 262144,
+    "name" : "Qwen3-Coder 30B A3B",
+    "note" : "Jev preferred Qwen3.8 27B; it is ranked lower because it runs less well on this Mac.",
+    "parameters" : "30B",
+    "quantizations" : [
+      "Q4_K_M",
+      "Q5_K_M",
+      "Q8_0"
+    ],
+    "rating" : 5,
+    "reason" : "needs code and tool calling; fits at Q4_K_M at ~89 tok\/s",
+    "recommendation" : {
+      "contextLength" : 16384,
+      "downloadBytes" : 20401094656,
+      "estimatedGenerationTokensPerSecond" : 89,
+      "estimatedPromptTokensPerSecond" : 1120,
+      "plan" : {
+        "budgetBytes" : 29200000000,
+        "computeBytes" : 325000000,
+        "expertsBytes" : 0,
+        "kvCacheBytes" : 1073741824,
+        "notes" : [
+          "Measured on this Mac's own disk speed."
+        ],
+        "residentBytes" : 21800000000,
+        "streamedFromDiskBytes" : 0,
+        "suggestions" : [
+          {
+            "cost" : "Shorter memory in long chats",
+            "detail" : "8K instead of 16K frees half a gigabyte.",
+            "savingBytes" : 536870912,
+            "title" : "Halve the context"
+          }
+        ],
+        "verdict" : "fits",
+        "weightsBytes" : 20401094656
+      },
+      "quantization" : "Q4_K_M",
+      "rationale" : "The strongest coding model inside this Mac's budget."
+    },
+    "summary" : "A coding model that fits a 36 GB Mac."
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "The best model for a described job, with the runners-up and why. Asks Jev, so it costs the owner money and takes full control."
+}

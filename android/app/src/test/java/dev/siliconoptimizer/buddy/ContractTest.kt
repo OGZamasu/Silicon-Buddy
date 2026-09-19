@@ -247,6 +247,17 @@ class ContractTest {
          * `contract/refresh.sh` is the fix — not this list.
          */
         val EXPECTED_FIXTURES = setOf(
+            // Routes the Mac grew for Jev's own settings, its calibration and the
+            // guardrail's recent screenings, plus the task-shaped `POST /recommend`.
+            // Listed so the export is accounted for; no type here mirrors them yet,
+            // because nothing in this app speaks them — the Jev settings are the Mac's
+            // own business and the node and recommend pages arrive in M3.
+            "GET__jev",
+            "GET__jev_calibration",
+            "GET__jev_guardrails_recent",
+            "POST__jev",
+            "POST__jev_calibrate",
+            "POST__recommend",
             "DELETE__buddy_devices__id_",
             "GET__buddy_devices",
             "GET__catalog",
@@ -341,7 +352,8 @@ class ContractTest {
     @Test
     fun `the export is the current one`() {
         for (name in EXPECTED_FIXTURES.filter { it.startsWith("POST__") }) {
-            if (name in setOf("POST__benchmark", "POST__unload")) continue
+            // The three POSTs that take no body at all, and so have no 400 to give.
+            if (name in setOf("POST__benchmark", "POST__unload", "POST__jev_calibrate")) continue
             val errors = fixture(name)["errors"] as? JsonObject
             assertNotNull("$name documents no errors at all", errors)
             assertNotNull("$name should document a 400 — refresh the contract", errors!!["400"])

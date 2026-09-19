@@ -150,10 +150,14 @@ class ChatViewModel(
                         title = detail.title,
                         messages = detail.messages.map {
                             ChatMessage(
+                                // The Mac's own id where it gives one, so a `verdict`
+                                // event lands on the reply it is about.
+                                id = it.id ?: java.util.UUID.randomUUID().toString(),
                                 role = it.role,
                                 content = it.content,
                                 reasoning = it.reasoning,
                                 images = it.images.orEmpty(),
+                                verdict = it.verification,
                             )
                         },
                     )
@@ -400,10 +404,12 @@ class ChatViewModel(
     /**
      * Attaches an answer check to the reply it belongs to.
      *
-     * Matched on the conversation alone: `StoredMessage` carries no id, so there is
-     * nothing to match a message id against until the Mac exports one. The newest
-     * verdict therefore decorates the newest assistant message, which is the one it is
-     * about in every case the Mac produces today.
+     * By the Mac's message id when it names one and this transcript came from the Mac,
+     * so a check that arrives after the person has sent something else still lands on
+     * the right reply. A transcript this device kept has ids of its own that the Mac
+     * has never seen, and a check for a conversation that is not open belongs to a
+     * screen that is not here — in both cases the newest finished reply is the only
+     * sensible answer, and it is right whenever the Mac checks a reply as it finishes.
      */
     fun apply(verdict: dev.siliconoptimizer.buddy.transport.Verdict) {
         val conversation = current ?: return
@@ -412,7 +418,10 @@ class ChatViewModel(
         ) {
             return
         }
-        val index = conversation.messages.indexOfLast {
+        val exact = verdict.messageID?.takeIf { it.isNotEmpty() }?.let { id ->
+            conversation.messages.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+        }
+        val index = exact ?: conversation.messages.indexOfLast {
             it.role == ChatMessage.ROLE_ASSISTANT && !it.isStreaming && it.content.isNotEmpty()
         }
         if (index < 0) return

@@ -21,6 +21,14 @@
       "refund" : {
         "instructions" : "Asks for money back",
         "type" : "noul"
+      },
+      "team" : {
+        "criteria" : {
+          "billing" : null,
+          "technical" : null
+        },
+        "instructions" : "Which team should take it",
+        "type" : "choice"
       }
     },
     "state" : "Customer was charged twice and wants it fixed."
@@ -30,13 +38,26 @@
       "refund" : {
         "noul" : 0.93999999999999995,
         "type" : "noul"
+      },
+      "team" : {
+        "choice" : "billing",
+        "confidence" : 0.91000000000000003,
+        "probabilities" : {
+          "billing" : 0.91000000000000003,
+          "technical" : 0.089999999999999997
+        },
+        "type" : "choice"
       }
     },
-    "model" : "Qwen3-Coder 30B A3B",
-    "provider" : "local",
+    "model" : "Qwen3-Coder 30B A3B + jev-1.13.0",
+    "provider" : "local+typesafe",
+    "sources" : {
+      "refund" : "local",
+      "team" : "typesafe"
+    },
     "usage" : {
-      "input_tokens" : 120,
-      "output_tokens" : 1
+      "input_tokens" : 1020,
+      "output_tokens" : 2
     }
   },
   "scopes" : [

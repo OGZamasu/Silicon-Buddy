@@ -62,6 +62,11 @@ data class PairedDevice(
     val scope: String,
     val pairedAt: String,
     val lastSeen: String? = null,
+    /**
+     * True when this device's token predates something the Mac now requires and it has
+     * to pair again.
+     */
+    val needsRepair: Boolean? = null,
 )
 
 @Serializable
@@ -78,11 +83,18 @@ data class NewConversation(val title: String? = null)
 
 @Serializable
 data class StoredMessage(
+    /**
+     * The Mac's id for this message. What makes a `verdict` event land on the reply it
+     * is about rather than on the newest one.
+     */
+    val id: String? = null,
     val role: String,
     val content: String,
     val createdAt: String,
     val images: List<String>? = null,
     val reasoning: String? = null,
+    /** What the Mac's answer checking made of this reply, kept with it. */
+    val verification: Verdict? = null,
 )
 
 @Serializable
@@ -134,23 +146,32 @@ data class TokenEvent(val text: String)
 data class Verdict(
     val conversationID: String? = null,
     val messageID: String? = null,
-    /** The Mac's own word: "ok", "weak", "escalated". Rendered, not interpreted. */
+    /**
+     * The Mac's own word: `annotate`, `escalate`. Rendered, not interpreted: the
+     * vocabulary is Jev's and it is not frozen.
+     */
     val verdict: String,
+    /** Why, in the Mac's sentences. */
     val reasons: List<String>? = null,
-    /** The model it was handed to instead, when it was escalated. */
+    /**
+     * What to do about it, when the Mac has advice — usually which model to send the
+     * question to instead. Absent on `/events`, present on the chat streams.
+     */
+    val suggestion: String? = null,
+    /** The model the Mac handed it to instead, when it re-ran the answer itself. */
     val escalatedTo: String? = null,
 ) {
     /**
-     * One line for the message footer. The Mac's vocabulary is not frozen, so an
-     * unrecognised verdict is shown as itself rather than swallowed.
+     * One line for the message footer. An unrecognised verdict is shown as itself
+     * rather than swallowed, because the Mac will grow more of them.
      */
     val summary: String
         get() = when {
-            !escalatedTo.isNullOrEmpty() -> "Checked — escalated to $escalatedTo"
+            !escalatedTo.isNullOrEmpty() -> "Checked — asked $escalatedTo instead"
             else -> when (verdict.lowercase()) {
                 "ok", "pass", "answered" -> "Checked — answers the question"
-                "weak", "partial" -> "Checked — only partly answers"
-                "fail", "failed", "wrong" -> "Checked — does not answer"
+                "annotate" -> "Checked — worth a second look"
+                "escalate" -> "Checked — worth asking a stronger model"
                 else -> "Checked — $verdict"
             }
         }

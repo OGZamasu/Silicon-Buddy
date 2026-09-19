@@ -111,11 +111,15 @@ public final class ChatModel {
                     updatedAt: Date(),
                     messages: detail.messages.map {
                         ChatMessage(
+                            // The Mac's own id where it gives one, so a `verdict`
+                            // event lands on the reply it is about.
+                            id: $0.id ?? UUID().uuidString,
                             role: ChatMessage.Role(rawValue: $0.role) ?? .assistant,
                             content: $0.content,
                             reasoning: $0.reasoning,
                             images: $0.images ?? [],
-                            createdAt: $0.createdAt
+                            createdAt: $0.createdAt,
+                            verdict: $0.verification
                         )
                     }
                 )
@@ -433,16 +437,25 @@ public final class ChatModel {
 
     /// Attaches an answer check to the reply it belongs to.
     ///
-    /// Matched on the conversation alone: `StoredMessage` carries no id, so there is
-    /// nothing to match a message id against until the Mac exports one. The newest
-    /// verdict therefore decorates the newest assistant message, which is the one it is
-    /// about in every case the Mac produces today — it checks a reply as it finishes.
+    /// By the Mac's message id when it names one and this transcript came from the Mac,
+    /// so a check that arrives after the person has sent something else still lands on
+    /// the right reply. A transcript this device kept has ids of its own that the Mac
+    /// has never seen, and a check for a conversation that is not open belongs to a
+    /// screen that is not here — in both cases the newest finished reply is the only
+    /// sensible answer, and it is right whenever the Mac checks a reply as it finishes.
     public func apply(verdict: BuddyAPI.Verdict) {
         guard var conversation = current else { return }
         if let id = verdict.conversationID, !id.isEmpty, id != conversation.id { return }
-        guard let index = conversation.messages.lastIndex(where: {
-            $0.role == .assistant && !$0.isStreaming && !$0.content.isEmpty
-        }) else { return }
+        let index: Int?
+        if let messageID = verdict.messageID, !messageID.isEmpty,
+           let exact = conversation.messages.firstIndex(where: { $0.id == messageID }) {
+            index = exact
+        } else {
+            index = conversation.messages.lastIndex {
+                $0.role == .assistant && !$0.isStreaming && !$0.content.isEmpty
+            }
+        }
+        guard let index else { return }
         conversation.messages[index].verdict = verdict
         current = conversation
     }

@@ -41,6 +41,14 @@
       "loadedModelID" : "qwen3-coder-30b",
       "loadedModelName" : "Qwen3-Coder 30B A3B",
       "state" : "running"
+    },
+    "verdict" : {
+      "conversationID" : "3F5C1A88-9C1D-4E2B-8A70-1D2E3F405162",
+      "messageID" : "6B2A9D14-40F7-4E85-9C33-2E5A7B1C0D9E",
+      "reasons" : [
+        "The reply declines or deflects the request."
+      ],
+      "verdict" : "annotate"
     }
   },
   "method" : "GET",

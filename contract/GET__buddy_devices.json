@@ -22,6 +22,7 @@
       "id" : "7A1E0C6E-2C6A-4F4E-9F1E-0B2D3C4A5B6C",
       "lastSeen" : "2026-09-18T09:40:02Z",
       "name" : "Galaxy S24 Ultra",
+      "needsRepair" : false,
       "pairedAt" : "2026-09-18T09:12:44Z",
       "platform" : "android",
       "scope" : "full"

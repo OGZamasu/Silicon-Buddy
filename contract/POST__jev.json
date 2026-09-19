@@ -1,0 +1,151 @@
+{
+  "auth" : "control",
+  "errors" : {
+    "400" : {
+      "error" : "The data couldn’t be read because it isn’t in the correct format."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "Only this Mac can change the Jev settings. They govern what it spends, so they are set in Settings → TypeSafe (Jev) on the Mac."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    }
+  },
+  "method" : "POST",
+  "path" : "\/jev",
+  "request" : {
+    "enabled" : true,
+    "features" : {
+      "decideTool" : true
+    },
+    "monthlyBudgetUSD" : 5
+  },
+  "response" : {
+    "automaticUncensoredLaneInEffect" : false,
+    "availableModels" : [
+      "jev-1.13.0",
+      "jev-latest",
+      "jev-preview"
+    ],
+    "budgetRemainingUSD" : 4.8700000000000001,
+    "cacheMinutes" : 10,
+    "calls" : 312,
+    "composerAutoRoute" : false,
+    "enabled" : true,
+    "estimatedUSD" : 0.13,
+    "features" : [
+      {
+        "available" : true,
+        "built" : true,
+        "calls" : 312,
+        "displayName" : "Decide tool",
+        "enabled" : true,
+        "estimatedUSD" : 0.13,
+        "id" : "decideTool",
+        "inputTokens" : 3104882,
+        "summary" : "Answers the `decide` tool and POST \/decide with calibrated probabilities instead of the local model's own."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Guardrails",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "guardrails",
+        "inputTokens" : 0,
+        "summary" : "Screens a tool call before it runs — what it touches, what it would cost, whether the user asked for it — and turns that into run, ask, or refuse."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Prompt routing",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "routing",
+        "inputTokens" : 0,
+        "summary" : "Picks which loaded model, runtime or swarm node should take a request."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Media routing",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "mediaRouting",
+        "inputTokens" : 0,
+        "summary" : "Reads an image, video or mesh request and picks the model and settings for it."
+      },
+      {
+        "available" : false,
+        "built" : false,
+        "calls" : 0,
+        "displayName" : "Skill selection",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "skillSelection",
+        "inputTokens" : 0,
+        "summary" : "Chooses which tools and skills an agent should be offered for the task in hand."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Model recommendation",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "recommendation",
+        "inputTokens" : 0,
+        "summary" : "Reads your description of the job and ranks the models this Mac can run by what that job actually needs."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Answer verification",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "verification",
+        "inputTokens" : 0,
+        "summary" : "Checks a finished answer against its evidence and flags the ones worth a second look."
+      },
+      {
+        "available" : false,
+        "built" : true,
+        "calls" : 0,
+        "displayName" : "Decision calibration",
+        "enabled" : false,
+        "estimatedUSD" : 0,
+        "id" : "calibration",
+        "inputTokens" : 0,
+        "summary" : "Measures the local decision lane against Jev on a labelled set and tunes when `auto` falls back to Jev."
+      }
+    ],
+    "inputTokens" : 3104882,
+    "keySet" : true,
+    "ledgerWriteFailed" : false,
+    "maxStateBytes" : 65536,
+    "model" : "jev-1.13.0",
+    "models" : {
+      "jev-1.13.0" : 312
+    },
+    "month" : "2026-09",
+    "monthlyBudgetUSD" : 5,
+    "monthlyUSD" : {
+      "2026-08" : 0.089999999999999997,
+      "2026-09" : 0.13
+    }
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Change what Jev is allowed to do. Only sent fields change."
+}

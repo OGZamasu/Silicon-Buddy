@@ -80,10 +80,13 @@ public enum BuddyAPI {
         public var scope: String
         public var pairedAt: Date
         public var lastSeen: Date?
+        /// True when this device's token predates something the Mac now requires and
+        /// it has to pair again.
+        public var needsRepair: Bool?
 
         public init(
             id: String, name: String, platform: String, scope: String,
-            pairedAt: Date, lastSeen: Date?
+            pairedAt: Date, lastSeen: Date?, needsRepair: Bool? = nil
         ) {
             self.id = id
             self.name = name
@@ -91,6 +94,7 @@ public enum BuddyAPI {
             self.scope = scope
             self.pairedAt = pairedAt
             self.lastSeen = lastSeen
+            self.needsRepair = needsRepair
         }
     }
 
@@ -116,6 +120,9 @@ public enum BuddyAPI {
     }
 
     public struct StoredMessage: Codable, Sendable, Equatable {
+        /// The Mac's id for this message. What makes a `verdict` event land on the
+        /// reply it is about rather than on the newest one.
+        public var id: String?
         public var role: String
         public var content: String
         public var createdAt: Date
@@ -124,16 +131,21 @@ public enum BuddyAPI {
         public var images: [String]?
         /// The model's thinking, when it produced any.
         public var reasoning: String?
+        /// What the Mac's answer checking made of this reply, kept with it.
+        public var verification: Verdict?
 
         public init(
-            role: String, content: String, createdAt: Date,
-            images: [String]? = nil, reasoning: String? = nil
+            id: String? = nil, role: String, content: String, createdAt: Date,
+            images: [String]? = nil, reasoning: String? = nil,
+            verification: Verdict? = nil
         ) {
+            self.id = id
             self.role = role
             self.content = content
             self.createdAt = createdAt
             self.images = images
             self.reasoning = reasoning
+            self.verification = verification
         }
     }
 
@@ -205,33 +217,40 @@ public enum BuddyAPI {
     public struct Verdict: Codable, Sendable, Equatable {
         public var conversationID: String?
         public var messageID: String?
-        /// The Mac's own word: "ok", "weak", "escalated"… Rendered, not interpreted.
+        /// The Mac's own word: `annotate`, `escalate`… Rendered, not interpreted: the
+        /// vocabulary is Jev's and it is not frozen.
         public var verdict: String
+        /// Why, in the Mac's sentences.
         public var reasons: [String]?
-        /// The model it was handed to instead, when it was escalated.
+        /// What to do about it, when the Mac has advice — usually which model to send
+        /// the question to instead. Absent on `/events`, present on the chat streams.
+        public var suggestion: String?
+        /// The model the Mac handed it to instead, when it re-ran the answer itself.
         public var escalatedTo: String?
 
         public init(
             conversationID: String? = nil, messageID: String? = nil,
-            verdict: String, reasons: [String]? = nil, escalatedTo: String? = nil
+            verdict: String, reasons: [String]? = nil,
+            suggestion: String? = nil, escalatedTo: String? = nil
         ) {
             self.conversationID = conversationID
             self.messageID = messageID
             self.verdict = verdict
             self.reasons = reasons
+            self.suggestion = suggestion
             self.escalatedTo = escalatedTo
         }
 
-        /// One line for the message footer. The Mac's vocabulary is not frozen, so an
-        /// unrecognised verdict is shown as itself rather than swallowed.
+        /// One line for the message footer. An unrecognised verdict is shown as itself
+        /// rather than swallowed, because the Mac will grow more of them.
         public var summary: String {
             if let escalatedTo, !escalatedTo.isEmpty {
-                return "Checked — escalated to \(escalatedTo)"
+                return "Checked — asked \(escalatedTo) instead"
             }
             switch verdict.lowercased() {
             case "ok", "pass", "answered": return "Checked — answers the question"
-            case "weak", "partial": return "Checked — only partly answers"
-            case "fail", "failed", "wrong": return "Checked — does not answer"
+            case "annotate": return "Checked — worth a second look"
+            case "escalate": return "Checked — worth asking a stronger model"
             default: return "Checked — \(verdict)"
             }
         }

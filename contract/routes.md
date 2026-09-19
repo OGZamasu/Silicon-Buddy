@@ -22,11 +22,17 @@ route needs no token at all.
 
 `full` and `chat` are the two device scopes. A `chat` device may use the routes
 that only read or advise — `/health`, `/status`, `/profile`, `/metrics`,
-`/catalog`, `/installed`, `/recommend`, `/plan`, `/swarm`, `/v1/node`,
+`/catalog`, `/installed`, `GET /recommend`, `/plan`, `/swarm`, `/v1/node`,
 `/image/models`, `/mesh/models`, `/video/models`, `/video/queue`, `/events` —
 plus `/chat`, `/chat/stream`, `/decide`, `/v1/systemone` and every
 `/conversations` route. Everything else answers 403: installing, loading,
-unloading, benchmarking, rendering, queue control and the device list.
+unloading, benchmarking, rendering, queue control, the device list and the
+Jev settings — and `POST /recommend`, which ranks the catalogue against a
+described job by asking Jev and so spends the owner's money.
+`POST /jev` and `POST /jev/calibrate` go further and take the Mac's own control
+token: they govern what this Mac spends, so a paired phone may read both, and
+the matching `GET /jev` and `GET /jev/calibration`, without being able to
+change either.
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
@@ -46,6 +52,7 @@ unloading, benchmarking, rendering, queue control and the device list.
 | `GET` | `/installed` | device | The models on this Mac's disk. |
 | `GET` | `/catalog` | device | The catalogue, each entry judged against this Mac. |
 | `GET` | `/recommend` | device | The strongest model this machine can actually run. |
+| `POST` | `/recommend` | device | The best model for a described job, with the runners-up and why. Asks Jev, so it costs the owner money and takes full control. |
 | `POST` | `/plan` | device | Will this fit at this context, and what would you change? |
 | `POST` | `/install` | device | Download a model. Progress arrives on /events. |
 | `POST` | `/load` | device | Load a model into memory. |
@@ -53,6 +60,11 @@ unloading, benchmarking, rendering, queue control and the device list.
 | `POST` | `/chat` | device | Ask the loaded model and wait for the whole answer. |
 | `POST` | `/decide` | device | Typed probabilistic decisions, in the TypeSafe/Jev shape. |
 | `POST` | `/v1/systemone` | device | The same route as /decide, at the path TypeSafe's own clients use. |
+| `GET` | `/jev` | device | How the TypeSafe (Jev) lane is set up, and what it has cost this month. |
+| `GET` | `/jev/guardrails/recent` | device | The last screenings the tool-call guardrail made: verdicts, the question ids that fired, and how long each took. |
+| `POST` | `/jev` | control | Change what Jev is allowed to do. Only sent fields change. |
+| `GET` | `/jev/calibration` | device | The last calibration of the local decision lane against Jev. |
+| `POST` | `/jev/calibrate` | control | Measure the local decision lane against Jev and retune the cascade. |
 | `POST` | `/benchmark` | device | Measure the loaded model here, and recalibrate its estimates. |
 | `GET` | `/swarm` | device | The other machines this Mac can delegate to. |
 | `GET` | `/v1/node` | device | What this Mac advertises to its peers. |
