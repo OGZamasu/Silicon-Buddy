@@ -13,14 +13,36 @@ import org.junit.Test
  * which recogniser it had built, and then overwrote the answer with
  * `SDK_INT >= TIRAMISU` — so every phone on Android 13 or later was told its voice was
  * recognised locally, including the ones streaming the audio to Google. The decision now
- * lives here, where it can be held to it.
+ * lives here, with all three of its inputs named, where it can be held to it.
  */
 class RecognitionRouteTest {
 
+    private val tiramisu = RecognitionRoute.MINIMUM_SDK
+    private val androidSixteen = 36
+
+    /** The only combination that earns the claim. */
     @Test
-    fun `the route follows the recogniser that was built, not the one that was wanted`() {
-        assertEquals(RecognitionRoute.OnDevice, RecognitionRoute.of(onDeviceCreated = true))
-        assertEquals(RecognitionRoute.Network, RecognitionRoute.of(onDeviceCreated = false))
+    fun `all three have to hold`() {
+        assertEquals(
+            RecognitionRoute.OnDevice,
+            RecognitionRoute.of(androidSixteen, availabilityReported = true, createSucceeded = true),
+        )
+    }
+
+    /**
+     * The original bug, pinned: a new SDK on its own says nothing about where the audio
+     * goes. These are the cases that used to return OnDevice.
+     */
+    @Test
+    fun `a new SDK alone is not on-device`() {
+        assertEquals(
+            RecognitionRoute.Network,
+            RecognitionRoute.of(androidSixteen, availabilityReported = false, createSucceeded = false),
+        )
+        assertEquals(
+            RecognitionRoute.Network,
+            RecognitionRoute.of(androidSixteen, availabilityReported = true, createSucceeded = false),
+        )
     }
 
     /**
@@ -30,9 +52,56 @@ class RecognitionRouteTest {
      * original bug wearing a different hat.
      */
     @Test
-    fun `an on-device recogniser that could not be built is not claimed as on-device`() {
-        assertEquals(RecognitionRoute.Network, RecognitionRoute.of(onDeviceCreated = false))
-        assertFalse(RecognitionRoute.of(onDeviceCreated = false).keepsAudioOnDevice)
+    fun `availability reported but creation failed is the network`() {
+        val route = RecognitionRoute.of(
+            androidSixteen, availabilityReported = true, createSucceeded = false,
+        )
+        assertEquals(RecognitionRoute.Network, route)
+        assertFalse(route.keepsAudioOnDevice)
+    }
+
+    /** Below API 33 there is nothing to create, whatever anything else claims. */
+    @Test
+    fun `an old phone is never on-device`() {
+        for (available in listOf(true, false)) {
+            for (created in listOf(true, false)) {
+                assertEquals(
+                    "sdk=${tiramisu - 1} available=$available created=$created",
+                    RecognitionRoute.Network,
+                    RecognitionRoute.of(tiramisu - 1, available, created),
+                )
+            }
+        }
+    }
+
+    /** The boundary itself, so the comparison cannot drift off by one. */
+    @Test
+    fun `the on-device recogniser starts existing at API 33`() {
+        assertEquals(
+            RecognitionRoute.Network,
+            RecognitionRoute.of(tiramisu - 1, availabilityReported = true, createSucceeded = true),
+        )
+        assertEquals(
+            RecognitionRoute.OnDevice,
+            RecognitionRoute.of(tiramisu, availabilityReported = true, createSucceeded = true),
+        )
+    }
+
+    /** Seven of the eight combinations are the network. Exhaustively, so none drifts. */
+    @Test
+    fun `only one of the eight combinations keeps the audio here`() {
+        val onDevice = buildList {
+            for (sdk in listOf(tiramisu - 1, tiramisu)) {
+                for (available in listOf(true, false)) {
+                    for (created in listOf(true, false)) {
+                        if (RecognitionRoute.of(sdk, available, created).keepsAudioOnDevice) {
+                            add(Triple(sdk, available, created))
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(listOf(Triple(tiramisu, true, true)), onDevice)
     }
 
     @Test
@@ -49,12 +118,5 @@ class RecognitionRouteTest {
     fun `the caption names the destination when the audio leaves the phone`() {
         assertEquals("Listening — recognised on this phone", RecognitionRoute.OnDevice.note)
         assertEquals("Listening — sent to Google for recognition", RecognitionRoute.Network.note)
-    }
-
-    /** Nothing may default to the reassuring answer. */
-    @Test
-    fun `the safe default is the network route`() {
-        assertEquals(RecognitionRoute.Network, RecognitionRoute.values().first { !it.keepsAudioOnDevice })
-        assertFalse(RecognitionRoute.of(false).keepsAudioOnDevice)
     }
 }
