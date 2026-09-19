@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.glance.text.FontWeight
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
@@ -65,7 +67,7 @@ class BuddyWidget : GlanceAppWidget() {
 
     @Composable
     private fun WidgetBody(context: Context, entry: BuddyWidgetEntry) {
-        // The same three facts at both sizes; the wide one has room for its buttons to
+        // The same three facts at both sizes; the wide one has room for its button to
         // carry words rather than only an icon's worth of meaning.
         val wide = LocalSize.current.width >= 200.dp
         Column(
@@ -73,36 +75,47 @@ class BuddyWidget : GlanceAppWidget() {
                 .fillMaxSize()
                 .background(GlanceTheme.colors.widgetBackground)
                 .cornerRadius(16.dp)
-                .padding(12.dp)
-                // The whole surface opens the composer, which is the one-tap "Ask".
-                // The whole surface opens the composer, which is the one-tap "Ask".
-                // A `siliconbuddy://ask` intent rather than a bare activity start, so
-                // the widget, the tile and the launcher shortcut all arrive at
-                // MainActivity by exactly the same door.
-                .clickable(actionStartActivity(composeIntent(context))),
+                .padding(12.dp),
         ) {
             Text(
                 entry.headline,
-                style = TextStyle(color = GlanceTheme.colors.onSurface),
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
                 maxLines = 1,
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    // The headline opens the composer, which is the one-tap "Ask". A
+                    // `siliconbuddy://ask` intent rather than a bare activity start, so
+                    // the widget, the tile and the launcher shortcut all arrive at
+                    // MainActivity by exactly the same door.
+                    .clickable(actionStartActivity(composeIntent(context))),
             )
-            Spacer(modifier = GlanceModifier.padding(2.dp))
             Text(
                 entry.body(if (wide) 180 else 90)
                     ?: entry.problem
                     ?: "Tap to ask your Mac.",
-                style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant),
-                maxLines = if (wide) 4 else 3,
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurfaceVariant,
+                    fontSize = 12.sp,
+                ),
+                maxLines = if (wide) 4 else 5,
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .clickable(actionStartActivity(composeIntent(context))),
             )
-            Spacer(modifier = GlanceModifier.defaultWeight())
             if (entry.isPaired) {
-                Row(
-                    modifier = GlanceModifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
+                Row(modifier = GlanceModifier.fillMaxWidth().padding(top = 8.dp)) {
                     Text(
                         if (wide) BuddySnapshot.trim(entry.quickPrompt, 28) else "Ask",
-                        style = TextStyle(color = GlanceTheme.colors.primary),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.primary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
                         maxLines = 1,
                         modifier = GlanceModifier
                             .clickable(
@@ -110,16 +123,19 @@ class BuddyWidget : GlanceAppWidget() {
                                     actionParametersOf(PROMPT to entry.quickPrompt),
                                 ),
                             )
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
                     )
                     if (entry.quickAnswer != null) {
                         Spacer(modifier = GlanceModifier.defaultWeight())
                         Text(
                             "Clear",
-                            style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant),
+                            style = TextStyle(
+                                color = GlanceTheme.colors.onSurfaceVariant,
+                                fontSize = 13.sp,
+                            ),
                             modifier = GlanceModifier
                                 .clickable(actionRunCallback<ClearQuickAnswerAction>())
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
                         )
                     }
                 }
