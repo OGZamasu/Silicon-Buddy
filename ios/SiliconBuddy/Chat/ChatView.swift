@@ -9,7 +9,10 @@ public struct ChatView: View {
 
     @State private var photoItem: PhotosPickerItem?
     @State private var showingCamera = false
+    @State private var showingCameraMode = false
     @State private var expandedReasoning: Set<String> = []
+    @State private var voice = VoiceController()
+    @State private var voiceProblem: String?
     @FocusState private var composerFocused: Bool
 
     public init(model: ChatModel) {
@@ -68,6 +71,36 @@ public struct ChatView: View {
                 }
             }
             .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showingCameraMode) {
+            CameraModeView(supportsVision: nil).environment(app)
+        }
+        .onAppear {
+            voice.speaksReplies = app.speaksReplies
+            // The question goes through the ordinary composer, so a spoken question and
+            // a typed one end up in the same transcript and the same conversation.
+            let chat = model
+            let transport = app.transport
+            voice.onAsk = { text in
+                chat.draft = text
+                chat.send(using: transport)
+            }
+        }
+        .onDisappear { voice.interrupt() }
+        .onChange(of: app.speaksReplies) { _, enabled in voice.speaksReplies = enabled }
+        // The reply is read out only when the person asked out loud and is still
+        // waiting: `VoiceSession` decides, not this.
+        .onChange(of: model.isSending) { was, now in
+            guard was, !now else { return }
+            let answer = model.current?.messages.last { $0.role == .assistant }?.content
+            voice.answered(answer ?? "")
+        }
+        .alert("Voice", isPresented: Binding(
+            get: { voiceProblem != nil }, set: { if !$0 { voiceProblem = nil } }
+        )) {
+            Button("OK", role: .cancel) { voiceProblem = nil }
+        } message: {
+            Text(voiceProblem ?? "")
         }
     }
 
@@ -169,6 +202,15 @@ public struct ChatView: View {
                 }
                 .accessibilityLabel("Attach a picture")
 
+                Button {
+                    showingCameraMode = true
+                } label: {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.title3)
+                        .frame(width: 34, height: 34)
+                }
+                .accessibilityLabel("Camera mode — point at something and ask about it")
+
                 TextField("Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
@@ -210,6 +252,21 @@ public struct ChatView: View {
                     )
                     .accessibilityLabel("Send")
                 }
+
+                PushToTalkButton(voice: voice) { problem in voiceProblem = problem }
+            }
+
+            if let partial = voice.partial, !partial.isEmpty {
+                Text(partial)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Heard so far: \(partial)")
+            } else if voice.state.isListening {
+                Text(voice.isOnDevice ? "Listening — on this device" : "Listening")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(Theme.gap)
@@ -329,6 +386,24 @@ struct MessageBubble: View {
                 Label(failure, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+
+            if let verdict = message.verdict {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verdict.summary)
+                        if let reasons = verdict.reasons, !reasons.isEmpty {
+                            Text(reasons.joined(separator: " · "))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                } icon: {
+                    Image(systemName: verdict.escalatedTo == nil
+                        ? "checkmark.seal" : "arrow.up.forward.circle")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Answer check: \(verdict.summary)")
             }
 
             if let metrics = message.metrics, metrics.generatedTokens > 0 {
@@ -487,5 +562,60 @@ public struct ConversationListView: View {
         }
         .task { await model.loadConversations(using: app.transport) }
         .refreshable { await model.loadConversations(using: app.transport) }
+    }
+}
+
+
+/// Hold to talk, let go to ask.
+///
+/// A hold rather than a toggle: it is the gesture people already know from every other
+/// push-to-talk button, it cannot be left on by accident, and letting go is an
+/// unambiguous "I have finished the sentence" that no silence detector gets right.
+struct PushToTalkButton: View {
+    @Bindable var voice: VoiceController
+    let onProblem: (String) -> Void
+
+    @State private var holding = false
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.title2)
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(voice.state.isListening ? Color.red : Color.accentColor)
+            .frame(width: 34, height: 34)
+            .contentShape(Rectangle())
+            .scaleEffect(holding ? 1.2 : 1)
+            .animation(.easeOut(duration: 0.12), value: holding)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !holding else { return }
+                        holding = true
+                        Task {
+                            if !voice.isAuthorized { await voice.requestPermissions() }
+                            if let problem = voice.permissionProblem {
+                                holding = false
+                                onProblem(problem)
+                                return
+                            }
+                            voice.press()
+                        }
+                    }
+                    .onEnded { _ in
+                        holding = false
+                        voice.release()
+                    }
+            )
+            .accessibilityLabel(voice.session.buttonLabel)
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private var symbol: String {
+        switch voice.state {
+        case .listening: "waveform.circle.fill"
+        case .speaking: "speaker.wave.2.circle.fill"
+        case .thinking: "waveform.circle"
+        default: "mic.circle"
+        }
     }
 }

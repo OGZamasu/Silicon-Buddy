@@ -254,6 +254,9 @@ public struct ControlClient: ControlTransport {
                         case "error":
                             continuation.yield(.failed(Self.text(from: event)))
                         default:
+                            // A name this build has never heard of. The Mac adds them —
+                            // `verdict` was the first — and an upgrade on that side must
+                            // not break a phone that has not been rebuilt.
                             break
                         }
                     }
@@ -305,6 +308,10 @@ public struct ControlClient: ControlTransport {
                             case "job":
                                 if let job = try? event.decode(BuddyAPI.JobProgress.self) {
                                     continuation.yield(.job(job))
+                                }
+                            case "verdict":
+                                if let verdict = try? event.decode(BuddyAPI.Verdict.self) {
+                                    continuation.yield(.verdict(verdict))
                                 }
                             case "heartbeat", "ping":
                                 continuation.yield(

@@ -24,6 +24,12 @@ public struct RootView: View {
             chat.macChanged()
             Task { await chat.loadConversations(using: app.transport) }
         }
+        // Answer checks arrive after the reply they are about, on the shared event
+        // stream, so they are applied wherever the chat screen happens to be.
+        .onChange(of: app.events.verdicts) { _, verdicts in
+            guard let id = chat.current?.id else { return }
+            if let verdict = verdicts[id] ?? verdicts[""] { chat.apply(verdict: verdict) }
+        }
     }
 }
 
@@ -31,18 +37,23 @@ struct PhoneTabs: View {
     @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
     @State private var openConversation: String?
+    @State private var tab = Tab.dashboard
+
+    enum Tab: Hashable { case dashboard, models, chat, settings }
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             NavigationStack {
                 DashboardView()
             }
             .tabItem { Label("Dashboard", systemImage: "gauge.with.dots.needle.33percent") }
+            .tag(Tab.dashboard)
 
             NavigationStack {
                 ModelsView()
             }
             .tabItem { Label("Models", systemImage: "square.stack.3d.up") }
+            .tag(Tab.models)
 
             NavigationStack {
                 ConversationListView(model: chat) { id in openConversation = id }
@@ -52,11 +63,27 @@ struct PhoneTabs: View {
                     }
             }
             .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+            .tag(Tab.chat)
 
             NavigationStack {
                 SettingsView(chat: chat)
             }
             .tabItem { Label("Settings", systemImage: "gearshape") }
+            .tag(Tab.settings)
+        }
+        // A widget's "Ask" button, or a `siliconbuddy://ask` link: the Chat tab, on the
+        // newest conversation, with the text typed in and nothing sent.
+        .onChange(of: app.pendingCompose) { _, request in
+            guard let request else { return }
+            tab = .chat
+            Task {
+                if chat.current == nil {
+                    await chat.newConversation(using: app.transport)
+                }
+                if let id = chat.current?.id { openConversation = id }
+                if let text = request.text { chat.draft = text }
+                app.pendingCompose = nil
+            }
         }
     }
 }
@@ -117,6 +144,17 @@ struct PadSplit: View {
             .listStyle(.sidebar)
             .navigationTitle("Silicon Buddy")
             .task { await chat.loadConversations(using: app.transport) }
+            .onChange(of: app.pendingCompose) { _, request in
+                guard let request else { return }
+                Task {
+                    if chat.current == nil {
+                        await chat.newConversation(using: app.transport)
+                    }
+                    if let id = chat.current?.id { selection = .conversation(id) }
+                    if let text = request.text { chat.draft = text }
+                    app.pendingCompose = nil
+                }
+            }
         } detail: {
             NavigationStack {
                 switch selection {

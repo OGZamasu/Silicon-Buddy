@@ -54,12 +54,15 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
     public var metrics: BuddyAPI.ChatMetrics?
     /// Set when the generation failed, with the Mac's words.
     public var failure: String?
+    /// What the Mac's answer checking made of this reply, if it checked it. It arrives
+    /// after the answer is finished and is never waited for.
+    public var verdict: BuddyAPI.Verdict?
 
     public init(
         id: String = UUID().uuidString, role: Role, content: String,
         reasoning: String? = nil, images: [String] = [], createdAt: Date = Date(),
         isStreaming: Bool = false, metrics: BuddyAPI.ChatMetrics? = nil,
-        failure: String? = nil
+        failure: String? = nil, verdict: BuddyAPI.Verdict? = nil
     ) {
         self.id = id
         self.role = role
@@ -70,6 +73,7 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
         self.isStreaming = isStreaming
         self.metrics = metrics
         self.failure = failure
+        self.verdict = verdict
     }
 
     public var wireMessage: ControlAPI.ChatRequest.Message {
