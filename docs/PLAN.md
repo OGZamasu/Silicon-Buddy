@@ -57,6 +57,61 @@ Decided 2026-09-18 with the owner.
   `contract/` but are not mirrored by either app yet; they belong to M3's node and
   recommend pages.
 
+### M2.1 — Android device pass — **done**
+
+An afternoon with the S24 Ultra (SM-S928U) itself rather than an emulator. The phone
+turned out to be on **Android 16 (SDK 36)**, not 14/15, with **three-button navigation** —
+both of which matter, because the inset bug below only shows on an opaque navigation bar.
+
+Verified on the phone: cold start (~0.95–1.1s, debug build); pairing restored from
+EncryptedSharedPreferences after `am force-stop`; `GET /events` opened over the tailnet
+and stayed open; `TailnetHost` gating every request; the Glance widget already on the
+One UI home screen taking an update from the app; the Quick Settings tile, the share
+target and both launcher shortcuts — one static, one dynamic — resolving.
+
+Verified on an Android 16 emulator against `demo_mac.py`, because they need a screen and
+the phone's is locked: pairing by link, live dashboard, conversation sync, streaming and
+markdown, the composer against the keyboard, dark theme, font scale 1.3, and the
+`/events` backoff across a real network drop (0 → 1s → 2s → 4s → 8s, reset after a
+stream that had stayed up).
+
+Fixed here:
+
+- **The push-to-talk caption lied.** `VoiceController` decided correctly whether it had
+  built an on-device recogniser and then overwrote the answer with `SDK_INT >= 33`, so
+  every phone on Android 13 or later was told its voice was recognised locally — the S24
+  Ultra included — whether or not the audio was going to Google. The decision moved to
+  `RecognitionRoute`, which has tests.
+- **The camera kept running after its sheet closed**, bound to the activity rather than
+  to the preview, so the privacy indicator stayed lit. It also blocked the main thread
+  waiting for the camera provider.
+- **The event stream healed silently.** Nothing downstream could tell a live stream from
+  one that had been flapping for ten minutes, and Settings said "Streaming from /events"
+  during an outage. It now emits `ServerEvent.Disconnected` and logs both ends of every
+  reconnect under one `SiliconBuddy` tag.
+- **The composer floated above the keyboard.** Scaffold's padding and `imePadding()`
+  each counted the navigation bar, leaving ~128dp of dead space under the composer on a
+  three-button phone. Fixed with `consumeWindowInsets`.
+- **The open tab and conversation were lost** to any restart One UI felt like doing.
+- **Release was built unminified at 75 MB.** R8 and resource shrinking, plus ARM-only
+  ABIs, take it to **15.9 MB** (debug 94 → 78 MB). The keep rules are the substance: a
+  Glance `ActionCallback` is reached by class *name*, so without one the widget's button
+  becomes a no-op on release and nothing reports it.
+
+Not done, and why:
+
+- **The phone's screen is locked** behind a secure keyguard, so nothing that needs eyes
+  or taps on the real hardware was checked there: camera capture, the voice state
+  machine on a real recogniser, TTS, the widget's own button, One UI's widget picker
+  preview, and frame timing while streaming. The emulator stands in for the layout and
+  the state machines; it cannot stand in for Samsung's recogniser or its battery policy.
+- **The phone's network was not flapped.** Wireless debugging on Android is tied to
+  Wi-Fi, so aeroplane mode would have severed the only channel to a locked phone with no
+  way back short of physical access. The backoff was exercised on the emulator instead.
+- **The widget has no `previewLayout`**, so One UI's picker shows Glance's placeholder.
+- **`material-icons-extended` is still the largest single cost**, ~45,000 icon classes
+  for the 24 this app draws. R8 removes them from release; debug still carries them.
+
 ### M3 — Media jobs and machines
 - Image, video, 3D from the phone on the Mac or the node; queue view; progress (Live Activity on iOS, ongoing notification on Android); results saved to the phone.
 - Node page: GPU, loaded GGUF, adapters, restart lanes. Swarm page.
