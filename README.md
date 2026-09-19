@@ -110,27 +110,40 @@ of the Mac's app, so rows from a transcript that has gone are never merged into 
 that replaced it. The phone resumes from how far its rows are known to be complete — not
 from the highest number it has seen — so a stream that dropped, a Mac that had to drop
 frames for a slow phone (`resync`), or a read answered before the stream opened are all
-caught up with `?since=&epoch=` rather than leaving a hole. Coming back to the app after
-a while opens the stream again at once instead of waiting out its 45-second grace.
+caught up with `?since=&epoch=` rather than leaving a hole — in the transcript's own order,
+even when rows streamed in while the catch-up was out. Off screen the app closes its stream
+and stops polling the Mac's metrics; coming back opens the stream again at once and asks
+each engine once for what it missed.
 
 **Approvals.** The Mac's guardrail screens each call first and answers what it is sure
 about; what reaches the phone is what it left to a person, with its verdict — "Jev:
-review: destructive" — exactly as the Mac's card shows it. Accept and Decline are one
-tap. Answered at the Mac first, the card says so and comes down; gone for any other
-reason, it comes down quietly; and a card answered on the Mac while the phone was
-looking comes down by itself, saying which way it went. The tab's badge — which a screen
-reader says too — counts what is waiting, and so does the Quick Settings tile.
+review: destructive" — exactly as the Mac's card shows it. One card at a time, oldest
+first, its Accept and Decline pinned below a body that scrolls, so they stay in reach at
+any text size and on a phone turned on its side, where the card stands beside the
+transcript. A tap that passed through another app's window is refused rather than sent.
+Answered at the Mac first, the card says so and comes down; gone for any other reason, it
+comes down quietly; and a card answered on the Mac while the phone was looking comes down
+by itself, saying which way it went — and whose answer it was, even when the Mac's frame
+beats the reply to this phone's own. The tab's badge — which a screen reader says too —
+counts what is waiting, and so does the Quick Settings tile. If the Mac stops knowing this
+phone (a 401), the tab stops asking and offers to pair again.
 
 **In your pocket.** Leave the app while a turn is running in a session you opened, and
 a foreground service keeps watching it (`remoteMessaging`, the type Android 14 has for
 carrying on a conversation that lives on another device). Each approval gets one
-notification, naming the engine and the command, the paths or the tool — one line of it,
-with anything shaped like a credential masked, never a file's contents. On Android 12 and
-later its Accept and Decline require the phone to be unlocked (`setAuthenticationRequired`)
-before anything reaches the Mac; on older Android they open the session instead. A locked
-screen shows only that an agent is waiting. The service lets go when the turn ends, when
-the Mac stops answering and the next attempt cannot reach it, when the notification is
-dismissed, or when the app comes back.
+notification saying which engine wants to do what kind of thing — "Codex wants to run a
+command" — and what the guardrail made of it, and nothing else: not the command, not the
+paths, not the reason, not any output. Android shows a notification's content on the lock
+screen unless you have chosen to hide sensitive content there, which is not the default,
+so what exactly the agent wants stays in the app, after unlocking. On Android 12 and later
+Accept and Decline require the phone to be unlocked (`setAuthenticationRequired`), and the
+app checks again when the answer arrives — a notification listener or a watch can press a
+button without the system's prompt — refusing on a locked phone; on older Android the one
+button is "Open". The service lets go when the turn ends; when nothing has come from the
+Mac for a minute, however often the stream has been dialled again, so a Mac relaunching or
+a phone changing networks does not end it; at once if the Mac says this phone is no longer
+paired, saying so; when the notification is dismissed; or when the app comes back. On
+Android 13 and later a session screen leaves no Recents thumbnail.
 
 **Runs without asking.** When the Mac says a session asks nobody — Pi with the guardrail
 off, Codex under "never ask" — the session carries a banner that cannot be dismissed,

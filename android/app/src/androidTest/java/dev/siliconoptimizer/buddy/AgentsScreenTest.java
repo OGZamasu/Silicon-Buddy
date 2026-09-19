@@ -152,6 +152,7 @@ public class AgentsScreenTest {
 
         // Leaving with a turn running in a session this phone opened starts the watcher.
         device.pressHome();
+        assertTrue("the watcher did not start", waitFor(this::watcherRunning));
 
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         Notification[] found = new Notification[1];
@@ -184,6 +185,13 @@ public class AgentsScreenTest {
         String publicText = String.valueOf(approval.publicVersion.extras.getCharSequence(Notification.EXTRA_TEXT));
         assertTrue(publicText.contains("waiting"));
         assertTrue("the lock screen is not told the command", !publicText.contains("swift"));
+        // Android shows a private notification's own content on the lock screen unless the
+        // owner hid it, so the notification itself never carries the command either.
+        String privateText = String.valueOf(approval.extras.getCharSequence(Notification.EXTRA_TEXT))
+            + " " + String.valueOf(approval.extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
+        assertTrue(privateText, !privateText.contains("swift"));
+        assertTrue(privateText, !privateText.contains("Codex asks before running"));
+        assertTrue(privateText, privateText.contains("Screened: asks you"));
 
         assertEquals(2, approval.actions.length);
         assertEquals("Decline", approval.actions[0].title.toString());
@@ -210,8 +218,16 @@ public class AgentsScreenTest {
         assertTrue("the answer from the shade reached the Mac",
             waitFor(() -> "accept".equals(mac.decision)));
 
-        // The turn ended, so the watcher lets go and takes the approval down with it.
-        assertTrue("the approval notification came down", waitFor(() -> {
+        // The turn ended, so the watcher lets go: the service itself stops — not only its
+        // cards — and its own notification goes with it.
+        assertTrue("the watcher service is still running", waitFor(() -> !watcherRunning()));
+        assertTrue("the watcher's notification is still up", waitFor(() -> {
+            for (StatusBarNotification posted : manager.getActiveNotifications()) {
+                if (posted.getId() == WATCH_NOTIFICATION) return false;
+            }
+            return true;
+        }));
+        assertTrue("an approval notification is still up", waitFor(() -> {
             for (StatusBarNotification posted : manager.getActiveNotifications()) {
                 Notification notification = posted.getNotification();
                 if (notification.actions != null && notification.actions.length == 2) return false;
@@ -219,6 +235,25 @@ public class AgentsScreenTest {
             return true;
         }));
         device.pressBack();
+    }
+
+    /** The watcher's foreground notification, as the app numbers it. */
+    private static final int WATCH_NOTIFICATION = 4201;
+
+    /**
+     * Whether this app's agent watcher is running. On Android 8 and later the list holds only
+     * the caller's own services, which is exactly what is wanted; the class keeps its name
+     * through R8 because the manifest names it.
+     */
+    @SuppressWarnings("deprecation")
+    private boolean watcherRunning() {
+        android.app.ActivityManager activities = context.getSystemService(android.app.ActivityManager.class);
+        for (android.app.ActivityManager.RunningServiceInfo service : activities.getRunningServices(Integer.MAX_VALUE)) {
+            if (service.service.getClassName().equals(PACKAGE + ".agents.AgentWatchService") && service.started) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private interface Condition {

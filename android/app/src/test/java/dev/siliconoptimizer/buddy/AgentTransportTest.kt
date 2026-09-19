@@ -332,4 +332,19 @@ class AgentTransportTest {
         assertEquals("pi", received[6].engine)
         assertEquals(7, (all[6] as ServerEvent.Resync).dropped)
     }
+
+    /**
+     * A frame this build cannot read is still a frame the sessions missed. Dropping it
+     * quietly let the cursor walk past it; it arrives as a gap instead.
+     */
+    @Test
+    fun `an agent frame that does not decode arrives as a resync`() = runTest {
+        server.events(
+            "/events",
+            "event: agent\ndata: {\"engine\":\"codex\",\"kind\":\"item\"}\n\n" +
+                "event: agent\ndata: not json at all\n\n",
+        )
+        val received = client.events().take(2).toList()
+        assertEquals(listOf(ServerEvent.Resync(null), ServerEvent.Resync(null)), received)
+    }
 }

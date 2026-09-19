@@ -614,4 +614,155 @@ class AgentSessionTest {
         assertEquals(listOf("r501", "r502", "r503"), ids(later))
         assertEquals(Sync.None, later.needs)
     }
+
+    // MARK: - Review round: the orders the first cut got wrong
+
+    /**
+     * An old row changed after the catch-up was taken, and its frame beat the answer. The
+     * slice's new row belongs after it — the old row keeps its place in the transcript.
+     */
+    @Test
+    fun `a slice places its new rows after old rows the stream changed meanwhile`() {
+        val session = following()
+            .streamBroken()
+            .applying(turnFrame(active = true, seq = 20))
+            .syncing()
+            .applying(itemFrame(item("b", "b, changed at 25"), seq = 25))
+            .applying(detail(listOf(item("c")), seq = 21, complete = false, itemCount = 3))
+        assertEquals(listOf("a", "b", "c"), ids(session))
+        assertEquals("b, changed at 25", session.item("b")!!.text)
+    }
+
+    /** New rows the stream brought after the answer stay after the answer's new rows. */
+    @Test
+    fun `a slice's new rows go before rows first seen after it was taken`() {
+        val session = following()
+            .streamBroken()
+            .applying(turnFrame(active = true, seq = 20))
+            .syncing()
+            .applying(itemFrame(item("e", "first seen at 25"), seq = 25))
+            .applying(detail(listOf(item("c"), item("d")), seq = 21, complete = false, itemCount = 4))
+        assertEquals(listOf("a", "b", "c", "d", "e"), ids(session))
+    }
+
+    /**
+     * The mutation the review left standing: answering here must settle the card, or a read
+     * taken before the answer — already on its way — puts it back.
+     */
+    @Test
+    fun `a card this phone answered cannot be put back by a read taken before the answer`() {
+        val card = approval("A1")
+        val session = AgentSession("codex")
+            .applying(detail(listOf(item("a")), seq = 5, complete = true, approvals = listOf(card)))
+            .answered("A1", "accepted")
+            .applying(detail(listOf(item("a")), seq = 5, complete = false, approvals = listOf(card), itemCount = 1))
+        assertTrue(session.pending.isEmpty())
+        assertEquals(1, session.resolutions.size)
+    }
+
+    /** Recorded before sending, so the frame that wins the race credits this phone. */
+    @Test
+    fun `an answer recorded before sending is this phone's when the frame arrives first`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "accept")
+            .applying(approvalFrame(card, seq = 6, state = AgentEvent.ACCEPTED))
+        val said = session.resolutions.single()
+        assertTrue(said.byThisPhone)
+        assertEquals("accepted", said.decision)
+    }
+
+    /** An answer that never got through is not credited to this phone. */
+    @Test
+    fun `an answer that failed is not this phone's`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .answering("A1", "accept")
+            .unanswering("A1")
+            .applying(approvalFrame(card, seq = 6, state = AgentEvent.ACCEPTED))
+        assertFalse(session.resolutions.single().byThisPhone)
+    }
+
+    /** A card this phone answered from a notification, gone by the time the app reads. */
+    @Test
+    fun `a card that vanished while away is credited to this phone when it answered it`() {
+        val card = approval("A1")
+        val session = following()
+            .applying(approvalFrame(card, seq = 5))
+            .remembering(mapOf("A1" to "declined"))
+            .applying(detail(listOf(item("a"), item("b")), seq = 9, complete = false))
+        val said = session.resolutions.single()
+        assertTrue(said.byThisPhone)
+        assertEquals("declined", said.decision)
+    }
+
+    /**
+     * Back from the background: the stream restarts, the catch-up goes out, and the
+     * stream's opening lands while it is out. An answer taken at or after the opening is
+     * the whole story, so it is one read per engine, not two.
+     */
+    @Test
+    fun `the opening that lands while its catch-up is out does not ask again`() {
+        val session = following()
+            .streamBroken()
+            .syncing()
+            .applying(turnFrame(active = false, seq = 9))
+            .applying(detail(listOf(item("c")), seq = 9, complete = false, itemCount = 3))
+        assertEquals(Sync.None, session.needs)
+        assertEquals(9L, session.cursor!!.since)
+    }
+
+    /** But an opening newer than the answer does ask again: the gap is real. */
+    @Test
+    fun `an opening newer than the answer still asks for the gap`() {
+        val session = following()
+            .streamBroken()
+            .syncing()
+            .applying(turnFrame(active = true, seq = 12))
+            .applying(detail(listOf(item("c")), seq = 9, complete = false, itemCount = 3))
+        assertEquals(Sync.CatchUp, session.needs)
+        assertEquals(9L, session.cursor!!.since)
+    }
+
+    /** A request with no frame behind it waits for a read that starts after it. */
+    @Test
+    fun `a verb's request is not satisfied by a read already out`() {
+        val session = following()
+            .streamBroken()
+            .syncing()
+            .needing(Sync.CatchUp)
+            .applying(detail(listOf(item("c")), seq = 50, complete = false, itemCount = 3))
+        assertEquals(Sync.CatchUp, session.needs)
+    }
+
+    /** P2's other half: after a relaunch the new transcript's first frame opens a new run. */
+    @Test
+    fun `after a relaunch the new transcript's stream starts its own run`() {
+        var session = AgentSession("codex")
+            .applying(detail(listOf(item("a")), seq = 400, complete = true))
+            .applying(turnFrame(active = false, seq = 400))
+            .syncing()
+            .applying(detail(listOf(item("x")), seq = 3, complete = true, epoch = nextEpoch))
+        assertEquals(Sync.None, session.needs)
+        // The new stream opens at the new clock's current number, and follows on from there.
+        session = session
+            .applying(AgentEvent(engine = "codex", kind = AgentEvent.TURN, seq = 3, epoch = nextEpoch, turnActive = false))
+            .applying(itemFrame(item("y"), seq = 4, epoch = nextEpoch))
+        assertEquals(Sync.None, session.needs)
+        assertEquals(listOf("x", "y"), ids(session))
+        assertEquals(4L, session.cursor!!.since)
+    }
+
+    /** Every stream opens by restating each engine's state and turn; that alone is no news. */
+    @Test
+    fun `a stream's opening that restates what is known asks the Mac nothing`() {
+        val session = following()
+            .applying(stateFrame("running", seq = 2))
+            .applying(turnFrame(active = false, seq = 2))
+        assertEquals(Sync.None, session.needs)
+        // A real change still asks.
+        assertEquals(Sync.CatchUp, session.applying(stateFrame("failed", seq = 3)).needs)
+    }
 }

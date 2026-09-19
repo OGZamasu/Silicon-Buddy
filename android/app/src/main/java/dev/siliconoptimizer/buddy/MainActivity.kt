@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -71,6 +73,7 @@ import dev.siliconoptimizer.buddy.agents.AgentsViewModel
 import dev.siliconoptimizer.buddy.agents.Confirm
 import dev.siliconoptimizer.buddy.agents.ConfirmDialog
 import dev.siliconoptimizer.buddy.agents.SessionScreen
+import dev.siliconoptimizer.buddy.agents.knownEngine
 import dev.siliconoptimizer.buddy.chat.ChatScreen
 import dev.siliconoptimizer.buddy.chat.ChatViewModel
 import dev.siliconoptimizer.buddy.dashboard.DashboardScreen
@@ -106,9 +109,8 @@ class MainActivity : ComponentActivity() {
     private val agents: AgentsViewModel by viewModels()
     private val events: EventFeed by viewModels()
     private val appState: AppState by viewModels()
-
-    /** When the activity last left the screen, to tell a glance away from a long absence. */
-    private var stoppedAt: Long? = null
+    private val dashboard: DashboardViewModel by viewModels()
+    private val media: MediaViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,14 +132,16 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         AgentWatchService.stop(this)
-        // Away for more than a moment, the stream is most likely a socket that is no
-        // longer there: on Android 16 a backgrounded app's connection dropped within
-        // seconds, and the stream would only notice after its 45-second grace. Open a
-        // fresh one now rather than show a session that has stopped moving.
-        val away = stoppedAt?.let { System.currentTimeMillis() - it }
-        stoppedAt = null
-        if (away != null && away > RECONNECT_AFTER_MS && appState.isPaired) {
-            events.start(appState.transport)
+        // Approval notifications a watcher left behind — its process died, say — have
+        // nothing behind their buttons; the cards in the app are the live ones now.
+        AgentNotifier(this).cancelApprovals()
+        // The stream and the metrics this activity closed when it left the screen open
+        // again. Only those: a first start is opened by the screen itself, once.
+        dashboard.resumeLiveUpdates()
+        if (events.resume()) {
+            // Whatever the render queue did meanwhile was said to nobody; read it once, so a
+            // clip that finished is announced now rather than never.
+            media.startFollowing(appState.transport, MediaNotifier(this), live = true)
         }
     }
 
@@ -149,21 +153,15 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         if (isChangingConfigurations) return
-        stoppedAt = System.currentTimeMillis()
+        // Off screen, the app's own stream and the dashboard's polling keep a radio awake to
+        // tell nobody anything — and with the watcher running, at a foreground service's
+        // priority. The watcher holds a stream of its own; these close until the app is back.
+        events.pause()
+        dashboard.pauseLiveUpdates()
         val watched = agents.watchedTurns
         if (watched.isNotEmpty() && AgentNotifier(this).isAllowed) {
             AgentWatchService.start(this, watched)
         }
-    }
-
-    /**
-     * Back from anywhere: a stream that died quietly while the app was frozen takes up to
-     * its 45-second grace to say so, and the sessions should not wait that long to be
-     * right. They ask for what changed since what they hold.
-     */
-    override fun onResume() {
-        super.onResume()
-        agents.catchUpAll()
     }
 
     /**
@@ -185,7 +183,8 @@ class MainActivity : ComponentActivity() {
         // An approval's notification opens its session. The same kind of request: a
         // screen, never a decision.
         if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_AGENTS) {
-            return LinkArrival.OpenAgents(intent.getStringExtra(EXTRA_ENGINE))
+            // An engine this build does not know is dropped, not opened.
+            return LinkArrival.OpenAgents(knownEngine(intent.getStringExtra(EXTRA_ENGINE)))
         }
         val data = intent?.data ?: return null
         // `siliconbuddy://` means three things now: a pairing code, a composer to open,
@@ -214,9 +213,6 @@ class MainActivity : ComponentActivity() {
         const val OPEN_QUEUE = "queue"
         const val OPEN_AGENTS = "agents"
         const val EXTRA_ENGINE = "dev.siliconoptimizer.buddy.ENGINE"
-
-        /** Longer away than this, and the stream is opened again on return. */
-        const val RECONNECT_AFTER_MS = 10_000L
     }
 }
 
@@ -272,6 +268,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     // way `remember` alone puts the person back on the dashboard, having lost the
     // conversation they were reading.
     var destination by rememberSaveable(stateSaver = Destination.Saver) {
+        mutableStateOf(Destination.Dashboard)
+    }
+    // Where Settings was opened from, so its back arrow and the system's Back return there
+    // rather than to the Mac tab — or, worse, out of the app.
+    var settingsFrom by rememberSaveable(stateSaver = Destination.Saver) {
         mutableStateOf(Destination.Dashboard)
     }
     var pairing by remember { mutableStateOf(false) }
@@ -404,8 +405,18 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         dashboard.pollsStatus = events.mustPoll
     }
 
-    val windowWidth = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
-    val wide = windowWidth >= 600
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val wide = configuration.screenWidthDp >= 600
+    // A phone on its side is wide and short: the rail cannot hold seven destinations at a
+    // readable size, so it scrolls, and Settings keeps its gear in the top bar as well.
+    val shortWindow = configuration.screenHeightDp < 480
+    val gearInTopBar = !wide || shortWindow
+    fun openSettings() {
+        if (destination != Destination.Settings) settingsFrom = destination
+        destination = Destination.Settings
+    }
+    val settingsOpenedAsPage = destination == Destination.Settings && gearInTopBar
+    BackHandler(enabled = settingsOpenedAsPage) { destination = settingsFrom }
 
     Scaffold(
         topBar = {
@@ -431,8 +442,8 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             IconButton(onClick = { openAgent = null }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All agents")
                             }
-                        destination == Destination.Settings && !wide ->
-                            IconButton(onClick = { destination = Destination.Dashboard }) {
+                        settingsOpenedAsPage ->
+                            IconButton(onClick = { destination = settingsFrom }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                     }
@@ -505,9 +516,10 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         else -> Unit
                     }
                     // Seven destinations do not fit a phone's bar at a readable size, so
-                    // on a phone Settings moves up here; a tablet's rail still lists it.
-                    if (!wide && destination != Destination.Settings) {
-                        IconButton(onClick = { destination = Destination.Settings }) {
+                    // on a phone Settings moves up here; a tablet's rail still lists it, and
+                    // a phone on its side has both.
+                    if (gearInTopBar && destination != Destination.Settings) {
+                        IconButton(onClick = { openSettings() }) {
                             Icon(Icons.Filled.Settings, contentDescription = "Settings")
                         }
                     }
@@ -557,10 +569,17 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             if (wide) {
                 // A tablet has room for the conversation list beside the transcript.
                 NavigationRail {
+                    // Scrolls, so a short window still reaches every destination.
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
                     destinations.forEach { entry ->
                         NavigationRailItem(
                             selected = destination == entry,
-                            onClick = { destination = entry },
+                            onClick = {
+                                if (entry == Destination.Settings) openSettings() else destination = entry
+                            },
                             icon = { DestinationIcon(entry, agents.board.pendingTotal) },
                             label = {
                                 Text(
@@ -569,6 +588,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                                 )
                             },
                         )
+                    }
                     }
                 }
                 if (destination == Destination.Chat) {
@@ -591,10 +611,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 Destination.Agents -> {
                     val engine = openAgent
                     if (engine == null) {
-                        AgentsScreen(app, agents, onOpen = { openAgent = it }, modifier = Modifier.fillMaxSize())
+                        AgentsScreen(
+                            app, agents,
+                            onOpen = { openAgent = it },
+                            onPair = { pairing = true },
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     } else {
                         BackHandler { openAgent = null }
-                        SessionScreen(agents, engine, Modifier.fillMaxSize())
+                        SessionScreen(agents, engine, onPair = { pairing = true }, modifier = Modifier.fillMaxSize())
                     }
                 }
                 Destination.Machines -> MachinesScreen(app, machines, Modifier.fillMaxSize())

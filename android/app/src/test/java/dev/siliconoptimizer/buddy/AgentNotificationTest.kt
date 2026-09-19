@@ -21,11 +21,12 @@ import org.junit.Test
 /**
  * What an approval notification says, and who may press its buttons.
  *
- * Its buttons run commands on somebody's Mac and it is drawn on a locked screen, so the
- * rules are: one per approval and never two; nothing for a session this phone is not
- * following; both buttons behind the owner's fingerprint or PIN where Android can demand
- * it, and opening the app instead where it cannot; and no text that carries a secret or
- * a file.
+ * Its buttons run commands on somebody's Mac and it is drawn on a lock screen — where
+ * Android shows a private notification's content unless the owner hid it — so the rules
+ * are: one per approval and never two; nothing for a session this phone is not following;
+ * both buttons behind the owner's fingerprint or PIN where Android can demand it, and one
+ * "Open" where it cannot; and nothing of the command, the paths, the reason or the output
+ * on the notification at all.
  */
 class AgentNotificationTest {
 
@@ -100,10 +101,10 @@ class AgentNotificationTest {
     }
 
     @Test
-    fun `the notification names the engine and the thing being decided`() {
+    fun `the notification names the engine and the kind of thing being decided`() {
         val notice = AgentNotifications.notice("codex", approval("C1"), sdk = 36)
         assertEquals("Codex wants to run a command", notice.title)
-        assertEquals("swift test --filter Lisbon", notice.text)
+        assertEquals("the guardrail's verdict, not the command", "Screened: asks you", notice.text)
         assertEquals(
             "Pi wants to use a tool",
             AgentNotifications.notice("pi", approval("P1", kind = "tool"), sdk = 36).title,
@@ -115,14 +116,15 @@ class AgentNotificationTest {
     }
 
     @Test
-    fun `the guardrail's verdict rides along in the expanded text`() {
+    fun `the expanded text is the verdict and where the detail is, not the reason`() {
         val screened = approval("C1").copy(
             reason = "Codex asks before running a command in this folder.",
-            screening = AgentScreening(AgentScreening.CONFIRM, "Jev: review: destructive"),
+            screening = AgentScreening(AgentScreening.BLOCK, "Jev: review: destructive"),
         )
         val detail = AgentNotifications.notice("codex", screened, sdk = 36).detail
-        assertTrue(detail.contains("Codex asks before running a command"))
-        assertTrue(detail.contains("Jev: review: destructive"))
+        assertTrue(detail.startsWith("Screened: would block"))
+        assertTrue(detail.contains("Open Silicon Buddy"))
+        assertFalse("the reason is the engine's words about the command", detail.contains("in this folder"))
     }
 
     @Test
@@ -161,9 +163,10 @@ class AgentNotificationTest {
     }
 
     @Test
-    fun `before Android 12 the buttons open the app instead of answering`() {
+    fun `before Android 12 the one button opens the app, and says so`() {
         val notice = AgentNotifications.notice("codex", approval("C1"), sdk = 30)
-        assertTrue(notice.actions.all { it.opensApp && !it.authenticationRequired })
+        assertEquals("both would only open the app, so there is one", listOf("Open"), notice.actions.map { it.label })
+        assertTrue(notice.actions.all { it.opensApp && !it.authenticationRequired && it.decision == null })
         val actions = AgentNotifier.actions(null, notice)
         assertTrue(actions.all { it.showsUserInterface })
         assertTrue(actions.none { it.isAuthenticationRequired })
@@ -171,17 +174,23 @@ class AgentNotificationTest {
 
     // MARK: - What the text may say
 
+    /**
+     * Android draws a private notification's content on the lock screen unless the owner has
+     * chosen to hide sensitive content, which is not the default. So none of the command
+     * reaches the notification — not masked, absent.
+     */
     @Test
-    fun `a bearer token never reaches the lock screen`() {
+    fun `the command never reaches the notification at all`() {
         val secret = "sk-live-4f1d2c3b4a5968778695a4b3c2d1e0f9"
-        val notice = AgentNotifications.notice(
-            "codex",
-            approval("C1", """curl -H "Authorization: Bearer $secret" https://api.example.com/v1/deploy"""),
-            sdk = 36,
-        )
-        assertFalse(notice.text.contains(secret))
-        assertFalse(notice.detail.contains(secret))
-        assertTrue(notice.text.contains("Bearer •••"))
+        val approval = approval("C1", """curl -H "Authorization: Bearer $secret" https://api.example.com/v1/deploy""")
+            .copy(reason = "Codex asks before running a command in /Users/you/Developer/lisbon.")
+        val notice = AgentNotifications.notice("codex", approval, sdk = 36)
+        val shown = listOf(notice.title, notice.text, notice.detail).joinToString("\n")
+        for (part in listOf(secret, "curl", "api.example.com", "Authorization", "/Users/", "lisbon")) {
+            assertFalse("$part is on the notification", shown.contains(part))
+        }
+        assertEquals("Codex wants to run a command", notice.title)
+        assertEquals("Screened: asks you", notice.text)
     }
 
     @Test
@@ -197,18 +206,26 @@ class AgentNotificationTest {
         assertEquals("Sources/Lisbon/Itinerary.swift", AgentNotifications.redact("Sources/Lisbon/Itinerary.swift"))
     }
 
-    /** A tool call can carry a whole file as an argument. The notification never does. */
+    /** A tool call can carry a whole file as an argument. The notification carries none of it. */
     @Test
-    fun `a file's contents never ride along whole`() {
+    fun `a file's contents never ride along`() {
         val file = (1..60).joinToString("\n") { "line $it of a file the agent wants to write" }
         val notice = AgentNotifications.notice(
             "pi", approval("P1", "write {\"path\":\"notes/lisbon.md\"}\n$file", kind = "tool"), sdk = 36,
         )
-        assertEquals("one line in the shade", 1, notice.text.lines().size)
-        assertTrue(notice.text.length <= AgentNotifications.LINE_LIMIT + 2)
-        assertTrue(notice.detail.lines().size <= AgentNotifications.DETAIL_LINES + 1)
-        assertTrue(notice.detail.length <= AgentNotifications.DETAIL_LIMIT + 120)
-        assertFalse(notice.detail.contains("line 60"))
+        val shown = notice.text + notice.detail
+        assertFalse(shown.contains("line 1 of"))
+        assertFalse(shown.contains("notes/lisbon.md"))
+        assertEquals("Pi wants to use a tool", notice.title)
+    }
+
+    /** The in-app line that says how a card came down still cuts a file to one line. */
+    @Test
+    fun `the in-app line is one line of what was decided`() {
+        val file = (1..60).joinToString("\n") { "line $it of a file the agent wants to write" }
+        val line = AgentNotifications.line("write notes/lisbon.md\n$file", AgentNotifications.LINE_LIMIT)
+        assertEquals(1, line.lines().size)
+        assertFalse(line.contains("line 60"))
     }
 
     @Test
@@ -221,10 +238,16 @@ class AgentNotificationTest {
 
     @Test
     fun `a locked screen is told that something waits, and not what`() {
-        val public = AgentNotifications.PUBLIC_TITLE + " " + AgentNotifications.PUBLIC_TEXT
-        assertFalse(public.contains("Codex"))
-        assertFalse(public.contains("Pi "))
-        assertFalse(public.contains("swift"))
+        val stand_ins = listOf(
+            AgentNotifications.PUBLIC_APPROVAL, AgentNotifications.PUBLIC_ANSWERED,
+            AgentNotifications.PUBLIC_WATCHING, AgentNotifications.PUBLIC_ENDED,
+        )
+        assertEquals("one stand-in per kind of notification", 4, stand_ins.toSet().size)
+        for (public in stand_ins.map { AgentNotifications.PUBLIC_TITLE + " " + it }) {
+            assertFalse(public.contains("Codex"))
+            assertFalse(public.contains("Pi "))
+            assertFalse(public.contains("swift"))
+        }
     }
 
     // MARK: - The watcher's own line

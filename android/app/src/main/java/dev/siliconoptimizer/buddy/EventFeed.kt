@@ -133,8 +133,39 @@ class EventFeed : ViewModel() {
 
     private var job: Job? = null
 
+    /** The stream this feed was told to hold, while the app itself has let go of it. */
+    private var paused: ControlTransport? = null
+
+    /**
+     * The app is leaving the screen. A stream in the background keeps a radio awake to tell
+     * nobody anything — the watcher, when there is one, holds its own — so it is closed, and
+     * [resume] opens it again. Only this feed's own pause is resumed: a feed started fresh
+     * afterwards (a new Mac, a new screen) is not opened twice.
+     */
+    fun pause() {
+        val running = job ?: return
+        running.cancel()
+        job = null
+        paused = current
+        isLive = false
+        retryAt = null
+    }
+
+    /** Back on screen: the stream opens again if [pause] closed it. True when it did. */
+    fun resume(): Boolean {
+        val transport = paused ?: return false
+        paused = null
+        start(transport)
+        return true
+    }
+
+    /** What [start] was last given. */
+    private var current: ControlTransport? = null
+
     fun start(transport: ControlTransport?) {
         stop()
+        paused = null
+        current = transport
         // A new connection does not follow on from the old one: whatever the sessions heard
         // before this, the frames after it are a new run.
         emitAgent(AgentFeed.Broken)

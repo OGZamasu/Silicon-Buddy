@@ -74,6 +74,13 @@ data class AgentSession(
     val omitted: Int = 0,
     /** What this session needs from the Mac next, if anything. */
     val needs: Sync = Sync.None,
+    /**
+     * The newest sequence that asked for [needs]. An answer taken at or after it satisfies
+     * the request — so the opening burst of a stream that comes back while its catch-up is
+     * already out does not send a second one — while a request with no sequence behind it
+     * (a verb, a 409, a break) waits for a read that starts after it.
+     */
+    val needsAt: Long = 0,
 ) {
     val transcript: List<AgentItem> get() = items.map { it.item }
     val pending: List<AgentApproval> get() = approvals.map { it.approval }
@@ -103,7 +110,7 @@ data class AgentSession(
             // A slice of a transcript this phone does not hold cannot be merged into it.
             // The Mac answers a foreign cursor whole, so this is a Mac older than epochs or
             // a race with a reset — either way, read it all.
-            return copy(needs = Sync.Reload)
+            return needing(Sync.Reload)
         }
         // Frames from this transcript that overtook the answer stay; anything held from
         // another transcript does not.
@@ -117,10 +124,12 @@ data class AgentSession(
             // that is no newer than it belongs to a transcript the Mac no longer holds.
             val byID = kept.associateBy { it.item.id }
             val named = answered.map { it.item.id }.toSet()
-            answered.map { fresh -> byID[fresh.item.id]?.takeIf { it.seq > at } ?: fresh } +
-                kept.filter { it.seq > at && it.item.id !in named }
+            answered.map { fresh ->
+                val held = byID[fresh.item.id]
+                if (held != null && held.seq > at) held else fresh.copy(first = held?.first ?: fresh.first)
+            } + kept.filter { it.seq > at && it.item.id !in named }
         } else {
-            answered.fold(kept) { list, fresh -> list.upserting(fresh) }
+            kept.mergingSlice(answered, at)
         }
 
         // The approvals in an answer are always the whole set waiting at `at`.
@@ -156,11 +165,12 @@ data class AgentSession(
             approvals = waiting + arrivedSince,
             settled = settled + vanished.map { it.approval.id } + abandoned,
             resolutions = vanished.fold(if (otherTranscript) emptyList() else resolutions) { list, gone ->
+                val mine = answeredHere[gone.approval.id]
                 list.adding(
                     Resolution(
                         approval = gone.approval,
-                        decision = null,
-                        byThisPhone = false,
+                        decision = mine,
+                        byThisPhone = mine != null,
                         note = notes[gone.approval.id],
                     ),
                 )
@@ -169,19 +179,30 @@ data class AgentSession(
             epoch = detail.epoch,
             seq = if (otherTranscript) at else maxOf(seq, at),
             rowsSeq = rows,
+            // Another transcript's clock starts again: the stream's own run belongs to the
+            // one that has gone, and holding on to where it opened would ask for a gap that
+            // can never be filled — a read, every read, until the stream noticed.
+            streamFrom = if (otherTranscript) null else streamFrom,
             stateSeq = if (otherTranscript) at else stateSeq,
             turnSeq = if (otherTranscript) at else turnSeq,
             loaded = true,
             omitted = if (detail.complete) detail.omitted else omitted,
-            // `needs` is otherwise left alone: it was cleared when this fetch began, and
-            // anything that asked again since asked about a later moment.
         )
         next = next.copy(rowsSeq = if (next.continuous) maxOf(next.rowsSeq, next.seq) else next.rowsSeq)
 
+        // What was asked while this read was out is answered by it when it was taken at or
+        // after the asking — a reload only by a whole transcript.
+        if (next.needs != Sync.None && at >= next.needsAt &&
+            (next.needs == Sync.CatchUp || detail.complete)
+        ) {
+            next = next.copy(needs = Sync.None, needsAt = 0)
+        }
+
         // The stream opened after this answer was taken: the rows between the two are in
         // neither, so ask for them.
-        if (streamFrom != null && next.rowsSeq < streamFrom) {
-            next = next.copy(needs = next.needs.atLeast(Sync.CatchUp))
+        val openedAt = next.streamFrom
+        if (openedAt != null && next.rowsSeq < openedAt) {
+            next = next.needing(Sync.CatchUp, openedAt)
         }
 
         // A last check on a slice: the Mac says how many rows the transcript has. If what
@@ -193,7 +214,7 @@ data class AgentSession(
             val total = next.items.size
             val atOrBefore = next.items.count { it.seq <= at }
             if (total < expected || atOrBefore > expected) {
-                next = next.copy(needs = Sync.Reload)
+                next = next.needing(Sync.Reload)
             }
         }
         return next
@@ -208,7 +229,7 @@ data class AgentSession(
      */
     fun summarized(fresh: AgentSessionSummary): AgentSession {
         val next = copy(summary = fresh, stateSeq = seq, turnSeq = seq)
-        return if (epoch != null && fresh.epoch != epoch) next.copy(needs = Sync.Reload) else next
+        return if (epoch != null && fresh.epoch != epoch) next.needing(Sync.Reload) else next
     }
 
     // MARK: - What the stream said
@@ -218,14 +239,14 @@ data class AgentSession(
         if (event.kind != AgentEvent.RESET && epoch != null && event.epoch != epoch) {
             // A frame about a transcript this phone does not hold: the Mac relaunched, or a
             // reset went by unseen. Nothing in it can be merged; read it all again.
-            return copy(needs = Sync.Reload)
+            return needing(Sync.Reload)
         }
         // The first frame since the stream (re)connected is where its unbroken run starts.
         // If the rows are known only to before it, the gap is in no frame: catch up.
         val opening = streamFrom == null
         var base = if (opening) copy(streamFrom = event.seq) else this
         if (opening && loaded && rowsSeq < event.seq) {
-            base = base.copy(needs = base.needs.atLeast(Sync.CatchUp))
+            base = base.needing(Sync.CatchUp, event.seq)
         }
         if (base.epoch == null) base = base.copy(epoch = event.epoch)
 
@@ -233,8 +254,9 @@ data class AgentSession(
             AgentEvent.RESET -> base.resetting(event)
             AgentEvent.STATE -> base.applyingState(event)
             AgentEvent.TURN -> base.applyingTurn(event)
-            AgentEvent.ITEM -> event.item?.let { base.copy(items = base.items.upserting(TrackedItem(it, event.seq))) }
-                ?: base
+            AgentEvent.ITEM -> event.item?.let {
+                base.copy(items = base.items.upserting(TrackedItem(it, event.seq, first = event.seq)))
+            } ?: base
             AgentEvent.APPROVAL -> event.approval?.let { base.applyingApproval(it, event.state, event.seq) }
                 ?: base
             // A kind this build has never heard of. The Mac grows them; a phone that has not
@@ -275,38 +297,39 @@ data class AgentSession(
         turnSeq = event.seq,
         loaded = true,
         omitted = 0,
-        needs = needs.atLeast(Sync.CatchUp),
-    )
+    ).needing(Sync.CatchUp, event.seq)
 
     private fun applyingState(event: AgentEvent): AgentSession {
         val state = event.state ?: return this
         if (event.seq < stateSeq) return this
-        if (summary == null) return copy(needs = needs.atLeast(Sync.CatchUp))
-        return copy(
+        if (summary == null) return needing(Sync.CatchUp, event.seq)
+        // The frame also fires when the thread gets its id — and every stream opens by
+        // restating each engine's state, which is not news.
+        val changed = state != summary.state ||
+            (event.threadID != null && event.threadID != summary.threadID)
+        val next = copy(
             summary = summary.copy(
                 state = state,
-                // The frame also fires when the thread gets its id.
                 threadID = event.threadID ?: summary.threadID,
                 // A session that is not running has no turn in it.
                 turnActive = if (state == AgentSessionSummary.STATE_RUNNING) summary.turnActive else false,
             ),
             stateSeq = event.seq,
-            // The rest of the summary — why it failed, what it runs — comes from the Mac.
-            needs = needs.atLeast(Sync.CatchUp),
         )
+        // The rest of the summary — why it failed, what it runs — comes from the Mac.
+        return if (changed) next.needing(Sync.CatchUp, event.seq) else next
     }
 
     private fun applyingTurn(event: AgentEvent): AgentSession {
         val active = event.turnActive ?: return this
         if (event.seq < turnSeq) return this
-        if (summary == null) return copy(needs = needs.atLeast(Sync.CatchUp))
-        return copy(
-            summary = summary.copy(turnActive = active),
-            turnSeq = event.seq,
-            // A turn that ended is the moment to pick up what frames do not carry: the
-            // model the next turn will use, the counts.
-            needs = if (active) needs else needs.atLeast(Sync.CatchUp),
-        )
+        if (summary == null) return needing(Sync.CatchUp, event.seq)
+        val ended = !active && summary.turnActive
+        val next = copy(summary = summary.copy(turnActive = active), turnSeq = event.seq)
+        // A turn that ended is the moment to pick up what frames do not carry: the model the
+        // next turn will use, the counts. A stream's opening restating an idle turn is not a
+        // turn ending, and asking then would be a second read on every return.
+        return if (ended) next.needing(Sync.CatchUp, event.seq) else next
     }
 
     private fun applyingApproval(approval: AgentApproval, state: String?, at: Long): AgentSession {
@@ -358,21 +381,48 @@ data class AgentSession(
      * frames for this phone. Frames after this are no longer known to follow on from the
      * ones before, so the cursor stops moving with them and the gap is fetched.
      */
-    fun streamBroken(): AgentSession = copy(streamFrom = null, needs = needs.atLeast(Sync.CatchUp))
+    fun streamBroken(): AgentSession = copy(streamFrom = null).needing(Sync.CatchUp)
 
     // MARK: - What this phone did
 
+    /** This phone's answers from elsewhere in the process — a notification's buttons. */
+    fun remembering(answers: Map<String, String>): AgentSession {
+        if (answers.isEmpty() || answers.all { answeredHere[it.key] == it.value }) return this
+        return copy(answeredHere = answeredHere + answers)
+    }
+
+    /**
+     * This phone is about to answer. Recorded before the answer is sent, so that whichever
+     * arrives first — the Mac's frame saying the card was answered, or the reply to this
+     * phone's own request — the card comes down credited to this phone.
+     */
+    fun answering(id: String, decision: String): AgentSession =
+        copy(answeredHere = answeredHere + (id to AgentAnswers.decided(decision)))
+
+    /** This phone's answer did not get through; whatever comes of the card is not its. */
+    fun unanswering(id: String): AgentSession =
+        if (id in answeredHere) copy(answeredHere = answeredHere - id) else this
+
     /** This phone's answer was applied: the card comes down, saying so. */
     fun answered(id: String, decision: String, fresh: AgentSessionSummary? = null): AgentSession {
+        val decided = AgentAnswers.decided(decision)
         val card = approvals.firstOrNull { it.approval.id == id }?.approval
-        val base = if (fresh != null) summarized(fresh) else this
-        if (id in settled) return base.copy(answeredHere = answeredHere + (id to decision))
+        val base = (if (fresh != null) summarized(fresh) else this)
+            .copy(answeredHere = answeredHere + (id to decided))
+        if (id in settled) {
+            // The Mac's frame got here first and wrote the card down as answered at the Mac.
+            // It was this phone.
+            return base.copy(
+                resolutions = resolutions.map {
+                    if (it.approval.id == id) it.copy(decision = decided, byThisPhone = true) else it
+                },
+            )
+        }
         return base.copy(
             approvals = approvals.filterNot { it.approval.id == id },
             settled = settled + id,
-            answeredHere = answeredHere + (id to decision),
             resolutions = card?.let {
-                resolutions.adding(Resolution(it, decision, byThisPhone = true, note = null))
+                resolutions.adding(Resolution(it, decided, byThisPhone = true, note = null))
             } ?: resolutions,
             notes = notes - id,
         )
@@ -391,12 +441,18 @@ data class AgentSession(
      * what is true now: the card stays only if it is still waiting.
      */
     fun approvalConflict(id: String, message: String): AgentSession =
-        copy(notes = notes + (id to message), needs = needs.atLeast(Sync.CatchUp))
+        copy(notes = notes + (id to message)).needing(Sync.CatchUp)
 
-    fun needing(sync: Sync): AgentSession = copy(needs = needs.atLeast(sync))
+    /**
+     * Something wants the Mac asked. [at] is the sequence of the frame that asked, when a
+     * frame did; with none, only a read that starts after this satisfies it.
+     */
+    fun needing(sync: Sync, at: Long = Long.MAX_VALUE): AgentSession =
+        if (sync == Sync.None) this
+        else copy(needs = needs.atLeast(sync), needsAt = maxOf(needsAt, at))
 
     /** The fetch [needs] asked for is under way. */
-    fun syncing(): AgentSession = copy(needs = Sync.None)
+    fun syncing(): AgentSession = copy(needs = Sync.None, needsAt = 0)
 
     fun dismissingResolutions(): AgentSession = copy(resolutions = emptyList())
 
@@ -417,8 +473,12 @@ data class AgentSession(
 /** `?since=` and `?epoch=`: one cursor in two halves. */
 data class Cursor(val since: Long, val epoch: String)
 
-/** One transcript row, and the sequence this version of it is known at. */
-data class TrackedItem(val item: AgentItem, val seq: Long)
+/**
+ * One transcript row, the sequence this version of it is known at, and the sequence at
+ * which this phone first held it — which is what places a row a catch-up brings that the
+ * phone has never seen.
+ */
+data class TrackedItem(val item: AgentItem, val seq: Long, val first: Long = seq)
 
 /** One approval waiting, and the sequence it is known at. */
 data class TrackedApproval(val approval: AgentApproval, val seq: Long)
@@ -454,9 +514,46 @@ enum class Sync {
 private fun List<TrackedItem>.upserting(fresh: TrackedItem): List<TrackedItem> {
     val index = indexOfFirst { it.item.id == fresh.item.id }
     if (index < 0) return this + fresh
+    val held = this[index]
     // Older than what is held: news the phone already has.
-    if (this[index].seq > fresh.seq) return this
-    return toMutableList().also { it[index] = fresh }
+    if (held.seq > fresh.seq) return this
+    return toMutableList().also { it[index] = fresh.copy(first = held.first) }
+}
+
+/**
+ * A catch-up slice merged into what is held, in the order the Mac's transcript reads.
+ *
+ * The slice holds every row that changed after the cursor, in transcript order. A row the
+ * phone already holds keeps its place and takes the slice's version unless the stream has
+ * brought a newer one. A row the phone has never seen is placed by the slice's own order:
+ * just before the next row of the slice the phone does hold — which is where a row that
+ * streamed in while the read was out already sits — or, with none after it, before the
+ * first row this phone first learned of after the slice was taken, or else at the end.
+ * Appending blindly would put the slice's rows after the ones that overtook it.
+ */
+private fun List<TrackedItem>.mergingSlice(answered: List<TrackedItem>, at: Long): List<TrackedItem> {
+    val result = toMutableList()
+    val unseen = mutableListOf<TrackedItem>()
+    for (fresh in answered) {
+        var index = result.indexOfFirst { it.item.id == fresh.item.id }
+        if (index < 0) {
+            unseen += fresh
+            continue
+        }
+        if (unseen.isNotEmpty()) {
+            result.addAll(index, unseen)
+            index += unseen.size
+            unseen.clear()
+        }
+        val held = result[index]
+        if (held.seq <= fresh.seq) result[index] = fresh.copy(first = held.first)
+    }
+    if (unseen.isNotEmpty()) {
+        val named = answered.map { it.item.id }.toSet()
+        val later = result.indexOfFirst { it.item.id !in named && it.first > at }
+        if (later < 0) result.addAll(unseen) else result.addAll(later, unseen)
+    }
+    return result
 }
 
 private fun List<Resolution>.adding(resolution: Resolution): List<Resolution> =

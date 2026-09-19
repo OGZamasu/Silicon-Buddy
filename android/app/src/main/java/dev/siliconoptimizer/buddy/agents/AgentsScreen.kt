@@ -49,6 +49,7 @@ fun AgentsScreen(
     app: AppState,
     model: AgentsViewModel,
     onOpen: (String) -> Unit,
+    onPair: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var confirming by remember { mutableStateOf<Confirm?>(null) }
@@ -65,6 +66,10 @@ fun AgentsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
+                // 401 is the one refusal the person can do something about from here.
+                if (model.unpaired) {
+                    Button(onClick = onPair, modifier = Modifier.padding(top = 8.dp)) { Text("Pair again") }
+                }
             }
         }
         if (model.board.engines.isEmpty() && model.unavailable == null) {

@@ -724,8 +724,14 @@ class ControlClient(
                             .getOrNull()?.let { emit(ServerEvent.Checked(it)) }
                         "job" -> runCatching { json.decodeFromString<JobProgress>(event.data) }
                             .getOrNull()?.let { emit(ServerEvent.Job(it)) }
-                        "agent" -> runCatching { json.decodeFromString<AgentEvent>(event.data) }
-                            .getOrNull()?.let { emit(ServerEvent.Agent(it)) }
+                        // A frame this build cannot read is still a frame the sessions missed,
+                        // and dropping it quietly would let the cursor walk past it: say it as
+                        // a gap, so they fetch from before it.
+                        "agent" -> emit(
+                            runCatching { json.decodeFromString<AgentEvent>(event.data) }
+                                .getOrNull()?.let { ServerEvent.Agent(it) }
+                                ?: ServerEvent.Resync(null),
+                        )
                         // The Mac dropped frames for this phone rather than wait for it.
                         // Said even when the body does not parse: the gap is the news.
                         "resync" -> emit(

@@ -42,6 +42,13 @@ class AgentsViewModel : ViewModel() {
     var unavailable by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * The Mac answered 401: it no longer knows this phone. Nothing here can mend that — no
+     * read is retried, no card can be answered — and the screens offer to pair again.
+     */
+    var unpaired by mutableStateOf(false)
+        private set
+
     /** The verb in flight on an engine — "Starting…" — so its buttons wait. */
     val busy = mutableStateMapOf<String, String>()
 
@@ -81,7 +88,14 @@ class AgentsViewModel : ViewModel() {
     private var transport: ControlTransport? = null
     private val inFlight = mutableSetOf<String>()
     private val retryAfter = mutableMapOf<String, Long>()
+    private val retries = mutableMapOf<String, Job>()
     private var refreshJob: Job? = null
+
+    /**
+     * The Mac refused this phone the agent routes (403). Like a 401, no retry changes that —
+     * the scope was decided at pairing — so reads stop and the tab says why.
+     */
+    private var refused = false
 
     // MARK: - Reading the Mac
 
@@ -90,6 +104,10 @@ class AgentsViewModel : ViewModel() {
         refreshJob?.cancel()
         board = AgentBoard.empty
         unavailable = null
+        unpaired = false
+        refused = false
+        retries.values.forEach { it.cancel() }
+        retries.clear()
         busy.clear()
         problems.clear()
         drafts.clear()
@@ -125,11 +143,15 @@ class AgentsViewModel : ViewModel() {
                 }
                 schedule()
             } catch (error: TransportError) {
-                unavailable = when (error) {
-                    is TransportError.RouteUnavailable ->
-                        "This Mac doesn't have agent sessions yet. Update Silicon Optimizer " +
-                            "on the Mac, then pull to refresh."
-                    else -> error.message
+                if (error is TransportError.Unauthorized) {
+                    markUnpaired()
+                } else {
+                    unavailable = when (error) {
+                        is TransportError.RouteUnavailable ->
+                            "This Mac doesn't have agent sessions yet. Update Silicon Optimizer " +
+                                "on the Mac, then pull to refresh."
+                        else -> error.message
+                    }
                 }
             } finally {
                 isLoading = false
@@ -139,7 +161,9 @@ class AgentsViewModel : ViewModel() {
 
     /** One `agent` frame from `/events`. */
     fun apply(event: AgentEvent) {
-        board = board.applying(event)
+        val engine = event.engine
+        // What this phone answered from a notification's button is this phone's answer.
+        board = board.updating(engine) { it.remembering(AgentAnswers.of(engine)) }.applying(event)
         val session = board.session(event.engine)
         awaiting[event.engine]?.let { id -> if (session.item(id) != null) awaiting.remove(event.engine) }
         if (event.kind == AgentEvent.TURN && event.turnActive == false) {
@@ -158,11 +182,13 @@ class AgentsViewModel : ViewModel() {
         schedule()
     }
 
-    /** Every session asks the Mac for what changed since what it holds. */
-    fun catchUpAll() {
-        if (transport == null) return
-        board.engines.forEach { engine -> board = board.updating(engine) { it.needing(Sync.CatchUp) } }
-        schedule()
+    /**
+     * The Mac no longer knows this phone. Said once, and nothing is asked of it again until
+     * the phone is paired again — which is a new Mac as far as this model is concerned.
+     */
+    private fun markUnpaired() {
+        unpaired = true
+        unavailable = UNPAIRED
     }
 
     /**
@@ -171,15 +197,22 @@ class AgentsViewModel : ViewModel() {
      */
     private fun schedule() {
         val transport = transport ?: return
+        if (unpaired || refused) return
         val now = System.currentTimeMillis()
         for (session in board.all) {
             val engine = session.engine
             if (session.needs == Sync.None || engine in inFlight) continue
             val waitUntil = retryAfter[engine] ?: 0L
             if (now < waitUntil) {
-                viewModelScope.launch {
-                    delay(waitUntil - now)
-                    schedule()
+                // One wait per engine, however many frames ask meanwhile; when it is over
+                // the read goes out rather than looking at the clock again.
+                if (retries[engine]?.isActive != true) {
+                    retries[engine] = viewModelScope.launch {
+                        delay(waitUntil - now)
+                        retryAfter.remove(engine)
+                        retries.remove(engine)
+                        schedule()
+                    }
                 }
                 continue
             }
@@ -191,7 +224,9 @@ class AgentsViewModel : ViewModel() {
             viewModelScope.launch {
                 try {
                     val detail = transport.agentSession(engine, cursor?.since, cursor?.epoch)
-                    board = board.updating(engine) { it.applying(detail) }
+                    board = board.updating(engine) {
+                        it.remembering(AgentAnswers.of(engine)).applying(detail)
+                    }
                     retryAfter.remove(engine)
                     awaiting[engine]?.let { id ->
                         if (board.session(engine).item(id) != null) awaiting.remove(engine)
@@ -200,11 +235,21 @@ class AgentsViewModel : ViewModel() {
                     // pick, so the pick is no longer news.
                     picked[engine]?.let { if (detail.session.model == it) picked.remove(engine) }
                 } catch (error: TransportError) {
-                    // Asked again, but not at once: the next frame would otherwise knock
-                    // on a Mac that has just said no, as fast as frames arrive.
-                    retryAfter[engine] = System.currentTimeMillis() + RETRY_MS
-                    board = board.updating(engine) { it.needing(asked) }
-                    if (error is TransportError.Forbidden) unavailable = error.message
+                    when (error) {
+                        // No retry mends a Mac that has forgotten this phone, or one that
+                        // paired it for chat only.
+                        is TransportError.Unauthorized -> markUnpaired()
+                        is TransportError.Forbidden -> {
+                            refused = true
+                            unavailable = error.message
+                        }
+                        else -> {
+                            // Asked again, but not at once: the next frame would otherwise
+                            // knock on a Mac that has just said no, as fast as frames arrive.
+                            retryAfter[engine] = System.currentTimeMillis() + RETRY_MS
+                            board = board.updating(engine) { it.needing(asked) }
+                        }
+                    }
                 } finally {
                     inFlight -= engine
                     schedule()
@@ -248,7 +293,7 @@ class AgentsViewModel : ViewModel() {
         call: suspend (ControlTransport) -> AgentSessionSummary,
     ) {
         val transport = transport ?: return
-        if (busy.containsKey(engine)) return
+        if (busy.containsKey(engine) || unpaired) return
         busy[engine] = label
         problems.remove(engine)
         viewModelScope.launch {
@@ -257,9 +302,10 @@ class AgentsViewModel : ViewModel() {
                 board = board.updating(engine) { it.summarized(summary).needing(then) }
                 sendRefused.remove(engine)
             } catch (error: TransportError) {
+                if (error is TransportError.Unauthorized) markUnpaired()
                 // A 409 here is the Mac explaining — Codex has no folder yet, the engine
                 // is not running — and its sentence is the whole of what to say.
-                problems[engine] = error.message ?: "The Mac could not do that."
+                else problems[engine] = error.message ?: "The Mac could not do that."
             } finally {
                 busy.remove(engine)
                 schedule()
@@ -279,7 +325,7 @@ class AgentsViewModel : ViewModel() {
     fun send(engine: String) {
         val transport = transport ?: return
         val text = drafts[engine].orEmpty().trim()
-        if (text.isEmpty() || busy.containsKey(engine)) return
+        if (text.isEmpty() || busy.containsKey(engine) || unpaired) return
         val summary = board.session(engine).summary
         val model = ModelPicker.modelToSend(summary, picked[engine])
         busy[engine] = "Sending…"
@@ -310,6 +356,10 @@ class AgentsViewModel : ViewModel() {
                     problems[engine] = error.message ?: "The Mac would not take that."
                 }
             } catch (error: TransportError) {
+                if (error is TransportError.Unauthorized) {
+                    markUnpaired()
+                    return@launch
+                }
                 problems[engine] = error.message ?: "The Mac would not take that."
                 if (error is TransportError.BadRequest) {
                     // Most likely a model that has fallen off the list since it was picked.
@@ -330,27 +380,43 @@ class AgentsViewModel : ViewModel() {
      */
     fun answer(engine: String, id: String, accept: Boolean) {
         val transport = transport ?: return
-        if (answering.containsKey(id)) return
+        if (answering.containsKey(id) || unpaired) return
         val decision = if (accept) AgentApprovalDecision.ACCEPT else AgentApprovalDecision.DECLINE
         answering[id] = decision
         cardProblems.remove(id)
+        // Recorded before it is sent: the Mac's frame saying the card was answered can beat
+        // the reply to this request, and the card must still come down as this phone's. The
+        // same record a notification's button writes, which every frame and read consults.
+        AgentAnswers.note(engine, id, decision)
         viewModelScope.launch {
             try {
                 val result = transport.answerAgentApproval(engine, id, decision)
                 board = board.updating(engine) { it.answered(id, result.decision, result.session) }
-            } catch (error: TransportError.NotFound) {
-                board = board.updating(engine) { it.approvalGone(id) }
-            } catch (error: TransportError.Conflict) {
-                board = board.updating(engine) {
-                    it.approvalConflict(id, error.message ?: AgentNotices.ANSWERED_ON_THE_MAC)
-                }
             } catch (error: TransportError) {
-                cardProblems[id] = error.message ?: "The Mac did not answer."
+                // Not this phone's answer after all, whatever comes of the card.
+                AgentAnswers.forget(engine, id)
+                board = board.updating(engine) { it.unanswering(id) }
+                when (error) {
+                    is TransportError.NotFound -> board = board.updating(engine) { it.approvalGone(id) }
+                    is TransportError.Conflict -> board = board.updating(engine) {
+                        it.approvalConflict(id, error.message ?: AgentNotices.ANSWERED_ON_THE_MAC)
+                    }
+                    is TransportError.Unauthorized -> markUnpaired()
+                    else -> cardProblems[id] = error.message ?: "The Mac did not answer."
+                }
             } finally {
                 answering.remove(id)
                 schedule()
             }
         }
+    }
+
+    /**
+     * A press on Accept or Decline passed through another app's window — the shape of a
+     * tapjacking attempt. Nothing is sent; the card says why.
+     */
+    fun refuseObscured(id: String) {
+        cardProblems[id] = OBSCURED
     }
 
     fun dismissResolutions(engine: String) {
@@ -370,5 +436,11 @@ class AgentsViewModel : ViewModel() {
 
         /** The engines the Mac documents, for display before it has been asked. */
         val KNOWN_ENGINES = listOf(AgentEngines.CODEX, AgentEngines.PI)
+
+        const val OBSCURED = "Something was drawn over Silicon Buddy when you tapped, so " +
+            "nothing was sent. Close whatever is on top, then answer."
+
+        const val UNPAIRED = "This phone is no longer paired with the Mac, so its agents are " +
+            "out of reach. Pair it again to follow them."
     }
 }

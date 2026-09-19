@@ -1,22 +1,29 @@
 package dev.siliconoptimizer.buddy.agents
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
+import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +40,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -50,20 +58,26 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.chat.MarkdownText
 import dev.siliconoptimizer.buddy.transport.AgentApproval
@@ -82,11 +96,18 @@ import java.time.format.DateTimeFormatter
  * prose; a command shows the command and what it printed; a file change shows what it
  * touches; thinking stays folded until asked for. Output is the one thing that can be
  * enormous, so it scrolls inside its own row rather than making the list a mile long.
+ *
+ * Three things must stay reachable however little room there is — a phone on its side, text
+ * at twice the size: the transcript, the answer to what is waiting, and the composer. So the
+ * waiting approval is one card at a time with its Accept and Decline pinned below its own
+ * scrolling body, and a cramped screen trims the header and the composer to a line each
+ * rather than letting any of the three be pushed off it.
  */
 @Composable
 fun SessionScreen(
     model: AgentsViewModel,
     engine: String,
+    onPair: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val session = model.board.session(engine)
@@ -106,101 +127,146 @@ fun SessionScreen(
             askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    // Commands and their output are on this screen; the Recents thumbnail is not the place
+    // for them.
+    NoRecentsScreenshot()
 
     var expanded by rememberSaveable(engine) { mutableStateOf(setOf<String>()) }
     val listState = rememberLazyListState()
     val transcript = session.transcript
-    LaunchedEffect(transcript.size, transcript.lastOrNull()?.text?.length, transcript.lastOrNull()?.output?.length) {
-        val rows = transcript.size + if (session.omitted > 0) 1 else 0
-        if (rows > 0) listState.animateScrollToItem(rows - 1)
+    val rows = transcript.size + if (session.omitted > 0) 1 else 0
+
+    // Follows the end of the transcript only while it is at the end: somebody who has
+    // scrolled up to read is not pulled back down by every streamed word.
+    var following by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) following = !listState.canScrollForward
+        }
+    }
+    LaunchedEffect(rows, transcript.lastOrNull()?.text?.length, transcript.lastOrNull()?.output?.length) {
+        if (following && rows > 0) listState.animateScrollToItem(rows - 1)
     }
 
-    Column(modifier = modifier.fillMaxSize().imePadding()) {
-        SessionHeader(session)
-        if (summary?.runsWithoutAsking == true) RunsWithoutAsking(engine)
-
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (transcript.isEmpty() && session.omitted == 0) {
-                Text(
-                    when {
-                        !session.loaded -> "Reading the transcript from the Mac…"
-                        summary?.isRunning == true ->
-                            "Nothing in this thread yet. What you send appears on the Mac too."
-                        else -> "$name isn't running on the Mac. Start it to send it something."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(24.dp),
+    BoxWithConstraints(modifier = modifier.fillMaxSize().imePadding()) {
+        // Room in lines of text rather than in dp: twice the text on a phone held upright is
+        // as cramped as the same phone on its side.
+        val fontScale = LocalDensity.current.fontScale
+        val tight = maxHeight / fontScale < 460.dp
+        val cardBody = (maxHeight * if (tight) 0.16f else 0.26f).coerceIn(48.dp, 220.dp)
+        // Wide enough — a phone on its side, a tablet — and the card stands beside the
+        // transcript instead of on top of it, so neither is squeezed to a sliver.
+        val beside = maxWidth >= 600.dp
+        val cardWidth = minOf(400.dp, maxWidth * 0.42f)
+        val waiting = session.pending.firstOrNull()
+        val card: @Composable (Modifier, Boolean) -> Unit = { cardModifier, fillHeight ->
+            waiting?.let { approval ->
+                ApprovalCard(
+                    engine = engine,
+                    approval = approval,
+                    more = session.pending.size - 1,
+                    answering = model.answering[approval.id],
+                    note = session.notes[approval.id],
+                    problem = model.cardProblems[approval.id],
+                    enabled = !model.unpaired,
+                    bodyMax = cardBody,
+                    fillHeight = fillHeight,
+                    tight = tight,
+                    onAnswer = { accept -> model.answer(engine, approval.id, accept) },
+                    onObscured = { model.refuseObscured(approval.id) },
+                    modifier = cardModifier,
                 )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (session.omitted > 0) {
-                        item(key = "omitted") {
-                            Text(
-                                if (session.omitted == 1) {
-                                    "1 earlier row is on the Mac and not shown here."
-                                } else {
-                                    "${session.omitted} earlier rows are on the Mac and not shown here."
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            SessionHeader(session, tight)
+            if (model.unpaired) Unpaired(onPair)
+            if (summary?.runsWithoutAsking == true) RunsWithoutAsking(engine, tight)
+
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                if (transcript.isEmpty() && session.omitted == 0) {
+                    Text(
+                        when {
+                            !session.loaded -> "Reading the transcript from the Mac…"
+                            summary?.isRunning == true ->
+                                "Nothing in this thread yet. What you send appears on the Mac too."
+                            else -> "$name isn't running on the Mac. Start it to send it something."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(24.dp),
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (session.omitted > 0) {
+                            item(key = "omitted") {
+                                Text(
+                                    if (session.omitted == 1) {
+                                        "1 earlier row is on the Mac and not shown here."
+                                    } else {
+                                        "${session.omitted} earlier rows are on the Mac and not shown here."
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                        items(transcript, key = { it.id }) { item ->
+                            TranscriptRow(
+                                item = item,
+                                expanded = item.id in expanded,
+                                onToggle = {
+                                    expanded = if (item.id in expanded) expanded - item.id else expanded + item.id
                                 },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline,
-                                modifier = Modifier.fillMaxWidth(),
                             )
                         }
                     }
-                    items(transcript, key = { it.id }) { item ->
-                        TranscriptRow(
-                            item = item,
-                            expanded = item.id in expanded,
-                            onToggle = {
-                                expanded = if (item.id in expanded) expanded - item.id else expanded + item.id
-                            },
-                        )
-                    }
                 }
             }
-        }
-
-        if (session.resolutions.isNotEmpty()) {
-            Resolutions(engine, session.resolutions) { model.dismissResolutions(engine) }
-        }
-        if (session.approvals.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                session.pending.forEach { approval ->
-                    ApprovalCard(
-                        engine = engine,
-                        approval = approval,
-                        answering = model.answering[approval.id],
-                        note = session.notes[approval.id],
-                        problem = model.cardProblems[approval.id],
-                        onAnswer = { accept -> model.answer(engine, approval.id, accept) },
-                    )
-                }
+            if (beside) card(Modifier.width(cardWidth).fillMaxHeight(), true)
             }
-        }
 
-        HorizontalDivider()
-        Composer(model, session)
+            if (session.resolutions.isNotEmpty() && !tight) {
+                Resolutions(engine, session.resolutions) { model.dismissResolutions(engine) }
+            }
+            if (!beside) card(Modifier.fillMaxWidth(), false)
+
+            HorizontalDivider()
+            Composer(model, session, tight)
+        }
     }
 }
 
+/** Keeps this screen out of the Recents thumbnail while it is showing. Android 13 and later. */
 @Composable
-private fun SessionHeader(session: AgentSession) {
+private fun NoRecentsScreenshot() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val activity = LocalContext.current.findActivity() ?: return
+    DisposableEffect(activity) {
+        activity.setRecentsScreenshotEnabled(false)
+        onDispose { activity.setRecentsScreenshotEnabled(true) }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+@Composable
+private fun SessionHeader(session: AgentSession, tight: Boolean) {
     val summary = session.summary ?: return
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = if (tight) 4.dp else 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -229,16 +295,42 @@ private fun SessionHeader(session: AgentSession) {
             it,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 14.dp),
         )
     }
-    AgentNotices.approvalMode(summary)?.takeIf { !summary.runsWithoutAsking }?.let {
+    if (!tight) {
+        AgentNotices.approvalMode(summary)?.takeIf { !summary.runsWithoutAsking }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(horizontal = 14.dp),
+            )
+        }
+    }
+}
+
+/** 401: nothing on this screen can reach the Mac until the phone is paired again. */
+@Composable
+private fun Unpaired(onPair: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
-            it,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.outline,
-            modifier = Modifier.padding(horizontal = 14.dp),
+            "This phone is no longer paired with the Mac.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f),
         )
+        TextButton(onClick = onPair) { Text("Pair again") }
     }
 }
 
@@ -247,13 +339,13 @@ private fun SessionHeader(session: AgentSession) {
  * dismissable, because it is the one fact that changes what this screen is for.
  */
 @Composable
-private fun RunsWithoutAsking(engine: String) {
+private fun RunsWithoutAsking(engine: String, tight: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
             .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
-            .padding(10.dp)
+            .padding(if (tight) 6.dp else 10.dp)
             .semantics(mergeDescendants = true) {},
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -269,12 +361,14 @@ private fun RunsWithoutAsking(engine: String) {
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
-            Text(
-                "The Mac lets ${AgentNotices.engine(engine)} act without approval here, so " +
-                    "nothing will wait for you — on this phone or on the Mac.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
+            if (!tight) {
+                Text(
+                    "The Mac lets ${AgentNotices.engine(engine)} act without approval here, so " +
+                        "nothing will wait for you — on this phone or on the Mac.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
         }
     }
 }
@@ -494,82 +588,144 @@ object OutputWindow {
         if (text.length <= MAX_CHARS) text else text.takeLast(MAX_CHARS).substringAfter('\n')
 }
 
+/**
+ * The approval waiting longest, one at a time. The body — the command, the reason, the
+ * guardrail's verdict — scrolls inside itself; Accept and Decline sit below it and never
+ * scroll away, whatever the text size.
+ */
 @Composable
 private fun ApprovalCard(
     engine: String,
     approval: AgentApproval,
+    more: Int,
     answering: String?,
     note: String?,
     problem: String?,
+    enabled: Boolean,
+    bodyMax: Dp,
+    /** Beside the transcript: the body takes whatever height the card has, buttons below. */
+    fillHeight: Boolean,
+    tight: Boolean,
     onAnswer: (Boolean) -> Unit,
+    onObscured: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val guard = rememberObscuredTouchGuard()
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.padding(horizontal = 12.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
         shape = RoundedCornerShape(14.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                AgentNotices.headline(engine, approval),
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 140.dp)
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                    .verticalScroll(rememberScrollState())
-                    .padding(8.dp),
-            ) {
-                Text(approval.summary, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-            }
-            approval.reason?.takeIf { it.isNotBlank() }?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
-            }
-            // What the Mac's guardrail made of it, as the Mac's own card says it.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Pill(
-                    AgentNotices.verdict(approval.screening.verdict),
-                    filled = true,
-                    tint = when (approval.screening.verdict) {
-                        AgentScreening.BLOCK, AgentScreening.UNAVAILABLE -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onTertiaryContainer
-                    },
-                )
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = if (tight) 8.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    approval.screening.summary,
-                    style = MaterialTheme.typography.labelMedium,
+                    AgentNotices.headline(engine, approval),
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                if (more > 0) Pill(if (more == 1) "1 more" else "$more more", filled = true)
             }
-            Text(
-                "Asked ${clock(approval.requestedAt)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
-            )
-            note?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (fillHeight) Modifier.weight(1f, fill = false) else Modifier.heightIn(max = bodyMax))
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .padding(8.dp),
+                ) {
+                    Text(approval.summary, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                }
+                approval.reason?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+                // What the Mac's guardrail made of it, as the Mac's own card says it.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Pill(
+                        AgentNotices.verdict(approval.screening.verdict),
+                        filled = true,
+                        tint = when (approval.screening.verdict) {
+                            AgentScreening.BLOCK, AgentScreening.UNAVAILABLE -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onTertiaryContainer
+                        },
+                    )
+                    Text(
+                        approval.screening.summary,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Text(
+                    "Asked ${clock(approval.requestedAt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                )
             }
-            problem?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            (note ?: problem)?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = if (tight) 2 else 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = { onAnswer(false) }, enabled = answering == null) { Text("Decline") }
-                Button(onClick = { onAnswer(true) }, enabled = answering == null) { Text("Accept") }
+                OutlinedButton(
+                    onClick = { if (guard.obscured()) onObscured() else onAnswer(false) },
+                    enabled = enabled && answering == null,
+                    modifier = guard.modifier,
+                ) { Text("Decline") }
+                Button(
+                    onClick = { if (guard.obscured()) onObscured() else onAnswer(true) },
+                    enabled = enabled && answering == null,
+                    modifier = guard.modifier,
+                ) { Text("Accept") }
                 if (answering != null) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                 }
             }
         }
     }
+}
+
+/**
+ * Tapjacking: another app drawing over this one to steer a tap onto Accept. Android marks a
+ * touch that passed through somebody else's window; this remembers whether the last press
+ * on a guarded button did, and the button refuses it. An accessibility action is not a
+ * touch and is never refused.
+ */
+private class ObscuredTouchGuard(val modifier: Modifier, val obscured: () -> Boolean)
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun rememberObscuredTouchGuard(): ObscuredTouchGuard = remember {
+    var lastObscured = false
+    val flags = MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
+    ObscuredTouchGuard(
+        modifier = Modifier.pointerInteropFilter { event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) lastObscured = (event.flags and flags) != 0
+            false
+        },
+        obscured = { lastObscured },
+    )
 }
 
 @Composable
@@ -597,26 +753,29 @@ private fun Resolutions(engine: String, resolutions: List<Resolution>, onDismiss
 }
 
 @Composable
-private fun Composer(model: AgentsViewModel, session: AgentSession) {
+private fun Composer(model: AgentsViewModel, session: AgentSession, tight: Boolean) {
     val engine = session.engine
     val summary = session.summary
-    val running = summary?.isRunning == true
+    val running = summary?.isRunning == true && !model.unpaired
     val busy = model.busy[engine]
     // Codex takes one turn at a time and says so with a 409; Pi takes a message mid-turn.
     val waitForTurn = session.turnActive && engine == AgentEngines.CODEX
     val refused = model.sendRefused[engine]
     var menu by remember { mutableStateOf(false) }
+    val lines = if (tight) 1 else 2
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = if (tight) 2.dp else 6.dp)) {
         model.problems[engine]?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
+                maxLines = lines,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
             )
         }
-        if (!running && summary != null) {
+        if (summary != null && !summary.isRunning && !model.unpaired) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -625,6 +784,8 @@ private fun Composer(model: AgentsViewModel, session: AgentSession) {
                 Text(
                     "${AgentNotices.engine(engine)} is ${AgentNotices.state(summary).lowercase()} on the Mac.",
                     style = MaterialTheme.typography.bodySmall,
+                    maxLines = lines,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 if (summary.isStopped) {
@@ -633,20 +794,17 @@ private fun Composer(model: AgentsViewModel, session: AgentSession) {
             }
         }
         if (waitForTurn || refused != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            Text(
+                refused ?: "${AgentNotices.engine(engine)} is working on this turn. Wait for " +
+                    "it to finish, or interrupt it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = lines,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 6.dp),
-            ) {
-                Text(
-                    refused ?: "${AgentNotices.engine(engine)} is working on this turn. Wait for " +
-                        "it to finish, or interrupt it.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+            )
         }
-        model.awaiting[engine]?.let {
+        if (model.awaiting[engine] != null && !tight) {
             Text(
                 "Sent — waiting for the Mac to show it.",
                 style = MaterialTheme.typography.labelSmall,
@@ -655,19 +813,13 @@ private fun Composer(model: AgentsViewModel, session: AgentSession) {
             )
         }
 
-        // The session's model. It sticks: sending with another one makes it this
-        // engine's choice on the Mac as well, which is why it is not labelled "this turn".
+        // The session's model. It sticks: sending with another one makes it this engine's
+        // choice on the Mac as well, which is why it is not labelled "this turn". A cramped
+        // screen keeps the menu behind an icon beside the box rather than a row of its own.
         val choices = ModelPicker.choices(summary)
-        Box {
-            TextButton(onClick = { menu = true }, enabled = choices.isNotEmpty()) {
-                Text(
-                    "Session model: " + (ModelPicker.selected(summary, model.picked[engine])?.label ?: summary?.model ?: "—"),
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
-            }
+        val modelLabel = "Session model: " +
+            (ModelPicker.selected(summary, model.picked[engine])?.label ?: summary?.model ?: "—")
+        val picker: @Composable () -> Unit = {
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 choices.forEach { choice ->
                     DropdownMenuItem(
@@ -689,18 +841,40 @@ private fun Composer(model: AgentsViewModel, session: AgentSession) {
                 }
             }
         }
+        if (!tight) {
+            Box {
+                TextButton(onClick = { menu = true }, enabled = choices.isNotEmpty()) {
+                    Text(
+                        modelLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
+                picker()
+            }
+        }
 
         Row(verticalAlignment = Alignment.Bottom) {
+            if (tight) {
+                Box {
+                    IconButton(onClick = { menu = true }, enabled = choices.isNotEmpty()) {
+                        Icon(Icons.Filled.Memory, contentDescription = modelLabel)
+                    }
+                    picker()
+                }
+            }
             OutlinedTextField(
                 value = model.drafts[engine].orEmpty(),
                 onValueChange = { model.drafts[engine] = it },
-                placeholder = { Text("Message ${AgentNotices.engine(engine)}") },
+                placeholder = { Text("Message ${AgentNotices.engine(engine)}", maxLines = 1) },
                 modifier = Modifier.weight(1f),
-                maxLines = 6,
+                maxLines = if (tight) 2 else 6,
                 enabled = running,
             )
             if (session.turnActive) {
-                IconButton(onClick = { model.interrupt(engine) }, enabled = busy == null) {
+                IconButton(onClick = { model.interrupt(engine) }, enabled = busy == null && !model.unpaired) {
                     Icon(Icons.Filled.Stop, contentDescription = "Interrupt this turn")
                 }
             }

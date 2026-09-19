@@ -1,11 +1,14 @@
 package dev.siliconoptimizer.buddy
 
+import dev.siliconoptimizer.buddy.transport.AgentEvent
 import dev.siliconoptimizer.buddy.transport.ServerEvent
 import dev.siliconoptimizer.buddy.transport.Status
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -158,5 +161,89 @@ class EventFeedTest {
         assertNull(feed.lastDropSummary)
         assertEquals(0, feed.reconnectAttempt)
         assertFalse(feed.isLive)
+    }
+
+    // MARK: - The agent sessions' path
+
+    private fun frame(seq: Long) = ServerEvent.Agent(
+        AgentEvent(engine = "codex", kind = AgentEvent.TURN, seq = seq, epoch = "E1", turnActive = true),
+    )
+
+    /** A stream the test writes, counting how many times it was opened. */
+    private class Counting(private val events: List<ServerEvent>) : HangingTransport() {
+        var opened = 0
+        override fun events(): Flow<ServerEvent> = flow {
+            opened++
+            events.forEach { emit(it) }
+            kotlinx.coroutines.awaitCancellation()
+        }
+    }
+
+    /**
+     * The sessions hear a break in the same order as the frames around it: a frame after a
+     * drop or a resync is not taken to follow on from the one before it.
+     */
+    @Test
+    fun `agent frames are handed on in order, with each break where it happened`() = runTest(dispatcher) {
+        val heard = mutableListOf<AgentFeed>()
+        backgroundScope.launch { feed.agentEvents.toList(heard) }
+        feed.start(
+            Scripted(
+                listOf(
+                    frame(1),
+                    ServerEvent.Disconnected(1, 1_000, "unreachable"),
+                    frame(2),
+                    ServerEvent.Resync(7),
+                    frame(3),
+                ),
+            ),
+        )
+        assertEquals(
+            listOf(
+                AgentFeed.Broken, // a fresh start follows on from nothing
+                AgentFeed.Frame((frame(1)).event),
+                AgentFeed.Broken,
+                AgentFeed.Frame((frame(2)).event),
+                AgentFeed.Broken,
+                AgentFeed.Frame((frame(3)).event),
+            ),
+            heard,
+        )
+        assertEquals("the rest of the app hears a resync too", 1, feed.resyncs)
+    }
+
+    /** Off screen the stream closes, and comes back once — not once per caller. */
+    @Test
+    fun `pausing closes the stream and resuming opens it exactly once`() = runTest(dispatcher) {
+        val mac = Counting(listOf(frame(1)))
+        feed.start(mac)
+        assertEquals(1, mac.opened)
+        assertTrue(feed.isLive)
+
+        feed.pause()
+        assertFalse(feed.isLive)
+        assertTrue(feed.resume())
+        assertEquals(2, mac.opened)
+        assertFalse("nothing left to resume", feed.resume())
+        assertEquals(2, mac.opened)
+    }
+
+    /** A feed started afresh while paused — a new Mac — is not opened a second time. */
+    @Test
+    fun `a stream started afresh is not reopened by a stale pause`() = runTest(dispatcher) {
+        val first = Counting(emptyList())
+        val second = Counting(emptyList())
+        feed.start(first)
+        feed.pause()
+        feed.start(second)
+        assertFalse(feed.resume())
+        assertEquals(1, first.opened)
+        assertEquals(1, second.opened)
+    }
+
+    @Test
+    fun `pausing a feed that never started does nothing`() = runTest(dispatcher) {
+        feed.pause()
+        assertFalse(feed.resume())
     }
 }

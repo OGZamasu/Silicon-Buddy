@@ -16,14 +16,18 @@ import dev.siliconoptimizer.buddy.MainActivity
 import dev.siliconoptimizer.buddy.R
 import dev.siliconoptimizer.buddy.transport.AgentApproval
 import dev.siliconoptimizer.buddy.transport.AgentApprovalDecision
+import dev.siliconoptimizer.buddy.transport.TransportError
 
 /**
  * One approval, as a notification: what it says and what its buttons do.
  *
  * Decided here, apart from Android's notification machinery, because this is the part that
- * can be wrong in a way that matters. A notification is drawn on a locked screen in a room
- * with other people in it, and its buttons run commands on somebody's Mac — so what it may
- * say and who may press it are rules with tests, not properties set in passing.
+ * can be wrong in a way that matters. A notification is drawn on a lock screen, and Android
+ * shows a private notification's full content there unless the owner has chosen to hide
+ * sensitive content — which is not the default. So an approval notification never carries
+ * the command, the paths, the tool's arguments, the engine's reason or any output: only
+ * which engine, what kind of thing it wants to do, and what the Mac's guardrail made of it.
+ * What exactly it wants is in the app, after unlocking.
  */
 data class ApprovalNotice(
     val engine: String,
@@ -32,9 +36,9 @@ data class ApprovalNotice(
     val notificationID: Int,
     /** "Codex wants to run a command". */
     val title: String,
-    /** The command line, the paths or the tool — one line, cut short, secrets masked. */
+    /** The guardrail's verdict, in words: "Screened: asks you". */
     val text: String,
-    /** The same with a little more room, and why the engine is asking. */
+    /** The same, and where the detail is. */
     val detail: String,
     val actions: List<NoticeAction>,
 )
@@ -43,15 +47,16 @@ data class ApprovalNotice(
  * A button on an approval notification.
  *
  * [authenticationRequired] is Android 12's `setAuthenticationRequired`: pressed on a locked
- * phone, the system asks for the owner's fingerprint or PIN before the intent is sent. On an
- * older Android there is no such thing, and a button that ran a command from a locked shade
- * would run it for whoever is holding the phone — so there [opensApp] is true instead and
- * the button opens the session, where the decision is made with the phone unlocked.
+ * phone, the system asks for the owner's fingerprint or PIN before the intent is sent — and
+ * the receiver checks again, because a notification listener can send it without the system
+ * UI. On an older Android there is no such thing, and a button that answered from a locked
+ * shade would answer for whoever is holding the phone — so there the one button is "Open",
+ * and the decision is made in the app, on an unlocked phone.
  */
 data class NoticeAction(
     val label: String,
-    /** `accept` or `decline`. */
-    val decision: String,
+    /** `accept`, `decline`, or null for the button that only opens the session. */
+    val decision: String?,
     val authenticationRequired: Boolean,
     val opensApp: Boolean,
 )
@@ -66,44 +71,43 @@ object AgentNotifications {
     const val WATCH_NOTIFICATION = 4201
     const val LOST_TOUCH_NOTIFICATION = 4202
 
-    /** What a locked screen shows instead of the command: that something waits, not what. */
+    /** What a locked screen shows instead, per kind of notification: that, not what. */
     const val PUBLIC_TITLE = "Silicon Buddy"
-    const val PUBLIC_TEXT = "An agent on your Mac is waiting for you"
+    const val PUBLIC_APPROVAL = "An agent on your Mac is waiting for you"
+    const val PUBLIC_ANSWERED = "An agent's question was answered"
+    const val PUBLIC_WATCHING = "Following an agent on your Mac"
+    const val PUBLIC_ENDED = "Stopped following an agent on your Mac"
 
-    /** One line in the shade, and a few in the expanded notification. */
+    /** The longest the in-app resolution line gets. */
     const val LINE_LIMIT = 140
-    const val DETAIL_LIMIT = 320
-    const val DETAIL_LINES = 3
 
     /** Android 12 is where a notification action can demand the device be unlocked. */
     const val AUTHENTICATED_ACTIONS_SDK = 31
 
+    /** High bytes of the notification numbers, so the kinds never collide. */
+    private const val APPROVAL_IDS = 0x5A
+    private const val SETTLED_IDS = 0x5B
+
     fun notice(engine: String, approval: AgentApproval, sdk: Int): ApprovalNotice {
-        val detail = buildList {
-            add(excerpt(approval.summary, DETAIL_LIMIT, DETAIL_LINES))
-            approval.reason?.takeIf { it.isNotBlank() }?.let { add(line(it, LINE_LIMIT)) }
-            // The guardrail's own sentence — "Jev: review: destructive" — as the Mac's card
-            // shows it.
-            add(line(approval.screening.summary, LINE_LIMIT))
-        }.joinToString("\n")
+        val verdict = AgentNotices.verdict(approval.screening.verdict)
         val authenticated = sdk >= AUTHENTICATED_ACTIONS_SDK
         return ApprovalNotice(
             engine = engine,
             approvalID = approval.id,
             notificationID = notificationID(engine, approval.id),
             title = AgentNotices.headline(engine, approval),
-            text = line(approval.summary, LINE_LIMIT),
-            detail = detail,
-            actions = listOf(
-                NoticeAction(
-                    "Decline", AgentApprovalDecision.DECLINE,
-                    authenticationRequired = authenticated, opensApp = !authenticated,
-                ),
-                NoticeAction(
-                    "Accept", AgentApprovalDecision.ACCEPT,
-                    authenticationRequired = authenticated, opensApp = !authenticated,
-                ),
-            ),
+            text = verdict,
+            detail = "$verdict. Open Silicon Buddy to see exactly what, before you answer.",
+            actions = if (authenticated) {
+                listOf(
+                    NoticeAction("Decline", AgentApprovalDecision.DECLINE, authenticationRequired = true, opensApp = false),
+                    NoticeAction("Accept", AgentApprovalDecision.ACCEPT, authenticationRequired = true, opensApp = false),
+                )
+            } else {
+                // Both buttons would only open the app on Android 10 and 11, so there is one,
+                // and it says so.
+                listOf(NoticeAction("Open", null, authenticationRequired = false, opensApp = true))
+            },
         )
     }
 
@@ -119,7 +123,7 @@ object AgentNotifications {
 
     /** Stable per approval, and clear of the render notifications' numbers. */
     fun notificationID(engine: String, approvalID: String): Int =
-        0x5A000000 or ("$engine:$approvalID".hashCode() and 0x00FFFFFF)
+        (APPROVAL_IDS shl 24) or ("$engine:$approvalID".hashCode() and 0x00FFFFFF)
 
     /**
      * Where "Accepted on this phone" goes after a button in the shade was pressed. Its own
@@ -128,7 +132,10 @@ object AgentNotifications {
      * with it.
      */
     fun settledID(engine: String, approvalID: String): Int =
-        0x5B000000 or ("$engine:$approvalID".hashCode() and 0x00FFFFFF)
+        (SETTLED_IDS shl 24) or ("$engine:$approvalID".hashCode() and 0x00FFFFFF)
+
+    /** Whether a posted notification is an approval's own (not its confirmation). */
+    fun isApproval(notificationID: Int): Boolean = (notificationID ushr 24) == APPROVAL_IDS
 
     /** What the ongoing notification says while the service watches. */
     fun watchingTitle(engines: Collection<String>): String =
@@ -141,24 +148,17 @@ object AgentNotifications {
         else -> "$waiting approvals are waiting for you."
     }
 
-    // MARK: - What a notification may say
+    // MARK: - Text shown outside the transcript
 
     /**
      * A single line: the first line of [text], secrets masked, cut on a word if it is long.
-     * A command can be a heredoc and a tool call can carry a whole file; neither belongs
-     * on a lock screen.
+     * For the in-app line that says how a card came down — never for a notification.
      */
     fun line(text: String, limit: Int): String {
-        val first = text.trim().lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-        val more = text.trim().lines().count { it.isNotBlank() } > 1
-        return cut(redact(first), limit, more)
-    }
-
-    /** A few lines at most, for the expanded notification. Never the whole of anything. */
-    fun excerpt(text: String, limit: Int, lines: Int): String {
-        val all = text.trim().lines().filter { it.isNotBlank() }
-        val kept = all.take(lines).joinToString("\n") { it.trim() }
-        return cut(redact(kept), limit, all.size > lines)
+        val masked = redact(text.trim())
+        val first = masked.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val more = masked.lines().count { it.isNotBlank() } > 1
+        return cut(first, limit, more)
     }
 
     private fun cut(text: String, limit: Int, more: Boolean): String {
@@ -168,23 +168,123 @@ object AgentNotifications {
         return (if (space > limit / 2) head.take(space) else head).trimEnd() + "…"
     }
 
-    private val bearer = Regex("(?i)\\b(bearer)\\s+[A-Za-z0-9._~+/=-]+")
-    private val assignment = Regex(
-        "(?i)\\b(token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|auth)" +
-            "(\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*'|\\S+)",
+    private const val MASK = "•••"
+
+    /** A private key block, to its end or to the end of what was given. */
+    private val privateKey = Regex(
+        "(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\\z)",
     )
-    private val opaque = Regex("[A-Za-z0-9_-]{32,}")
+
+    /** `scheme://user:secret@host` and `scheme://token@host`. */
+    private val userinfo = Regex("(?i)\\b([a-z][a-z0-9+.-]*://)([^\\s/@:]+)(?::([^\\s/@]+))?@")
+
+    /** `Authorization: Bearer …`, `Basic …`. */
+    private val scheme = Regex("(?i)\\b(bearer|basic)\\s+[A-Za-z0-9._~+/=-]+")
 
     /**
-     * Masks what looks like a credential: a bearer token, `password=…` and its cousins,
-     * and any long unbroken run of letters and digits — an API key, a hash, a token by any
-     * other name. Heuristic by nature, and on purpose tilted towards masking too much: a
-     * notification that says `•••` where a commit hash was costs nothing.
+     * `password=…`, `DB_PASSWORD=…`, `OPENAI_API_KEY: …`, `X-Api-Key: …`. The name may carry
+     * any prefix — `\b` alone never matches after `_`, which is how `GITHUB_TOKEN` slipped by.
+     */
+    private val assignment = Regex(
+        "(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_]*(?:token|secret|password|passwd|pwd|pass|" +
+            "api[_-]?key|access[_-]?key|private[_-]?key|auth|credentials?))" +
+            "(\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*'|\\S+)",
+    )
+
+    /** `--password X`, `--api-key=X`, `--token X`. */
+    private val flag = Regex(
+        "(?i)(--[a-z0-9-]*(?:password|passwd|pass|token|secret|api-?key|auth)[a-z0-9-]*)" +
+            "(=|\\s+)(\"[^\"]*\"|'[^']*'|\\S+)",
+    )
+
+    /** `curl -u user:secret`. */
+    private val userFlag = Regex("(?<![\\w-])(-u|--user)(\\s*)([^\\s:]+):(\\S+)")
+
+    /** `sshpass -p secret`. */
+    private val sshpass = Regex("(?i)\\b(sshpass(?:\\s+-[a-oq-z]\\S*)*\\s+-p)(\\s*)(\\S+)")
+
+    /** `mysql -psecret`: the value attached, which is how the mysql family takes one. */
+    private val attachedP = Regex("(?<![\\w-])-p([^\\s-]\\S*)")
+
+    /** A long unbroken run of letters and digits: a key, a hash, a token by any other name. */
+    private val opaque = Regex("[A-Za-z0-9_-]{32,}")
+
+    /** Base64 with its own punctuation: `+`, `/` and `=` padding, and a digit somewhere. */
+    private val base64 = Regex(
+        "(?<![A-Za-z0-9+/=_-])(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])" +
+            "(?:[A-Za-z0-9+/]{16,}={1,2}|(?=[A-Za-z0-9/]*\\+)[A-Za-z0-9+/]{24,}={0,2})(?![A-Za-z0-9+/=_-])",
+    )
+
+    /**
+     * Masks what looks like a credential. Heuristic by nature, and on purpose tilted towards
+     * masking too much: a line that says `•••` where a commit hash was costs nothing.
      */
     fun redact(text: String): String = text
-        .replace(bearer) { "${it.groupValues[1]} •••" }
-        .replace(assignment) { "${it.groupValues[1]}${it.groupValues[2]}•••" }
-        .replace(opaque, "•••")
+        .replace(privateKey, "[private key]")
+        .replace(userinfo) { match ->
+            val password = match.groups[3]
+            if (password != null) "${match.groupValues[1]}${match.groupValues[2]}:$MASK@"
+            else "${match.groupValues[1]}$MASK@"
+        }
+        .replace(scheme) { "${it.groupValues[1]} $MASK" }
+        .replace(flag) { "${it.groupValues[1]}${it.groupValues[2]}$MASK" }
+        .replace(sshpass) { "${it.groupValues[1]}${it.groupValues[2]}$MASK" }
+        .replace(userFlag) { "${it.groupValues[1]}${it.groupValues[2]}${it.groupValues[3]}:$MASK" }
+        .replace(attachedP) { "-p$MASK" }
+        .replace(assignment) { "${it.groupValues[1]}${it.groupValues[2]}$MASK" }
+        .replace(base64, MASK)
+        .replace(opaque, MASK)
+}
+
+/**
+ * What a button in the shade came to, in one fixed sentence per outcome.
+ *
+ * Never the error's own message: `Unreachable` puts the Mac's tailnet address in its message
+ * by construction, and a 409's body is whatever the Mac wrote. A notification is read on a
+ * lock screen and outlives the moment, so it says which of a handful of things happened and
+ * nothing a server supplied.
+ */
+object ApprovalReplies {
+    const val ACCEPTED = "Accepted on this phone."
+    const val DECLINED = "Declined on this phone."
+    const val LOCKED = "Unlock your phone to answer. Nothing was sent."
+    const val NO_MAC = "No Mac is paired with this phone any more."
+    const val UNPAIRED = "This phone is no longer paired with your Mac. Open Silicon Buddy to pair it again."
+    const val NOT_ALLOWED = "This phone may not answer agents on your Mac. Pair it again with full control."
+    const val ANSWERED_ON_THE_MAC = "Answered on the Mac first. Nothing was sent twice."
+    const val STILL_SCREENING = "The Mac's guardrail is still looking at it. Try again in a moment."
+    const val ENGINE_STOPPED = "The agent has stopped on the Mac, so there is nothing to answer."
+    const val NOT_TAKEN = "Your Mac didn't take that answer. Open Silicon Buddy to see why."
+    const val UNREACHABLE = "Your Mac didn't answer. Open Silicon Buddy to answer it there."
+    const val TOO_SLOW = "Your Mac took too long to answer. Open Silicon Buddy to check."
+
+    fun forDecision(decision: String): String =
+        if (AgentAnswers.decided(decision) == "accepted") ACCEPTED else DECLINED
+
+    /** Null when there is nothing to say: a 404 means the card is simply gone. */
+    fun forError(error: TransportError): String? = when (error) {
+        is TransportError.NotFound, is TransportError.RouteUnavailable -> null
+        is TransportError.Unauthorized -> UNPAIRED
+        is TransportError.Forbidden -> NOT_ALLOWED
+        is TransportError.Conflict -> forConflict(error.detail)
+        is TransportError.TimedOut -> TOO_SLOW
+        is TransportError.NotConfigured -> NO_MAC
+        else -> UNREACHABLE
+    }
+
+    /**
+     * A 409 is several things on this route; the Mac's sentence says which. Read, never
+     * repeated.
+     */
+    fun forConflict(detail: String): String {
+        val text = detail.lowercase()
+        return when {
+            "answered at the mac" in text -> ANSWERED_ON_THE_MAC
+            "screening" in text -> STILL_SCREENING
+            "not running" in text -> ENGINE_STOPPED
+            else -> NOT_TAKEN
+        }
+    }
 }
 
 /**
@@ -242,9 +342,8 @@ class AgentNotifier(private val context: Context) {
             .setOnlyAlertOnce(true)
             .setAutoCancel(false)
             .setContentIntent(openSession(context, notice.engine, notice.notificationID))
-            // Whoever is holding a locked phone sees that something is waiting, not what.
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL))
+            .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL, AgentNotifications.PUBLIC_APPROVAL))
         actions(context, notice).forEach { builder.addAction(it) }
         return builder.build()
     }
@@ -256,11 +355,11 @@ class AgentNotifier(private val context: Context) {
 
     /**
      * After an answer from the notification: the approval's own notification goes, and a
-     * quiet one says what came of it — in the Mac's words when it had any — with no
+     * quiet one says what came of it — one of [ApprovalReplies]' sentences — with no
      * buttons on it.
      */
-    fun settle(engine: String, approvalID: String, text: String) {
-        cancel(AgentNotifications.notificationID(engine, approvalID))
+    fun settle(engine: String, approvalID: String, text: String, keepApproval: Boolean = false) {
+        if (!keepApproval) cancel(AgentNotifications.notificationID(engine, approvalID))
         if (!isAllowed) return
         val notificationID = AgentNotifications.settledID(engine, approvalID)
         ensureChannels()
@@ -275,13 +374,26 @@ class AgentNotifier(private val context: Context) {
             .setTimeoutAfter(SETTLED_TIMEOUT_MS)
             .setContentIntent(openSession(context, engine, notificationID))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL))
+            .setPublicVersion(publicVersion(AgentNotifications.APPROVAL_CHANNEL, AgentNotifications.PUBLIC_ANSWERED))
             .build()
         runCatching { manager.notify(notificationID, notification) }
     }
 
     fun cancel(notificationID: Int) {
         runCatching { manager.cancel(notificationID) }
+    }
+
+    /**
+     * Takes down every approval notification this app has up — the ones a watcher left
+     * behind when its process died, whose buttons nothing is behind any more.
+     */
+    fun cancelApprovals() {
+        val system = context.getSystemService(NotificationManager::class.java) ?: return
+        runCatching {
+            system.activeNotifications
+                .filter { AgentNotifications.isApproval(it.id) }
+                .forEach { manager.cancel(it.id) }
+        }
     }
 
     /** The foreground service's notification, with the two ways out of it. */
@@ -301,7 +413,7 @@ class AgentNotifier(private val context: Context) {
             .setDeleteIntent(stop)
             .addAction(R.drawable.ic_launcher_foreground, "Stop watching", stop)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion(AgentNotifications.WATCH_CHANNEL))
+            .setPublicVersion(publicVersion(AgentNotifications.WATCH_CHANNEL, AgentNotifications.PUBLIC_WATCHING))
             .build()
     }
 
@@ -312,28 +424,30 @@ class AgentNotifier(private val context: Context) {
         }
     }
 
-    /** Said once, when the service lets go because the Mac stopped answering. */
-    fun lostTouch(engines: Collection<String>) {
+    /** Said once, when the service lets go for a reason worth knowing about. */
+    fun ended(engines: Collection<String>, ending: WatchEnding) {
+        val text = WatchPolicy.sentence(ending) ?: return
         if (!isAllowed) return
         ensureChannels()
         val names = engines.sorted().joinToString(" and ") { AgentNotices.engine(it) }
         val notification = NotificationCompat.Builder(context, AgentNotifications.WATCH_CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Stopped watching $names")
-            .setContentText("Your Mac stopped answering. Open Silicon Buddy to check on it.")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
             .setContentIntent(openSession(context, engines.firstOrNull(), AgentNotifications.LOST_TOUCH_NOTIFICATION))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion(AgentNotifications.WATCH_CHANNEL))
+            .setPublicVersion(publicVersion(AgentNotifications.WATCH_CHANNEL, AgentNotifications.PUBLIC_ENDED))
             .build()
         runCatching { manager.notify(AgentNotifications.LOST_TOUCH_NOTIFICATION, notification) }
     }
 
-    private fun publicVersion(channel: String): Notification =
+    private fun publicVersion(channel: String, text: String): Notification =
         NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(AgentNotifications.PUBLIC_TITLE)
-            .setContentText(AgentNotifications.PUBLIC_TEXT)
+            .setContentText(text)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
 
@@ -342,11 +456,11 @@ class AgentNotifier(private val context: Context) {
         const val SETTLED_TIMEOUT_MS = 8_000L
 
         /**
-         * The notification's two buttons.
+         * The notification's buttons.
          *
-         * On Android 12 and later each one is a broadcast to [ApprovalActionReceiver] and
-         * demands the device be unlocked first. Before that, each one opens the session
-         * instead — the decision is then made in the app, on an unlocked phone.
+         * On Android 12 and later each is a broadcast to [ApprovalActionReceiver] and
+         * demands the device be unlocked first. Before that, the one button opens the
+         * session — the decision is then made in the app, on an unlocked phone.
          *
          * Public so a test can build them on the JVM, where every `PendingIntent` is null
          * and what is being checked is the flag, not the intent.
@@ -354,10 +468,11 @@ class AgentNotifier(private val context: Context) {
         fun actions(context: Context?, notice: ApprovalNotice): List<NotificationCompat.Action> =
             notice.actions.mapIndexed { index, action ->
                 val intent = context?.let {
-                    if (action.opensApp) {
+                    val decision = action.decision
+                    if (action.opensApp || decision == null) {
                         openSession(it, notice.engine, notice.notificationID * 4 + index + 1)
                     } else {
-                        ApprovalActionReceiver.intent(it, notice, action.decision)
+                        ApprovalActionReceiver.intent(it, notice, decision)
                     }
                 }
                 NotificationCompat.Action.Builder(
@@ -374,7 +489,7 @@ class AgentNotifier(private val context: Context) {
                 .setAction(Intent.ACTION_MAIN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 .putExtra(MainActivity.EXTRA_OPEN, MainActivity.OPEN_AGENTS)
-                .apply { engine?.let { putExtra(MainActivity.EXTRA_ENGINE, it) } }
+                .apply { knownEngine(engine)?.let { putExtra(MainActivity.EXTRA_ENGINE, it) } }
             return PendingIntent.getActivity(
                 context, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

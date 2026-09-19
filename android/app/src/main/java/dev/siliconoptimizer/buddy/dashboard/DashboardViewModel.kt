@@ -105,6 +105,8 @@ class DashboardViewModel : ViewModel() {
      */
     fun startLiveUpdates(transport: ControlTransport?, seconds: Long = 4) {
         ticker?.cancel()
+        pausedTicker = null
+        tickerTransport = transport
         if (transport == null) return
         ticker = viewModelScope.launch {
             while (isActive) {
@@ -121,6 +123,29 @@ class DashboardViewModel : ViewModel() {
     fun stopLiveUpdates() {
         ticker?.cancel()
         ticker = null
+        pausedTicker = null
+    }
+
+    /** The transport a paused ticker was polling, until it is resumed. */
+    private var pausedTicker: ControlTransport? = null
+    private var tickerTransport: ControlTransport? = null
+
+    /**
+     * The app left the screen: nobody is looking at the metrics, and polling them every few
+     * seconds from the background keeps a radio awake for nothing.
+     */
+    fun pauseLiveUpdates() {
+        if (ticker == null) return
+        pausedTicker = tickerTransport
+        ticker?.cancel()
+        ticker = null
+    }
+
+    /** Back on screen: polling resumes if [pauseLiveUpdates] stopped it. */
+    fun resumeLiveUpdates() {
+        val transport = pausedTicker ?: return
+        pausedTicker = null
+        startLiveUpdates(transport)
     }
 
     override fun onCleared() {
