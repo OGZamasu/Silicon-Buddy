@@ -330,16 +330,27 @@ public enum BuddyAPI {
         public var status: String
         public var fraction: Double?
         public var title: String?
+        /// What the renderer is doing right now — "video-denoise 18/30". Only ever set
+        /// for the job the Mac is following; a clip waiting its turn has no stage.
+        public var stage: String?
+        /// Why it failed, in the words the queue would show. Only on a terminal failure.
+        public var reason: String?
+        /// The finished file, at `GET /media/{id}`. Set on the frame that says it is done.
+        public var mediaID: String?
 
         public init(
             id: String, kind: String, status: String,
-            fraction: Double? = nil, title: String? = nil
+            fraction: Double? = nil, title: String? = nil,
+            stage: String? = nil, reason: String? = nil, mediaID: String? = nil
         ) {
             self.id = id
             self.kind = kind
             self.status = status
             self.fraction = fraction
             self.title = title
+            self.stage = stage
+            self.reason = reason
+            self.mediaID = mediaID
         }
     }
 

@@ -512,11 +512,16 @@ public enum ControlAPI {
         public var node: String?
         /// Optional renderer controls; absent on older nodes.
         public var supportedParameters: [String]?
+        /// The sizes this lane renders. Absent on a node that does not say.
+        public var supportedResolutions: [String]?
+        /// Whether this lane reads a negative prompt at all.
+        public var supportsNegativePrompt: Bool?
 
         public init(
             id: String, name: String, summary: String, typicalDuration: String,
             supportsImageInput: Bool, supportedSeconds: [Int], available: Bool,
-            node: String?, supportedParameters: [String]? = nil
+            node: String?, supportedParameters: [String]? = nil,
+            supportedResolutions: [String]? = nil, supportsNegativePrompt: Bool? = nil
         ) {
             self.id = id
             self.name = name
@@ -527,6 +532,8 @@ public enum ControlAPI {
             self.available = available
             self.node = node
             self.supportedParameters = supportedParameters
+            self.supportedResolutions = supportedResolutions
+            self.supportsNegativePrompt = supportsNegativePrompt
         }
     }
 
@@ -550,13 +557,25 @@ public enum ControlAPI {
             public var outputDirectory: String
             public var error: String?
             public var uncertainSubmission: Bool
+            /// What to keep out of the shot, when the batch asked for anything.
+            public var negativePrompt: String?
+            /// The Mac's own note about this take — why it chose what it chose.
+            public var detail: String?
+            /// The finished clip, at `GET /media/{id}`: full control only.
+            public var mediaID: String?
+            public var mediaURL: String?
+            /// Its poster frame, which a chat-scope device may fetch too.
+            public var thumbnailMediaID: String?
 
             public init(
                 id: String, batchID: String, title: String, prompt: String, scene: Int,
                 variation: Int, seed: UInt32?, modelID: String, seconds: Int,
                 resolution: String, h3Turbo: Bool?, status: String, nodeJobID: String?,
                 file: String?, outputDirectory: String, error: String?,
-                uncertainSubmission: Bool, h3Steps: Int? = nil
+                uncertainSubmission: Bool, h3Steps: Int? = nil,
+                negativePrompt: String? = nil, detail: String? = nil,
+                mediaID: String? = nil, mediaURL: String? = nil,
+                thumbnailMediaID: String? = nil
             ) {
                 self.id = id
                 self.batchID = batchID
@@ -576,6 +595,11 @@ public enum ControlAPI {
                 self.outputDirectory = outputDirectory
                 self.error = error
                 self.uncertainSubmission = uncertainSubmission
+                self.negativePrompt = negativePrompt
+                self.detail = detail
+                self.mediaID = mediaID
+                self.mediaURL = mediaURL
+                self.thumbnailMediaID = thumbnailMediaID
             }
         }
         public var paused: Bool
@@ -588,6 +612,108 @@ public enum ControlAPI {
             self.activeID = activeID
             self.message = message
             self.items = items
+        }
+    }
+
+    // MARK: - Uploads and one node asked directly
+
+    /// `POST /uploads`: how a device names a picture without naming a path. The Mac reads
+    /// the type off the bytes, keeps the file for seven days, and answers with the two
+    /// ids a render can start from. `GET /media/{id}`, the route that fetches either
+    /// direction's files, answers bytes rather than JSON, so it has no type here.
+    public struct UploadResponse: Codable, Sendable, Equatable {
+        public var uploadID: String
+        public var mediaID: String
+        public var bytes: Int
+        /// What the Mac read off the bytes, which is not always what was claimed.
+        public var contentType: String
+        /// Relative, like every media link this server hands out: `/media/<id>`.
+        public var mediaURL: String
+        /// When the Mac will sweep it.
+        public var expiresAt: String
+
+        public init(
+            uploadID: String, mediaID: String, bytes: Int, contentType: String,
+            mediaURL: String, expiresAt: String
+        ) {
+            self.uploadID = uploadID
+            self.mediaID = mediaID
+            self.bytes = bytes
+            self.contentType = contentType
+            self.mediaURL = mediaURL
+            self.expiresAt = expiresAt
+        }
+    }
+
+    /// `GET /swarm/peers/{name}/status`: one node asked now rather than remembered — its
+    /// own `/v1/node` and `/v1/gguf`, and the only place the adapter riding on its loaded
+    /// GGUF appears. The credential the Mac used to ask is never in the answer.
+    public struct PeerNodeStatus: Codable, Sendable, Equatable {
+        /// The node's llama.cpp lane, as `/v1/gguf` reports it.
+        public struct GGUF: Codable, Sendable, Equatable {
+            public var running: Bool
+            public var model: String?
+            /// The LoRA riding on it — the one thing `GET /swarm` cannot carry.
+            public var adapter: String?
+            /// Which build is serving it: "stock" or "prism".
+            public var engine: String?
+            public var contextLength: Int?
+            public var uptimeSeconds: Double?
+            /// On the node's disk, serving or not.
+            public var installedModels: [String]
+            public var adapters: [String]
+
+            public init(
+                running: Bool, model: String? = nil, adapter: String? = nil,
+                engine: String? = nil, contextLength: Int? = nil,
+                uptimeSeconds: Double? = nil, installedModels: [String] = [],
+                adapters: [String] = []
+            ) {
+                self.running = running
+                self.model = model
+                self.adapter = adapter
+                self.engine = engine
+                self.contextLength = contextLength
+                self.uptimeSeconds = uptimeSeconds
+                self.installedModels = installedModels
+                self.adapters = adapters
+            }
+        }
+
+        public var name: String
+        public var baseURL: String
+        public var reachable: Bool
+        public var error: String?
+        public var platform: String?
+        public var hardware: String?
+        public var totalMemoryGB: Double?
+        public var usedMemoryGB: Double?
+        public var headroomGB: Double?
+        public var gpuUtilization: Double?
+        public var queueDepth: Int?
+        public var capabilities: [SwarmView.Capability]
+        public var gguf: GGUF?
+
+        public init(
+            name: String, baseURL: String, reachable: Bool, error: String? = nil,
+            platform: String? = nil, hardware: String? = nil, totalMemoryGB: Double? = nil,
+            usedMemoryGB: Double? = nil, headroomGB: Double? = nil,
+            gpuUtilization: Double? = nil, queueDepth: Int? = nil,
+            capabilities: [SwarmView.Capability] = [], gguf: GGUF? = nil
+        ) {
+            self.name = name
+            self.baseURL = baseURL
+            self.reachable = reachable
+            self.error = error
+            self.platform = platform
+            self.hardware = hardware
+            self.totalMemoryGB = totalMemoryGB
+            self.usedMemoryGB = usedMemoryGB
+            self.headroomGB = headroomGB
+            self.gpuUtilization = gpuUtilization
+            self.queueDepth = queueDepth
+            self.capabilities = capabilities
+            self.gguf = gguf
         }
     }
 
@@ -617,24 +743,61 @@ public enum ControlAPI {
             }
         }
 
+        /// One peer as the Mac's last poll saw it. Everything past the name, the address
+        /// and whether it answered is optional, because a poll is a memory: a node that
+        /// was busy when the Mac asked says less than one that was idle.
         public struct Peer: Codable, Sendable, Equatable, Identifiable {
             public var name: String
             public var baseURL: String
             public var reachable: Bool
             public var error: String?
             public var capabilities: [Capability]
+            public var platform: String?
+            /// "NVIDIA GeForce RTX 3090 Ti" on a CUDA node, the chip on a Mac.
+            public var hardware: String?
+            public var totalMemoryGB: Double?
+            public var usedMemoryGB: Double?
+            public var headroomGB: Double?
+            public var gpuUtilization: Double?
+            /// What is holding the GPU, when the node says.
+            public var gpuConsumer: String?
+            public var queueDepth: Int?
+            /// The GGUF it is serving, without the adapter riding on it.
+            public var loadedModel: String?
+            public var modelContextLength: Int?
+            public var modelEngine: String?
+            /// Which kinds of work it will take, by the Mac's own reckoning.
+            public var lanes: [String: Bool]?
 
             public var id: String { baseURL }
 
             public init(
                 name: String, baseURL: String, reachable: Bool,
-                error: String?, capabilities: [Capability]
+                error: String?, capabilities: [Capability],
+                platform: String? = nil, hardware: String? = nil,
+                totalMemoryGB: Double? = nil, usedMemoryGB: Double? = nil,
+                headroomGB: Double? = nil, gpuUtilization: Double? = nil,
+                gpuConsumer: String? = nil, queueDepth: Int? = nil,
+                loadedModel: String? = nil, modelContextLength: Int? = nil,
+                modelEngine: String? = nil, lanes: [String: Bool]? = nil
             ) {
                 self.name = name
                 self.baseURL = baseURL
                 self.reachable = reachable
                 self.error = error
                 self.capabilities = capabilities
+                self.platform = platform
+                self.hardware = hardware
+                self.totalMemoryGB = totalMemoryGB
+                self.usedMemoryGB = usedMemoryGB
+                self.headroomGB = headroomGB
+                self.gpuUtilization = gpuUtilization
+                self.gpuConsumer = gpuConsumer
+                self.queueDepth = queueDepth
+                self.loadedModel = loadedModel
+                self.modelContextLength = modelContextLength
+                self.modelEngine = modelEngine
+                self.lanes = lanes
             }
         }
 
