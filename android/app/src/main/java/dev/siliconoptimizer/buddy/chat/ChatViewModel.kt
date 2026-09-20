@@ -147,6 +147,17 @@ class ChatViewModel(
     var refusal by mutableStateOf<PhoneRefusal?>(null)
         private set
 
+    /**
+     * The phone is answering with little memory to spare, and what that costs. Shown with
+     * the answer it is about; the owner takes it down when they have read it.
+     */
+    var memoryWarning by mutableStateOf<PhoneMemoryWarning?>(null)
+        private set
+
+    fun dismissMemoryWarning() {
+        memoryWarning = null
+    }
+
     /** What is known about the Mac answering: from the probe, and from the last send. */
     var macState by mutableStateOf(MacState.Answering)
         private set
@@ -989,20 +1000,25 @@ class ChatViewModel(
             // minute in this app and the likeliest moment for Android to take the process:
             // the question is already on the phone's disk by then, not only on the screen.
             persistPhone()
-            when (val check = phone.preflight(model)) {
+            val check = phone.preflight(model)
+            when (check) {
                 is Preflight.Refused -> {
                     update(placeholderID) { it.copy(isStreaming = false, failure = check.message) }
-                    refusal = PhoneRefusal(check.message, check.alternative, text, placeholderID)
+                    refusal = PhoneRefusal(check.message, check.alternative, text, placeholderID, model)
                 }
-                Preflight.Ready -> {
-                    // Only the newest turns: the phone reads a prompt at about a hundred
-                    // tokens a second, and a long conversation would be a minute of silence
-                    // before the first word. The reply says when older ones were left out.
-                    val capped = PhoneHistory.cap(current?.messages.orEmpty().filter { it.id != placeholderID })
-                    if (capped.wasTrimmed) update(placeholderID) { it.copy(trimmedHistory = true) }
-                    consume(phone.answer(model, capped.messages, phoneMaxTokens), placeholderID, phoneMaxTokens)
-                    finishStreaming(null)
-                }
+                // It will run, on a phone with little to spare. Said before the answer
+                // starts, not after something else has been closed for it.
+                is Preflight.Warned -> memoryWarning = PhoneMemoryWarning(check.message, model)
+                Preflight.Ready -> memoryWarning = null
+            }
+            if (check !is Preflight.Refused) {
+                // Only the newest turns: the phone reads a prompt at about a hundred
+                // tokens a second, and a long conversation would be a minute of silence
+                // before the first word. The reply says when older ones were left out.
+                val capped = PhoneHistory.cap(current?.messages.orEmpty().filter { it.id != placeholderID })
+                if (capped.wasTrimmed) update(placeholderID) { it.copy(trimmedHistory = true) }
+                consume(phone.answer(model, capped.messages, phoneMaxTokens), placeholderID, phoneMaxTokens)
+                finishStreaming(null)
             }
             persistPhone()
             noteLastExchange(text)
@@ -1014,7 +1030,19 @@ class ChatViewModel(
     /** "Use the smaller model instead", after a refusal for memory. */
     fun useAlternative() {
         val declined = refusal ?: return
-        val alternative = declined.alternative ?: return
+        askAgain(declined, declined.alternative ?: return)
+    }
+
+    /**
+     * "Try again", after making room: the same question to the same model. The refusal was
+     * about the phone at that moment, not about the question.
+     */
+    fun retryOnPhone() {
+        val declined = refusal ?: return
+        askAgain(declined, declined.model ?: modelFor(current, null) ?: return)
+    }
+
+    private fun askAgain(declined: PhoneRefusal, model: InstalledPhoneModel) {
         refusal = null
         current?.let { conversation ->
             val index = conversation.messages.indexOfFirst { it.id == declined.failedMessageID }
@@ -1022,11 +1050,11 @@ class ChatViewModel(
                 val keep = conversation.messages.toMutableList()
                 keep.removeAt(index)
                 if (index - 1 >= 0 && keep.getOrNull(index - 1)?.role == ChatMessage.ROLE_USER) keep.removeAt(index - 1)
-                current = conversation.copy(messages = keep, phoneModelID = alternative.id)
+                current = conversation.copy(messages = keep, phoneModelID = model.id)
             }
         }
         draft = declined.question
-        sendOnPhone(alternative)
+        sendOnPhone(model)
     }
 
     fun dismissRefusal() {
@@ -1146,7 +1174,12 @@ data class PhoneRefusal(
     val alternative: InstalledPhoneModel?,
     val question: String,
     val failedMessageID: String,
+    /** The model that was refused, so "make room" knows whose numbers to show. */
+    val model: InstalledPhoneModel? = null,
 )
+
+/** The phone is answering with little to spare: the sentence, and the model it is about. */
+data class PhoneMemoryWarning(val message: String, val model: InstalledPhoneModel)
 
 /** How a conversation the phone answered is handed to the Mac. */
 object SendToMac {

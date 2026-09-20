@@ -467,10 +467,56 @@ itself when the shade opens and says "Mac unreachable · phone model ready"; the
 it too and offers "Ask on this phone"; both open `siliconbuddy://ask?offer=phone`, which
 shows the offer and answers nothing.
 
-**The guards**, from the owner's decisions of 2026-09-19. Memory: never load below the
-model's `minFreeMemoryBytes` from the Mac (3.1 GB for Qwen, 4.7 GB for Gemma) or while
-Android says memory is low, and name a smaller installed model that fits — "Use SmolLM2
-135M instead" on the emulator, whose 2.5 GB cannot hold Qwen. Heat: MODERATE drops a
+**The guards**, from the owner's decisions of 2026-09-19. Memory, in three bands since the
+first real reading off the owner's S24 (`MemAvailable` 2.55 GB against Qwen's 3.1 GB gate,
+which refused the only model there is):
+
+- **Refuse** below what must stay resident. Not "the weights are mapped, so they don't
+  count": KleidiAI claims Q4_0 and Q8_0 matmul weights and repacks them into *anonymous*
+  memory, so a loaded model exists twice — a file copy the kernel may drop, and a repacked
+  copy it may not. Measured on the emulator with SmolLM2 Q8_0 (a 145 MB file): `RssAnon`
+  +203 MB, `RssFile` +145 MB. So the Mac's `peakMemoryBytes` is the sum of both copies, and
+  what cannot be dropped is `max(sizeBytes, peak − sizeBytes)` — the most those two fields
+  can say without guessing, and exactly the 203 MB above. For Qwen:
+  max(1,296,764,000, 2,586,836,992 − 1,296,764,000) = 1,296,764,000, × 1.25 = **1.62 GB**.
+  Better still, the phone measures it for itself: `RssAnon` across the first successful
+  load is recorded per model and context, and from then on that is the floor.
+- **Warn and run** between that and the Mac's `minFreeMemoryBytes`: "Your phone is low on
+  memory: Qwen3.5 2B runs best with 3.10 GB free and this phone has 2.62 GB. Other apps may
+  close, and answers may be slower." Said before the answer starts, never after.
+- **Load** at or above the Mac's figure, silently.
+
+A catalogue entry with no `measured` block has nothing to derive from, so its gate stays the
+single `minFreeMemoryBytes` it always was. Android's own low-memory state refuses at any
+reading. A shorter context moves the advisory "runs best" figure and never the floor: a
+recurrent model's state does not grow with the context, and the Mac's peak was taken with
+640 tokens read, so a floor scaled by it would be below what the phone needs.
+
+And if it still gets the app killed, `ApplicationExitInfo` says so on the next run — over
+the whole time a model was held, not only while it loaded, because the peak is in the middle
+of an answer; and reason-agnostic, because One UI reports some of its reclaiming under other
+reasons and what matters is that the app did not choose to end. The record is opened when a
+load starts, kept open while the model is held, and closed when the load fails, is cancelled
+or the model is let go — so nothing is left for an unrelated kill hours later to be blamed
+on. Then: the model is remembered, the floor rises to a tenth above the reading that failed,
+and the next load asks for half the context, until an answer finishes and the phone has
+shown it can. "Use … instead" names a smaller installed model when there is one and says plainly
+when there is not.
+
+**Making room.** The owner's own suggestion, holding a phone with 2.58 GB free: a sheet from
+the Settings row and from either sentence in the chat, which says what is free *now* (polled
+while it is open), both of the model's figures and which one decides, and one thing an app
+would rather not admit — Android does not let one app close another, so this one can only
+let go of what it is holding itself. It does that first (the model, this app's caches, and
+what came back), offers the phone's own memory screen — Samsung's Device care first, then the
+app list, then settings, each checked through the package manager rather than
+`Intent.resolveActivity`, which hands an explicit component back without looking and put a
+dead button on every non-Samsung phone — says how to close apps by hand, and offers the
+other way to make it fit: half the context, with a figure only once this phone has run it
+both ways. "Try again" turns on the moment the floor is met.
+
+Name a smaller installed model that fits — "Use SmolLM2 135M instead" on the emulator, whose
+2.5 GB cannot hold Qwen. Heat: MODERATE drops a
 quarter of the threads, SEVERE half and keeps answering, CRITICAL or worse stops the answer
 ("Stopped — phone too hot") and starts no new one; changes apply from the next token.
 Screen: an answer is written only while the app is in front — leaving stops it ("Stopped
@@ -507,7 +553,7 @@ and SmolLM2's labelled answer; and — on an install with no instrumentation att
 Android pins an instrumented process to the foreground and refuses it — `am send-trim-memory
 … BACKGROUND` unloading the model 15 ms later, inside the 30 s grace.
 
-Tests: Android 629 unit (94 new: the fallback truth table and what counts as out of reach;
+Tests: Android 660 unit (117 new: the fallback truth table and what counts as out of reach;
 the downloader over a socket against a fake Mac — fetch, 40% cut and resume with Range and
 If-Range, 200 restart, 416, 409, 503, a mismatch leading to `verify=1` once and a clean
 refetch, a second mismatch keeping nothing, a full disk, the Mac's own failure, a cancel
@@ -526,12 +572,18 @@ opening a composer with the offer while the Mac is out of reach, a Mac that goes
 mid-request, the floor between asks on a Mac that answers some routes and not others, and
 each way a Tailscale tunnel can present itself; and after the third: a conversation made
 while the Mac was away being answered the moment it returns, one the Mac has forgotten being
-answered rather than refused, and opening either of them), 21 instrumented on the minified release
+answered rather than refused, and opening either of them; and — with the phone's own first
+reading in hand, and then the critic's measurement of what KleidiAI does to a loaded model — the three
+memory bands and the arithmetic under them, this phone's own measurement beating the
+estimate, a catalogue entry with no measurement, a shorter context that moves the advisory
+figure and never the floor, a kill in the middle of an answer, an ending the app chose, a
+failed load leaving nothing to be blamed for, what "make room" frees and says, which memory
+screen it offers on which phone, and a conversation naming a model the Mac has replaced), 22 instrumented on the minified release
 build (15 new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of
 their own). Every protection was checked by undoing it and seeing a test fail (14 mutants
-in the first round, 5 for the first review's fixes, 5 for the second's and 4 for the
-third's, all caught).
-Release APK 17,933,637 bytes
+in the first round, 5 for the first review's fixes, 5 for the second's, 4 for the third's,
+9 for the memory bands and 10 for the review of those, all caught).
+Release APK 17,958,645 bytes
 (13,920,891 at M4); the llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in
 the APK. `scripts/ci-android.sh` is the local CI: unit tests — both modules, forced with
 `--rerun`, because an up-to-date test task prints nothing and passes, which is a gate that

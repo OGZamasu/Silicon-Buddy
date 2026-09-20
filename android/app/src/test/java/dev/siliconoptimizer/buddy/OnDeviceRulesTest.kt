@@ -7,6 +7,7 @@ import dev.siliconoptimizer.buddy.ondevice.FallbackDecision
 import dev.siliconoptimizer.buddy.ondevice.FallbackPolicy
 import dev.siliconoptimizer.buddy.ondevice.InstalledPhoneModel
 import dev.siliconoptimizer.buddy.ondevice.MacState
+import dev.siliconoptimizer.buddy.ondevice.MakeRoom
 import dev.siliconoptimizer.buddy.ondevice.ModelStore
 import dev.siliconoptimizer.buddy.ondevice.NetworkNow
 import dev.siliconoptimizer.buddy.ondevice.PartialDownload
@@ -62,6 +63,23 @@ class OnDeviceRulesTest {
     )
 
     private val qwen = model("qwen", 3_100_000_000, isDefault = true, size = 1_296_764_000)
+
+    /**
+     * The owner's own entry, with the Mac's measurement on it — the numbers from
+     * `contract/GET__ondevice_models.json`, which is where these come from on a phone.
+     */
+    private val measuredQwen = qwen.copy(
+        model = qwen.model.copy(
+            measured = PhoneModelMeasured(
+                device = "Galaxy S24 Ultra", runtime = "llama.cpp b11053, CPU",
+                conditions = "phone hot and charging", tokensPerSecond = 17.4,
+                threadSweep = emptyList(), promptTokensPerSecond = 122.9,
+                secondsToFirstWord300 = 2.5, firstWordEstimated = true,
+                sustainedTokensPerSecond = null, sustainedMeasured = false,
+                peakMemoryBytes = 2_586_836_992, peakMemoryContextTokens = 640,
+            ),
+        ),
+    )
     private val gemma = model("gemma", 4_700_000_000, size = 3_349_516_256, threads = 4 to 6)
 
     // MARK: - FallbackPolicy: the whole truth table
@@ -163,6 +181,221 @@ class OnDeviceRulesTest {
 
         val low = ResourceGuard.memory(qwen, 9_000_000_000, true, listOf(qwen)) as ResourceGuard.Memory.Refuse
         assertNull("Android already short of memory refuses whatever the number", low.alternative)
+    }
+
+    @Test
+    fun `what must stay resident is the repacked weights or the rest, whichever is larger`() {
+        // KleidiAI repacks Q4_0 and Q8_0 matmul weights into anonymous memory, so a loaded
+        // model exists twice: a file copy the kernel may drop and an anonymous copy it may
+        // not. peak = anonymous + whatever of the file was resident, so
+        // anonymous ≥ peak − sizeBytes, and anonymous ≥ sizeBytes because the repack is
+        // there. For Qwen: max(1,296,764,000, 2,586,836,992 − 1,296,764,000) = 1,296,764,000,
+        // × 1.25 = 1,620,955,000.
+        assertEquals(1_620_955_000L, ResourceGuard.residentFloor(measuredQwen.model))
+        assertNull("no measurement, nothing to work it out from", ResourceGuard.residentFloor(qwen.model))
+
+        // The critic's own reading on the emulator: SmolLM2 Q8_0, a 145 MB file, RssAnon
+        // +203 MB and RssFile +145 MB — 348 MB of peak. The derivation reproduces the
+        // anonymous half exactly, which is the half that matters.
+        val smol = model("smol", 400_000_000, size = 145_000_000).let {
+            it.copy(model = it.model.copy(measured = measuredQwen.model.measured!!.copy(
+                peakMemoryBytes = 348_000_000, peakMemoryContextTokens = 640,
+            )))
+        }
+        assertEquals((203_000_000 * 1.25).toLong(), ResourceGuard.residentFloor(smol.model))
+    }
+
+    @Test
+    fun `what this phone measured for itself beats what another phone's measurement implies`() {
+        // A number off this phone's own /proc/self/status, at the context it will use.
+        assertEquals(
+            (1_800_000_000 * 1.25).toLong(),
+            ResourceGuard.residentFloor(measuredQwen.model, measuredResident = 1_800_000_000),
+        )
+        // …and it is used even where the Mac sent no measurement at all.
+        assertEquals(
+            (900_000_000 * 1.25).toLong(),
+            ResourceGuard.residentFloor(qwen.model, measuredResident = 900_000_000),
+        )
+        val band = ResourceGuard.memory(
+            measuredQwen, 2_000_000_000, false, listOf(measuredQwen), measuredResident = 1_800_000_000,
+        )
+        assertTrue("a phone that knows better refuses where the estimate would have run", band is ResourceGuard.Memory.Refuse)
+    }
+
+    @Test
+    fun `a shorter context moves the advisory figure and never the floor`() {
+        val model = measuredQwen.model
+        // Qwen3.5-2B keeps a recurrent state that does not grow with the context, and the
+        // Mac's peak was taken at 640 tokens: a floor scaled by the context would be below
+        // what the phone needs, and the phone would find out mid-answer.
+        assertEquals(
+            "the floor is the same at either context",
+            ResourceGuard.residentFloor(model),
+            ResourceGuard.residentFloor(model),
+        )
+        assertTrue("and the advisory figure does move", ResourceGuard.neededAt(model, 2048) < ResourceGuard.neededAt(model, 4096))
+        assertTrue(
+            "but never below the floor",
+            ResourceGuard.neededAt(model, 1024) >= ResourceGuard.residentFloor(model)!!,
+        )
+    }
+
+    @Test
+    fun `three bands - comfortable, tight with a warning, and refused`() {
+        val installed = listOf(measuredQwen)
+        fun band(available: Long) = ResourceGuard.memory(measuredQwen, available, false, installed)
+
+        assertEquals("the Mac's whole figure is free", ResourceGuard.Memory.Load, band(3_200_000_000))
+        assertEquals(ResourceGuard.Memory.Load, band(3_100_000_000))
+
+        // The owner's S24 the evening this was measured: MemAvailable 2,554,596 kB.
+        val theOwnersPhone = 2_554_596L * 1024
+        val tight = band(theOwnersPhone) as ResourceGuard.Memory.Tight
+        assertEquals(3_100_000_000L, tight.needed)
+        assertEquals(1_620_955_000L, tight.floor)
+        assertEquals(theOwnersPhone, tight.available)
+        val warning = ResourceGuard.warning(measuredQwen, tight)
+        assertTrue("it says what it needs", warning.contains("3.10 GB"))
+        assertTrue("and what there is", warning.contains("2.62 GB"))
+        assertTrue(warning.contains("Other apps may close, and answers may be slower."))
+
+        assertEquals("just inside the floor", ResourceGuard.Memory.Tight::class, band(1_620_955_000)::class)
+        val refused = band(1_620_954_999) as ResourceGuard.Memory.Refuse
+        assertEquals(1_620_955_000L, refused.floor)
+        val sentence = ResourceGuard.refusal(measuredQwen, refused)
+        assertTrue("the refusal is about the working memory", sentence.contains("1.62 GB"))
+        assertTrue("and says there is nothing smaller to fall back to",
+            sentence.contains("There is no smaller model on this phone"))
+
+        // Android's own low-memory state refuses at any reading.
+        assertTrue(band2(measuredQwen, 9_000_000_000, low = true) is ResourceGuard.Memory.Refuse)
+    }
+
+    private fun band2(model: InstalledPhoneModel, available: Long, low: Boolean) =
+        ResourceGuard.memory(model, available, low, listOf(model))
+
+    @Test
+    fun `a catalogue with no measurement keeps the single gate it always had`() {
+        // Two bands, not three: without the pieces there is nothing to derive, and the
+        // Mac's own figure is the only thing to go on.
+        assertEquals(ResourceGuard.Memory.Load, ResourceGuard.memory(qwen, 3_100_000_000, false, listOf(qwen)))
+        assertTrue(ResourceGuard.memory(qwen, 3_099_999_999, false, listOf(qwen)) is ResourceGuard.Memory.Refuse)
+        val refused = ResourceGuard.memory(qwen, 2_000_000_000, false, listOf(qwen)) as ResourceGuard.Memory.Refuse
+        assertEquals("the floor is the Mac's figure", 3_100_000_000L, refused.floor)
+    }
+
+    @Test
+    fun `a phone that has already been killed for this model is not asked to try the same reading again`() {
+        val theOwnersPhone = 2_554_596L * 1024
+        assertTrue(
+            "without that history it is allowed with a warning",
+            ResourceGuard.memory(measuredQwen, theOwnersPhone, false, listOf(measuredQwen)) is ResourceGuard.Memory.Tight,
+        )
+        val refused = ResourceGuard.memory(
+            measuredQwen, theOwnersPhone, false, listOf(measuredQwen),
+            killedWithFreeBytes = theOwnersPhone,
+        )
+        assertTrue("what the phone actually did outranks the arithmetic", refused is ResourceGuard.Memory.Refuse)
+        assertEquals(
+            "the floor is a tenth above the reading that was not enough",
+            (theOwnersPhone * 1.10).toLong(),
+            (refused as ResourceGuard.Memory.Refuse).floor,
+        )
+        assertTrue(
+            "and a phone with meaningfully more free is allowed again",
+            ResourceGuard.memory(
+                measuredQwen, 3_000_000_000, false, listOf(measuredQwen), killedWithFreeBytes = theOwnersPhone,
+            ) is ResourceGuard.Memory.Tight,
+        )
+    }
+
+    // MARK: - Make room
+
+    @Test
+    fun `the sheet says which number decides, and how far the phone has come`() {
+        val started = 2_554_596L * 1024
+        assertEquals("2.62 GB free", MakeRoom.change(started, started))
+        assertEquals("2.62 GB → 4.10 GB free", MakeRoom.change(started, 4_100_000_000))
+
+        val needs = MakeRoom.needs(measuredQwen.model)
+        assertTrue("the floor, and that it is the one that decides", needs.contains("1.62 GB free to run at all"))
+        assertTrue(needs.contains("that is the one that decides"))
+        assertTrue("and the figure it runs best at", needs.contains("3.10 GB"))
+        // Without a measurement there is one number and no pretending otherwise.
+        assertEquals("QWEN needs 3.10 GB free.", MakeRoom.needs(qwen.model))
+
+        assertFalse(MakeRoom.isEnough(measuredQwen.model, 1_620_954_999))
+        assertTrue("the floor is what Try again waits for", MakeRoom.isEnough(measuredQwen.model, 1_620_955_000))
+        assertTrue(MakeRoom.isEnough(measuredQwen.model, started))
+    }
+
+    @Test
+    fun `the phone's own memory screen is tried before the general one, and absence is not a crash`() {
+        // A Samsung, where Device care's memory screen is the one the owner already uses.
+        assertEquals(MakeRoom.Tool.SamsungDeviceCare, MakeRoom.tool { true })
+        // A Samsung whose memory screen has moved.
+        assertEquals(
+            MakeRoom.Tool.SamsungSmartManager,
+            MakeRoom.tool { it != MakeRoom.Tool.SamsungDeviceCare },
+        )
+        // Any other phone: the app list, which every Android has.
+        assertEquals(
+            MakeRoom.Tool.AndroidApps,
+            MakeRoom.tool { it.packageName == null && it != MakeRoom.Tool.AndroidSettings },
+        )
+        assertEquals(MakeRoom.Tool.AndroidSettings, MakeRoom.tool { it == MakeRoom.Tool.AndroidSettings })
+        assertNull("nothing resolves: no button, rather than a button that throws", MakeRoom.tool { false })
+    }
+
+    @Test
+    fun `the phone's own screens are named by component, which is what has to be checked`() {
+        // `Intent.resolveActivity` hands an explicit component straight back without
+        // checking anything is behind it, which put a Device care button on every phone —
+        // and it did nothing at all when tapped. These two are explicit, so whether they
+        // exist is the package manager's to answer; the instrumented test watches the
+        // emulator, which has no Samsung package, offer the general screen instead.
+        assertEquals("com.samsung.android.lool", MakeRoom.Tool.SamsungDeviceCare.packageName)
+        assertEquals("com.samsung.android.sm.ui.ram.RamActivity", MakeRoom.Tool.SamsungDeviceCare.className)
+        assertEquals("com.samsung.android.lool", MakeRoom.Tool.SamsungSmartManager.packageName)
+        assertNull("the general ones name no package", MakeRoom.Tool.AndroidApps.packageName)
+        assertNull(MakeRoom.Tool.AndroidSettings.packageName)
+        assertEquals("android.settings.APPLICATION_SETTINGS", MakeRoom.Tool.AndroidApps.action)
+        assertEquals("Open Device care", MakeRoom.Tool.SamsungDeviceCare.label)
+        assertEquals("Open app settings", MakeRoom.Tool.AndroidApps.label)
+    }
+
+    @Test
+    fun `what this app gave back is said in its own words`() {
+        assertNull("nothing held, nothing claimed", MakeRoom.recovered(1_000, 1_000, unloaded = false))
+        assertEquals(
+            "Let go of 100.00 MB of this app's own caches.",
+            MakeRoom.recovered(1_000_000_000, 1_100_000_000, unloaded = false),
+        )
+        assertEquals(
+            "Let go of the model on this phone and this app's caches: 1.30 GB.",
+            MakeRoom.recovered(1_000_000_000, 2_300_000_000, unloaded = true),
+        )
+        assertTrue(
+            "a phone that has not counted it back yet is not called a failure",
+            MakeRoom.recovered(1_000_000_000, 1_000_000_000, unloaded = true)!!
+                .contains("has not counted it back yet"),
+        )
+    }
+
+    @Test
+    fun `the shorter context is offered without a number until this phone has one`() {
+        val offer = MakeRoom.shorterContext(measuredQwen.model)!!
+        assertTrue(offer.contains("2048 words' worth instead of 4096"))
+        assertTrue(
+            "no figure is claimed that this phone has not measured",
+            offer.contains("this phone will know once it has run it both ways"),
+        )
+        assertFalse("and certainly not one derived from a peak taken at 640 tokens", offer.contains("MB less"))
+
+        // Once it has run both, the difference is its own to report.
+        val measured = MakeRoom.shorterContext(measuredQwen.model, saving = 210_000_000)!!
+        assertTrue(measured.contains("210.00 MB less memory on this phone"))
     }
 
     @Test
@@ -315,13 +548,19 @@ class OnDeviceRulesTest {
         )
         assertNull("nothing here is not a row", PartialDownload.line(0, 1_000_000_000))
         assertNull(PartialDownload.line(null, 1_000_000_000))
-        assertTrue(
-            PartialDownload.memoryLine(3_100_000_000, 1_200_000_000)
-                .startsWith("Needs 3.10 GB of free memory to run · 1.20 GB free now"),
+        assertEquals(
+            "with a measurement, both numbers and what they are",
+            "Needs 1.62 GB of free memory for its working memory, 3.10 GB to run at its best · 2.62 GB free now",
+            PartialDownload.memoryLine(measuredQwen.model, 2_554_596L * 1024),
+        )
+        assertEquals(
+            "without one, the single figure it always showed",
+            "Needs 3.10 GB of free memory to run · 1.20 GB free now",
+            PartialDownload.memoryLine(qwen.model, 1_200_000_000),
         )
         assertEquals(
             "Needs 3.10 GB of free memory to run",
-            PartialDownload.memoryLine(3_100_000_000, null),
+            PartialDownload.memoryLine(qwen.model, null),
         )
     }
 

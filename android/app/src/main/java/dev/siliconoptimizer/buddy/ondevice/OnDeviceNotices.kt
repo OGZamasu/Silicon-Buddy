@@ -64,6 +64,11 @@ object OnDeviceNotices {
         "The copy of $label on this phone changed since it was checked, so it was deleted. " +
             "Get it again while your Mac is reachable."
 
+    /** Added to the low-memory warning when the phone has already killed the app for it. */
+    const val SHORTER_AFTER_A_KILL =
+        "Your phone ran out of memory the last time this model loaded, so it will remember " +
+            "less of the conversation this time."
+
     /** Older turns did not fit in the phone model's context. */
     const val HISTORY_TRIMMED =
         "Only the most recent messages were sent to the model on this phone."

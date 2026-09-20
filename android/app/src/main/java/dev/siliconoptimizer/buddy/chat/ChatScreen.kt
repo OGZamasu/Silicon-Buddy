@@ -75,6 +75,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
+import dev.siliconoptimizer.buddy.ondevice.InstalledPhoneModel
+import dev.siliconoptimizer.buddy.ondevice.MakeRoomSheet
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ui.Format
 import dev.siliconoptimizer.buddy.ui.KeepScreenOn
@@ -289,12 +291,30 @@ fun ChatScreen(
                 onRetry = { model.retryOnMac(app.transport) },
             )
         }
+        // "Make room" is reachable from both of the places that say memory is the problem.
+        var makingRoom by remember { mutableStateOf<InstalledPhoneModel?>(null) }
+        model.memoryWarning?.let { warning ->
+            MemoryWarningBanner(
+                message = warning.message,
+                onMakeRoom = { makingRoom = warning.model },
+                onDismiss = { model.dismissMemoryWarning() },
+            )
+        }
         model.refusal?.let { refusal ->
             RefusalBanner(
                 message = refusal.message,
                 alternative = refusal.alternative?.label,
                 onAlternative = { model.useAlternative() },
+                onMakeRoom = refusal.model?.let { { makingRoom = it } },
                 onDismiss = { model.dismissRefusal() },
+            )
+        }
+        makingRoom?.let { installed ->
+            MakeRoomSheet(
+                model = installed.model,
+                installed = installed,
+                onDismiss = { makingRoom = null },
+                onTryAgain = { model.retryOnPhone() }.takeIf { model.refusal != null },
             )
         }
         var confirmingSend by remember { mutableStateOf(false) }
@@ -728,12 +748,39 @@ private fun PhoneOfferBanner(
     }
 }
 
+/**
+ * The phone is answering anyway, with little memory to spare.
+ *
+ * Not an error — it is running — so it does not wear the error colours; but it is not a
+ * detail either, because something else on the phone may be closed for it.
+ */
+@Composable
+private fun MemoryWarningBanner(message: String, onMakeRoom: () -> Unit, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onMakeRoom) { Text("Make room…") }
+        TextButton(onClick = onDismiss) { Text("OK") }
+    }
+}
+
 /** Why the phone would not answer, and the smaller model that would fit when it was memory. */
 @Composable
 private fun RefusalBanner(
     message: String,
     alternative: String?,
     onAlternative: () -> Unit,
+    onMakeRoom: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
     Column(
@@ -745,6 +792,7 @@ private fun RefusalBanner(
         Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             alternative?.let { TextButton(onClick = onAlternative) { Text("Use $it instead") } }
+            onMakeRoom?.let { TextButton(onClick = it) { Text("Make room…") } }
             TextButton(onClick = onDismiss) { Text("OK") }
         }
     }
