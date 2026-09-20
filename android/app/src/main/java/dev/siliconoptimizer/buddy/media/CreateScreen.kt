@@ -43,6 +43,8 @@ import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.transport.ImagePlan
 import dev.siliconoptimizer.buddy.transport.MeshPlan
 import dev.siliconoptimizer.buddy.ui.Format
+import dev.siliconoptimizer.buddy.ui.Notifications
+import dev.siliconoptimizer.buddy.ui.NotificationsOffNotice
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
 import dev.siliconoptimizer.buddy.ui.verdictTint
@@ -81,7 +83,8 @@ fun CreateScreen(
     // Asked for at the moment it starts to matter — the first render — rather than at
     // launch, where a person has no idea what they are being asked about.
     fun ensureNotifications() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifier.isAllowed) {
+        if (!notifier.isAllowed && Notifications.canAsk(context)) {
+            Notifications.noteAsked(context)
             askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
@@ -129,6 +132,12 @@ fun CreateScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
             )
+        }
+
+        // The queue is where a render finishing is news, and where the owner found out the
+        // hard way that news was going nowhere.
+        if (model.tab == MediaViewModel.Tab.Queue) {
+            NotificationsOffNotice("a render finishing", Modifier.padding(horizontal = 14.dp))
         }
 
         when (model.tab) {

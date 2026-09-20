@@ -113,9 +113,22 @@ final class TransportErrorTests: XCTestCase {
     }
 
     func testAnUnknownStatusCarriesItsNumber() {
+        // 502: nothing the Mac documents. (503 was the example here until the phone's models
+        // made it one — the Mac's library drive gone — with a case of its own.)
         XCTAssertEqual(
-            TransportError.from(status: 503, body: body("gone fishing"), path: "/status"),
-            .server(status: 503, message: "gone fishing")
+            TransportError.from(status: 502, body: body("gone fishing"), path: "/status"),
+            .server(status: 502, message: "gone fishing")
+        )
+    }
+
+    func testTheDriveAndTheRoomTheMacNeedsForPhoneModelsAreTheirOwnCases() {
+        XCTAssertEqual(
+            TransportError.from(status: 503, body: body("The drive “Demo SSD” is not connected."), path: "/x"),
+            .unavailable("The drive “Demo SSD” is not connected.")
+        )
+        XCTAssertEqual(
+            TransportError.from(status: 507, body: body("No room."), path: "/x"),
+            .insufficientStorage("No room.")
         )
     }
 

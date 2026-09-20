@@ -352,8 +352,249 @@ Not done, and why:
 4. **iPad**: types and contract tests only. The Agents tab comes when iOS catches up.
 5. **Handoff from the Mac to the iPad** is iOS work and waits with it.
 
-### M5 — On-device fallback
+### M5 — On-device fallback — **Android done, iOS to follow**
 - A 1–4B model running natively on the S24 Ultra and iPad mini when the Mac is unreachable, same chat UI, clearly labelled.
+
+The phone answers by itself with a small GGUF model on its own CPU, through llama.cpp —
+only when the owner taps for it, and every answer says so. The Mac side is
+silicon-optimizer PR #48 (merged as 653e669): `GET /ondevice/models`, `POST …/prepare`,
+`GET …/file` and `DELETE`, full scope only; `contract/` is its export.
+
+**Runtime.** llama.cpp b11053 (commit `1af554f8fc78ba029665a47b839484d9763e2a75`) as a
+submodule at `third_party/llama.cpp`, built by Gradle in a new `android/llama` module with
+NDK 29.0.14206865 and the SDK's own CMake 3.22.1 (which b11053 accepts): shared libraries,
+`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS` + `GGML_CPU_KLEIDIAI` on; `GGML_NATIVE`,
+`GGML_LLAMAFILE`, `GGML_OPENMP`, `LLAMA_OPENSSL`/`LLAMA_CURL`, subprocesses, tests, examples,
+tools and the server off; `c++_shared`, so eleven libraries share one C++ runtime. arm64
+only; any other ABI has no library and the app says the model is not available on this
+phone. The CPU backend is seven libraries, one per ARM generation, and at start llama.cpp
+asks each what it can run here and keeps the best — which needs them extracted at install,
+so the app uses legacy (compressed) JNI packaging; it is also what keeps the APK small.
+`backends()` reports the pick: `libggml-cpu-android_armv8.2_2.so` (dot product, KleidiAI) on
+the M3 Max emulator, which has no i8mm; the S24 Ultra picked `armv8.6_1` in the benchmark.
+The JNI bridge (`buddy_llama.cpp`, ~500 lines) loads a model, renders a conversation through
+the model's own chat template with llama.cpp's Jinja engine and thinking off, streams UTF-8
+bytes back (never JNI's "modified" UTF-8, in which an emoji breaks), reuses the context's
+memory for a pure append, and stops between tokens or inside one through the abort
+callback. All of it runs on one dedicated thread (`LlamaThread`); only cancel and the thread
+count are touched from elsewhere, as atomics.
+
+**Module layout.**
+```
+third_party/llama.cpp                   the submodule, b11053
+android/llama/                          library module: CMake, JNI, consumer keep rules
+  src/main/cpp/buddy_llama.cpp          load · generate(messages | raw, sampling, sink) · cancel · threads · unload · backends
+  src/main/java/…/llama/LlamaNative.kt  the external functions, kept by name
+                        LlamaSession.kt LlamaThread, LlamaRuntime (availability), a Flow per answer
+android/app/…/ondevice/
+  ModelStore        noBackupFilesDir/models: <sha>.part (+ .part.json progress), <sha>.gguf, installed.json
+  ModelDownloader   the Mac's prepare, then one ranged transfer, then the phone's own SHA-256
+  ModelDownloads    the user-initiated job (14+), the dataSync service (10–13), Wi-Fi rule, notifications
+  OnDeviceEngine    load/answer/unload, guards, timers, trim-memory and thermal listeners
+  FallbackPolicy    when the phone is offered — the truth table
+  ResourceGuard     memory and heat, as rules
+  OnDeviceChat      what the chat needs (a test can stand in), and the phone's conversation store
+  ModelRuntime      the engine's two seams — llama.cpp and the phone — plus PhoneHistory's cap
+  PhoneModelsSection Settings → On this phone, with the consent dialog
+android/app/src/releaseProbe/…/OnDeviceProbe.kt
+                    the engine by name, for the instrumented tests — in the build they run
+                    on, never in the one the owner installs
+android/app/…/ui/  NotificationsNotice (notifications off, and the button that fixes it)
+                   ScreenPrivacy (keep the screen on while the phone writes; no Recents thumbnail)
+```
+
+**How the model gets to the phone — only through the Mac.** Settings → On this phone lists
+`GET /ondevice/models`: Qwen3.5 2B (1.3 GB, the default) and Gemma 4 E2B (3.35 GB, marked
+slower), with size, licence, what the owner's own S24 Ultra measured, and the phone's free
+space. Nothing moves until the consent dialog — name, size, licence, free space, and Wi-Fi
+only unless "use mobile data" is ticked for that download. Then: `prepare`, and the Mac's
+fetch followed (`/events` frames with `ondevice:<id>` and a stage, and the list polled
+beside them); the room for the whole file reserved with `StorageManager.allocateBytes`; one
+`GET …/file` into `<sha>.part`, resumed with `Range` and `If-Range` (a 206 is the rest; a 200
+means another file, so the partial goes; a 416 means the partial does not fit, so it goes; a
+409 means the Mac's copy is not ready, so it waits for it again; a 503 names the Mac's
+missing drive and stops); then the phone hashes it. A match is renamed into place. A
+mismatch is deleted, `prepare?verify=1` asked once, and the file fetched once more from zero;
+a second mismatch stops and keeps nothing. On Android 14+ this is a user-initiated data
+transfer job whose `NetworkRequest` asks for `NOT_METERED` with `NOT_VPN` removed (Tailscale
+is a VPN, and a default request would never be satisfied on the tailnet), and the job's own
+progress notification with Cancel; on 10–13 a `dataSync` foreground service that watches the
+default network, pauses when it is not free, and says so when it finally gives up.
+
+"Wi-Fi only" is tested as Android's own `NOT_METERED` rather than the Wi-Fi transport: a
+phone tethered to another phone is Wi-Fi and is somebody's data allowance. The tunnel is
+judged first, because on the owner's phone the default network *is* Tailscale: an unmetered
+tunnel is free, and a metered one is judged by the network underneath it — which keeps a
+tunnel over mobile data refused and a tunnel over the owner's own Wi-Fi allowed. The job's
+own constraint asks the system for the same thing. A download that
+stopped half-way is a gigabyte of the owner's storage with nothing on screen to show for it,
+so Settings says "42% of 1.19 MB is already here — paused" beside Resume and Delete, read
+off the disk and so unchanged by a restart; every model's row also says what it needs to run
+beside what the phone has free right now. The digest a model is named by is checked to be 64
+hex characters before it becomes a file name, the digest the Mac serves in
+`X-Content-SHA256` is compared against the one it listed, and a new pin deletes the file the
+old one left. A verified model is re-hashed before use if its size or modification time ever
+changes — before the preflight, and again in the load itself. The phone never leaves the
+tailnet: every request still goes through `TailnetHost`, which now also refuses to follow a
+redirect anywhere.
+
+A new conversation is the Mac's to make, on a Mac that keeps them — but only while it is
+answering. Out of reach, one is made here instead, with the offer on the screen beside it:
+a "+" that does nothing, and a tile whose "Ask on this phone" lands on a list rather than a
+composer, would make the phone's own model unreachable exactly when it is the only thing
+left that works. Such a conversation stays this device's — the Mac never heard of it, so it
+goes as plain history when the Mac comes back, is saved here, and sits in the list beside
+the Mac's own. A 404 from the Mac's conversation route means *that conversation*, not that
+route, so it falls back to history rather than ending the exchange: a Mac that has lost a
+conversation still answers the question. And a Mac that answers some routes while failing
+`/conversations` is asked again at most every thirty seconds, not on every dashboard poll.
+
+**The fallback.** `FallbackPolicy` offers the phone only when the Mac is out of reach —
+unreachable, the app not running, too slow, or no Mac paired (401 included) — a model is
+verified here, and this phone can run it; a Mac that answered and refused (no model loaded,
+busy, forbidden) is still the Mac answering. Never silent: "Your Mac isn't answering.
+[Answer on this phone] [Try again]", before a send when the probe already knows, and after a
+failed one — whose failed reply carries the same button. The tap starts a new conversation
+that lives only on the phone (`noBackupFilesDir/ondevice`, ids `phone-…`, listed apart as "On
+this phone — not synced"), and every answer in it carries the chip "On this phone · Qwen3.5
+2B" in its own bubble style, with the phone's own numbers. `ControlClient` refuses a `phone-`
+id outright, before a byte leaves. When the Mac is heard from again — a send, the probe, or
+the event stream reopening — the conversation offers "New Mac conversation" and "Send to
+Mac…", which asks first, says how many messages go, and starts a new Mac conversation
+carrying the exchange (in one quoted message, since the Mac's route takes one; as history to
+a Mac that keeps none); the phone keeps its copy. The Quick Settings tile looks at the Mac
+itself when the shade opens and says "Mac unreachable · phone model ready"; the widget says
+it too and offers "Ask on this phone"; both open `siliconbuddy://ask?offer=phone`, which
+shows the offer and answers nothing.
+
+**The guards**, from the owner's decisions of 2026-09-19. Memory: never load below the
+model's `minFreeMemoryBytes` from the Mac (3.1 GB for Qwen, 4.7 GB for Gemma) or while
+Android says memory is low, and name a smaller installed model that fits — "Use SmolLM2
+135M instead" on the emulator, whose 2.5 GB cannot hold Qwen. Heat: MODERATE drops a
+quarter of the threads, SEVERE half and keeps answering, CRITICAL or worse stops the answer
+("Stopped — phone too hot") and starts no new one; changes apply from the next token.
+Screen: an answer is written only while the app is in front — leaving stops it ("Stopped
+when you left the app.") — and the model is let go after 30 s in the background, at once on
+a background trim-memory signal, or after five idle minutes. While the phone is loading or
+writing, the screen is kept awake (`FLAG_KEEP_SCREEN_ON`), and cleared the moment it stops:
+a display that sleeps takes the app out of the foreground, and the app's own rule would then
+stop the answer it is in the middle of. A conversation the phone answered is also kept out
+of the Recents thumbnail. Threads come from the Mac's `recommended` block (Qwen 6 for the
+prompt, 4 for writing; Gemma 4/6), context 4096, thinking off. History: about 1,500 tokens
+of the newest turns go to the model — the prompt is read at about 120 tokens a second, so a
+long conversation would be a minute of silence before the first word — and a reply written
+without the beginning of the conversation says so under its chip.
+
+Stop, at any point: during the minute a model takes to arrive in memory it reaches
+llama.cpp's own load-cancel, and a load whose caller has gone is freed rather than left in
+memory nothing can reach. The question is written to the phone's disk before the load
+starts, not after the answer, so a process Android kills mid-load loses nothing.
+
+Two things the owner found on their own phone rather than here: notifications were never
+granted, and after two dismissals Android stops showing the dialog and `launch` does nothing
+at all — so the Agents tab and the Create queue now carry one line, "Notifications are off,
+so … won't reach you", with an Allow button that asks while asking still works and opens the
+app's notification settings once it does not. And the Quick Settings tile no longer records
+a slow answer as "Mac unreachable": Tailscale takes a few seconds to wake, and a timeout
+means nothing was learned.
+
+**Verified** on the SiliconBuddyM3 emulator (Android 16, arm64, 2.5 GB, mobile data only)
+against a stand-in Mac serving the real files through the real routes: Qwen3.5 2B (1.3 GB)
+and SmolLM2 fetched through Settings with consent and verified on the phone, the job's
+notification showing the copy; a Wi-Fi-only download waiting on mobile data and saying so;
+the offer after a send to an unreachable Mac; Qwen refused for memory with SmolLM2 offered,
+and SmolLM2's labelled answer; and — on an install with no instrumentation attached, since
+Android pins an instrumented process to the foreground and refuses it — `am send-trim-memory
+… BACKGROUND` unloading the model 15 ms later, inside the 30 s grace.
+
+Tests: Android 629 unit (94 new: the fallback truth table and what counts as out of reach;
+the downloader over a socket against a fake Mac — fetch, 40% cut and resume with Range and
+If-Range, 200 restart, 416, 409, 503, a mismatch leading to `verify=1` once and a clean
+refetch, a second mismatch keeping nothing, a full disk, the Mac's own failure, a cancel
+keeping the partial; heat and memory as tables; trim levels; the Wi-Fi rule; the chat's
+offer, answer, isolation — zero Mac calls for a phone conversation, and the client refusing
+its id without a byte — refusal and alternative, Try again, Send to Mac; the store; the
+thinking splitter; the tile, widget and link lines; and the contract — and, after the
+review: a load whose caller is cancelled being freed rather than left in memory, the engine
+refusing for memory and stopping for heat with llama.cpp and the phone both stood in for, a
+file that changed under it, a Mac unreachable at launch being asked again when it comes
+back, the question saved before the model is loaded, the screen kept awake, the newest
+turns only, metered Wi-Fi, a digest that is not a digest, a new pin replacing the old file,
+the Mac serving a different file than it listed, a 404 from a conversation route, and a
+redirect the client refuses to follow; and after the second review: "+" and the tile's link
+opening a composer with the offer while the Mac is out of reach, a Mac that goes away
+mid-request, the floor between asks on a Mac that answers some routes and not others, and
+each way a Tailscale tunnel can present itself; and after the third: a conversation made
+while the Mac was away being answered the moment it returns, one the Mac has forgotten being
+answered rather than refused, and opening either of them), 21 instrumented on the minified release
+build (15 new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of
+their own). Every protection was checked by undoing it and seeing a test fail (14 mutants
+in the first round, 5 for the first review's fixes, 5 for the second's and 4 for the
+third's, all caught).
+Release APK 17,933,637 bytes
+(13,920,891 at M4); the llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in
+the APK. `scripts/ci-android.sh` is the local CI: unit tests — both modules, forced with
+`--rerun`, because an up-to-date test task prints nothing and passes, which is a gate that
+can pass without running anything — the release build, R8's `seeds.txt` for the widget
+callbacks, 83 serializers (75 at M4), every `LlamaNative` JNI method and the sink, the test
+probe kept in the build the tests run on and *absent* from the one the owner installs, the
+bridge's own imported symbols (nothing that reaches a network or starts a process), the
+SHA-256 of the KleidiAI archive llama.cpp fetched, each native library present, compressed
+and stripped, and the APK under 30 MB; `--connected` adds the instrumented tests in two
+passes, `--ios` the iOS suite.
+
+The instrumented tests (`OnDeviceModelTest`, with `StandInMac` reaching the stand-in at
+10.0.2.2, not `adb reverse`): stories260K
+(`ggml-org/test-model-stories260K@479896ec…`, sha256 `270cba1b…`) writes, greedy, the same 32
+tokens upstream's own `llama-simple` wrote from the same pinned build on the same emulator,
+and again after a reload; the CPU variant is one `/proc/cpuinfo` allows; SmolLM2 135M Q8_0
+(`bartowski/SmolLM2-135M-Instruct-GGUF@09816acd…`, `5a139571…`) streams tokens to a
+finished event with its numbers, stops within 500 ms of a cancel, and gives its memory back
+on unload; SmolLM2's own template renders the conversation, and Qwen3.5 2B's — read from the
+real 1.3 GB file's vocabulary, since its weights do not fit this emulator — closes an empty
+thinking block before the answer (thinking off, as the Mac recommends) and opens one only
+when asked; pressing HOME stops the answer at once and unloads after the grace; a background
+trim unloads at once; a model comes through Settings — waiting on mobile data, then
+consented to — and is verified; a download stopped half-way says how much is here and
+offers Resume and Delete, unchanged by a trip to Home; and an unreachable Mac offers the
+phone, whose answer carries its chip, holds the screen awake while it writes and lets go
+the moment it stops, and never reaches the Mac; and — from a phone that had already talked
+to its Mac, which is what made this a regression rather than a gap — the tile's link and
+the "+" button each open a composer with the offer on it while the Mac is gone. Then a second pass, on the fresh install
+every run begins with: `NotificationsOffTest` alone, because another class grants
+notifications for the whole of the first pass, checking the owner's own case — nothing
+granted, and the Agents tab and the Create queue each say so, with Allow. The stand-in
+(`demo_mac.py` with the `/ondevice` routes and switches for dropping, corrupting, refusing
+and going away) runs on the host: `standin.sh start` in the M5 stand-in folder.
+
+Not done, and why:
+
+0. **An empty conversation left on the Mac.** If `createConversation` times out after the
+   Mac has already made one, the app makes its own here and the Mac is left with an empty
+   "New conversation" nobody asked for. The reply that would have named it never arrived,
+   so there is no id to clean up by; it appears in the list and can be deleted there.
+1. **The real phone.** Nothing here touched the owner's S24 Ultra. The benchmark there
+   (llama-bench, 2026-09-19) is where the Mac's numbers come from; the app's own time to
+   first word, speed, heat, the i8mm pick through the app, One UI's memory killer against a
+   loaded model, and the notification's look are the owner's to see.
+2. **The GPU.** The Adreno OpenCL backend stays for later, behind a flag, once measured.
+3. **Android 10–13** run the download in a `dataSync` foreground service; it compiles and its
+   network rule is unit-tested, but there is no API 29–33 image on this Mac to run it on,
+   and installing one is an SDK change to ask about first.
+4. **Two design tests left to the rules**: `cmd thermalservice override-status` and turning
+   the emulator's Wi-Fi off are device settings, so heat is tested as a table and the Wi-Fi
+   rule through the emulator's own lack of Wi-Fi. The 16 KB-page emulator image is another
+   SDK install to ask about; NDK 29 already aligns the libraries to 16 KB.
+5. **Qwen3.5 re-reads the conversation each turn.** Its memory is partly recurrent and cannot
+   be cut back to a shared prefix, and its template re-renders earlier answers differently,
+   so only a model with a plain cache reuses the prefix. At ~120 tokens a second of prompt
+   on the S24, a long conversation costs seconds; llama.cpp's recurrent-state snapshots are
+   experimental in b11053.
+6. **The design's crash rule** (after a low-memory kill mid-answer, switch to the smaller
+   model) and the thermal-headroom poll were superseded by the owner's memory and heat
+   rules and are not built.
+7. **iPad**: types and contract tests only. The same GGUF runs through llama.cpp's
+   XCFramework when iOS catches up.
 
 ## Further suggestions (not yet decided)
 - Approvals with real push (APNs/FCM sent by the Mac) once a paid Apple Developer account exists.

@@ -85,6 +85,11 @@ import dev.siliconoptimizer.buddy.media.MediaNotifier
 import dev.siliconoptimizer.buddy.media.MediaViewModel
 import dev.siliconoptimizer.buddy.modelsui.ModelsScreen
 import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
+import dev.siliconoptimizer.buddy.ondevice.OnDeviceEngine
+import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
+import dev.siliconoptimizer.buddy.ondevice.PhoneModelsSection
+import dev.siliconoptimizer.buddy.ondevice.PhoneModelsViewModel
+import dev.siliconoptimizer.buddy.transport.Reachability
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
@@ -138,6 +143,8 @@ class MainActivity : ComponentActivity() {
         // The stream and the metrics this activity closed when it left the screen open
         // again. Only those: a first start is opened by the screen itself, once.
         dashboard.resumeLiveUpdates()
+        // The phone's model keeps its idle clock again, rather than the background one.
+        OnDeviceEngine.existing()?.appCameToForeground()
         if (events.resume()) {
             // Whatever the render queue did meanwhile was said to nobody; read it once, so a
             // clip that finished is announced now rather than never.
@@ -158,6 +165,9 @@ class MainActivity : ComponentActivity() {
         // priority. The watcher holds a stream of its own; these close until the app is back.
         events.pause()
         dashboard.pauseLiveUpdates()
+        // An answer on the phone is only written while the app is in front: leaving stops
+        // it, and the model is let go after thirty seconds unless the owner comes back.
+        OnDeviceEngine.existing()?.appLeftForeground()
         val watched = agents.watchedTurns
         if (watched.isNotEmpty() && AgentNotifier(this).isAllowed) {
             AgentWatchService.start(this, watched)
@@ -180,6 +190,8 @@ class MainActivity : ComponentActivity() {
         // A finished render's notification opens the queue. Not a link: nothing outside
         // this app can send it, and it asks for a screen rather than for an action.
         if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_QUEUE) return LinkArrival.OpenQueue
+        // A phone-model download's notification: Settings, where that model's row is.
+        if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_PHONE_MODELS) return LinkArrival.OpenPhoneModels
         // An approval's notification opens its session. The same kind of request: a
         // screen, never a decision.
         if (intent?.getStringExtra(EXTRA_OPEN) == OPEN_AGENTS) {
@@ -199,9 +211,10 @@ class MainActivity : ComponentActivity() {
             val link = BuddyLink.parse(
                 data.scheme, data.host ?: data.path?.trim('/'),
                 data.getQueryParameter("text"), data.getQueryParameter("id"),
+                data.getQueryParameter("offer"),
             )
         ) {
-            is BuddyLink.Compose -> LinkArrival.Compose(link.text)
+            is BuddyLink.Compose -> LinkArrival.Compose(link.text, link.offerPhone)
             is BuddyLink.Conversation -> LinkArrival.OpenConversation(link.id)
             BuddyLink.Pair, null -> try {
                 LinkArrival.Invite(PairingInvite.parse(data))
@@ -216,6 +229,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OPEN = "dev.siliconoptimizer.buddy.OPEN"
         const val OPEN_QUEUE = "queue"
         const val OPEN_AGENTS = "agents"
+        const val OPEN_PHONE_MODELS = "phone-models"
         const val EXTRA_ENGINE = "dev.siliconoptimizer.buddy.ENGINE"
         const val EXTRA_APPROVAL = "dev.siliconoptimizer.buddy.APPROVAL"
     }
@@ -226,8 +240,15 @@ sealed interface LinkArrival {
     data class Invite(val invite: PairingInvite) : LinkArrival
     data class Refused(val reason: String) : LinkArrival
 
-    /** Open the composer, with this typed into it. Never sent. */
-    data class Compose(val text: String?) : LinkArrival
+    /**
+     * Open the composer, with this typed into it. Never sent. [offerPhone] shows "Answer on
+     * this phone" as well — the tile and the widget ask for it when the Mac was unreachable
+     * — and still nothing is answered until it is tapped.
+     */
+    data class Compose(val text: String?, val offerPhone: Boolean = false) : LinkArrival
+
+    /** Settings, where the phone's own models are. */
+    data object OpenPhoneModels : LinkArrival
     data class OpenConversation(val id: String) : LinkArrival
 
     /** Show the render queue: where a job that just finished can be looked at. */
@@ -266,6 +287,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     val media: MediaViewModel = viewModel()
     val machines: MachinesViewModel = viewModel()
     val agents: AgentsViewModel = viewModel()
+    val phoneModels: PhoneModelsViewModel = viewModel()
 
     // Saved rather than merely remembered. Two things take this activity away and bring
     // it back: a configuration change the manifest does not absorb — font scale is the
@@ -283,9 +305,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     var pairing by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
+    // A new conversation on a Mac that keeps them is made *there*, which is a round trip:
+    // the id to open does not exist at the moment the button is tapped. This says to open
+    // whichever conversation the chat lands on next.
+    var openingNew by remember { mutableStateOf(false) }
     var openAgent by rememberSaveable { mutableStateOf<String?>(null) }
     var agentMenu by remember { mutableStateOf(false) }
     var confirmingAgent by remember { mutableStateOf<Confirm?>(null) }
+    var chatMenu by remember { mutableStateOf(false) }
+    var confirmingSendToMac by remember { mutableStateOf(false) }
 
     // Every agent route runs commands on the Mac, so a device paired for chat does not get
     // the tab at all — Settings says why in one line. A destination saved before the scope
@@ -305,9 +333,20 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             is LinkArrival.Refused -> refusedLink = arrival.reason
             is LinkArrival.Compose -> {
                 destination = Destination.Chat
-                if (chat.current == null) chat.newConversation()
+                // The offer first: the tile and the widget only send this when *they* found
+                // the Mac unreachable, and a chat that knows that makes the conversation here
+                // instead of asking a Mac that will not answer — which is the difference
+                // between a composer and a spinner over a list.
+                if (arrival.offerPhone) chat.offerFromShortcut()
+                if (chat.current == null) chat.newConversation(app.transport)
                 openConversation = chat.current?.id
+                openingNew = openConversation == null
                 arrival.text?.let { chat.draft = it }
+                arriving.value = null
+            }
+            LinkArrival.OpenPhoneModels -> {
+                if (destination != Destination.Settings) settingsFrom = destination
+                destination = Destination.Settings
                 arriving.value = null
             }
             is LinkArrival.OpenConversation -> {
@@ -346,6 +385,49 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         }
     }
 
+    // Whether the Mac can answer decides whether the phone offers to. The probe's answer
+    // goes to the chat — which shows "Answer on this phone" before anything is sent when the
+    // Mac is already known to be out of reach — and to the tile and the widget.
+    LaunchedEffect(app.reachability, app.config) {
+        chat.noteReachability(app.reachability, app.isPaired)
+        when (app.reachability) {
+            is Reachability.Ready -> SnapshotStore(context).noteMacReachable(true)
+            is Reachability.Unreachable, Reachability.AppNotRunning -> SnapshotStore(context).noteMacReachable(false)
+            else -> Unit
+        }
+    }
+
+    // The event stream coming back is the quickest news that the Mac is answering again.
+    LaunchedEffect(events.isLive) {
+        if (events.isLive) chat.noteStreamLive()
+    }
+
+    // …and on a Mac with no event stream, the dashboard's polling is the news instead.
+    // Settings → On this phone listens to the same news: its list of models comes from the
+    // Mac, and a Mac that was out of reach when it was opened leaves it saying so.
+    LaunchedEffect(dashboard.macAnsweredAt) {
+        if (dashboard.macAnsweredAt > 0L) {
+            chat.noteMacAnswered()
+            phoneModels.macIsBack(app.transport, app.canControl)
+        }
+    }
+
+    LaunchedEffect(events.isLive) {
+        if (events.isLive) phoneModels.macIsBack(app.transport, app.canControl)
+    }
+
+    // A conversation the chat moved to by itself — the phone's own, answering; a new one on
+    // the Mac from "Send to Mac…" or "New Mac conversation" — is the open one now, so it is
+    // the one a restart comes back to. Only while a conversation is open: the list stays
+    // the list.
+    LaunchedEffect(chat.current?.id) {
+        val id = chat.current?.id ?: return@LaunchedEffect
+        if (destination == Destination.Chat && (openingNew || (openConversation != null && id != openConversation))) {
+            openConversation = id
+            openingNew = false
+        }
+    }
+
     // Answer checks arrive after the reply they are about, on the shared event stream,
     // so they are applied wherever the chat screen happens to be.
     LaunchedEffect(events.verdicts.size, openConversation) {
@@ -371,6 +453,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         agents.reset()
         openAgent = openAgent.takeIf { app.canControl }
         if (app.canControl) agents.refresh(app.transport)
+        phoneModels.refresh(app.transport, app.canControl)
         events.start(app.transport)
     }
 
@@ -478,11 +561,42 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
-                        Destination.Chat -> IconButton(onClick = {
-                            chat.newConversation()
-                            openConversation = chat.current?.id
-                        }) {
-                            Icon(Icons.Filled.Add, contentDescription = "New conversation")
+                        Destination.Chat -> {
+                            if (chat.current?.onDevice == true && app.transport != null) {
+                                IconButton(onClick = { chatMenu = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "Conversation actions")
+                                }
+                                DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text(OnDeviceNotices.SEND_TO_MAC) },
+                                        // Not while the phone is still writing: half an
+                                        // answer is not what anybody means to send.
+                                        enabled = chat.sendableCount > 0 && !chat.isSending,
+                                        onClick = {
+                                            chatMenu = false
+                                            confirmingSendToMac = true
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(OnDeviceNotices.NEW_MAC_CONVERSATION) },
+                                        onClick = {
+                                            chatMenu = false
+                                            chat.newMacConversation(app.transport)
+                                        },
+                                    )
+                                }
+                            }
+                            IconButton(onClick = {
+                                // With the transport: on a Mac that keeps conversations, a
+                                // new one belongs there, and one made without it is a
+                                // device-only conversation the Mac never hears about.
+                                chat.newConversation(app.transport)
+                                openConversation = chat.current?.id
+                                // Made on the Mac: the effect above opens it when it lands.
+                                openingNew = openConversation == null
+                            }) {
+                                Icon(Icons.Filled.Add, contentDescription = "New conversation")
+                            }
                         }
                         Destination.Machines -> IconButton(onClick = {
                             machines.refresh(app.transport)
@@ -647,7 +761,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 Destination.Machines -> MachinesScreen(app, machines, Modifier.fillMaxSize())
                 Destination.Models -> ModelsScreen(app, models, events, Modifier.fillMaxSize())
                 Destination.Chat -> {
-                    if (!wide && openConversation == null && chat.conversations.isNotEmpty()) {
+                    if (!wide && openConversation == null &&
+                        (chat.conversations.isNotEmpty() || chat.phoneConversations.isNotEmpty())
+                    ) {
                         ConversationList(chat, app) { openConversation = it }
                     } else {
                         // Keyed on readiness as well as on the id: a restored id
@@ -655,14 +771,31 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                         // at all, and opening then yields an empty transcript with the
                         // right title. Re-runs once the answer is in.
                         LaunchedEffect(openConversation, chat.askedAboutConversations) {
-                            openConversation?.let { chat.open(it, app.transport) }
+                            // Not again when the chat already has it — the case where the
+                            // chat moved there itself, possibly mid-answer.
+                            openConversation?.let { if (chat.current?.id != it) chat.open(it, app.transport) }
                         }
                         ChatScreen(app, chat, Modifier.fillMaxSize())
                     }
                 }
-                Destination.Settings -> SettingsScreen(app, chat, events) { pairing = true }
+                Destination.Settings -> SettingsScreen(app, chat, events, phoneModels) { pairing = true }
             }
         }
+    }
+
+    if (confirmingSendToMac) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmingSendToMac = false },
+            title = { Text("Send to your Mac?") },
+            text = { Text(OnDeviceNotices.sendToMacQuestion(chat.sendableCount, app.macDisplayName)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingSendToMac = false
+                    chat.sendToMac(app.transport)
+                }) { Text("Send ${chat.sendableCount}") }
+            },
+            dismissButton = { TextButton(onClick = { confirmingSendToMac = false }) { Text("Keep it here") } },
+        )
     }
 
     confirmingAgent?.let { confirm ->
@@ -755,6 +888,42 @@ private fun ConversationList(
     onOpen: (String) -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
+        // Conversations the phone answered itself: their own section, and never the Mac's.
+        if (chat.phoneConversations.isNotEmpty()) {
+            item {
+                Text(
+                    OnDeviceNotices.SECTION,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
+                )
+            }
+            items(chat.phoneConversations, key = { it.id }) { conversation ->
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    TextButton(onClick = { onOpen(conversation.id) }) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(conversation.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${conversation.messageCount} messages · on this phone",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider()
+            }
+            if (chat.conversations.isNotEmpty()) {
+                item {
+                    Text(
+                        "From your Mac",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
+                    )
+                }
+            }
+        }
         items(chat.conversations, key = { it.id }) { conversation ->
             Column(
                 modifier = Modifier
@@ -790,6 +959,7 @@ private fun SettingsScreen(
     app: AppState,
     chat: ChatViewModel,
     events: EventFeed,
+    phoneModels: PhoneModelsViewModel,
     onPair: () -> Unit,
 ) {
     // A clock that runs only while the stream is down, so the "next try in Ns" line
@@ -933,6 +1103,14 @@ private fun SettingsScreen(
                     "you hold the button.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item {
+            HorizontalDivider()
+            PhoneModelsSection(
+                model = phoneModels,
+                macFrames = events.phoneModels,
+                onRefresh = { phoneModels.refresh(app.transport, app.canControl) },
             )
         }
         item {

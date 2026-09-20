@@ -203,7 +203,21 @@ data class DownloadProgress(
     val bytesPerSecond: Double? = null,
     /** The Mac's own 0–1, which knows about resumed downloads and this does not. */
     val fraction: Double? = null,
+    /** Why it stopped, when it failed — or "Removed from the Mac before it finished." */
+    val error: String? = null,
+    /**
+     * What an unfinished transfer with more than one step is doing: a model the Mac keeps
+     * for this phone is `fetching`, then `checking`, and `moving` when the library moves.
+     * Absent when it is done, and on the Mac's own model downloads.
+     */
+    val stage: String? = null,
 ) {
+    /** Whether this is the Mac fetching one of the phone's own models. */
+    val isPhoneModel: Boolean get() = id.startsWith(PhoneModel.DOWNLOAD_EVENT_PREFIX)
+
+    /** The phone model's catalogue id, for a frame that is about one. */
+    val phoneModelID: String? get() = id.takeIf { isPhoneModel }?.removePrefix(PhoneModel.DOWNLOAD_EVENT_PREFIX)
+
     val progress: Double?
         get() = fraction?.coerceIn(0.0, 1.0)
             ?: bytesExpected?.takeIf { it > 0 }?.let {

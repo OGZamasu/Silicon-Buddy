@@ -1,0 +1,92 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "400" : {
+      "error" : "verify takes 1 or true to have the Mac check its copy again, or 0 or false (the same as leaving it out) for an ordinary prepare."
+    },
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No phone model with that id. GET \/ondevice\/models lists the ones this Mac can fetch for a phone."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "503" : {
+      "error" : "The drive “External SSD” that holds this Mac's model library is not connected, and the phone models are kept beside the library. Connect it and try again — the Mac will not put them on its startup disk instead."
+    },
+    "507" : {
+      "error" : "There is not enough space for Gemma 4 E2B on the drive the phone models are kept on: it needs 3.3 GB, and 12.9 GB is free, of which 10.7 GB is kept free so a download cannot fill the drive. Free about 1.2 GB there, then try again."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not fetch or manage the models this Mac keeps for your phone. They are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    }
+  },
+  "method" : "POST",
+  "path" : "\/ondevice\/models\/{id}\/prepare",
+  "request" : null,
+  "response" : {
+    "id" : "gemma-4-e2b-q4_0",
+    "isDefault" : false,
+    "label" : "Gemma 4 E2B",
+    "licence" : "Apache-2.0",
+    "measured" : {
+      "conditions" : "phone hot and charging",
+      "device" : "Galaxy S24 Ultra",
+      "firstWordEstimated" : true,
+      "peakMemoryBytes" : 4336910336,
+      "peakMemoryContextTokens" : 640,
+      "promptTokensPerSecond" : 92.599999999999994,
+      "runtime" : "llama.cpp b11053, CPU",
+      "secondsToFirstWord300" : 3.2999999999999998,
+      "sustainedMeasured" : true,
+      "sustainedTokensPerSecond" : 7.5,
+      "threadSweep" : [
+        {
+          "threads" : 4,
+          "tokensPerSecond" : 14.1
+        },
+        {
+          "threads" : 6,
+          "tokensPerSecond" : 15.1
+        }
+      ],
+      "tokensPerSecond" : 15.1
+    },
+    "onMac" : {
+      "fraction" : 0,
+      "stage" : "fetching",
+      "state" : "downloading"
+    },
+    "recommended" : {
+      "contextLength" : 4096,
+      "minFreeMemoryBytes" : 4700000000,
+      "thinking" : false,
+      "threadsGenerate" : 6,
+      "threadsPrompt" : 4
+    },
+    "sha256" : "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+    "sizeBytes" : 3349516256,
+    "slowerOnPhone" : true,
+    "source" : {
+      "commit" : "675cff42a74c774d6cb76f76d8eacb49b48c9b93",
+      "file" : "gemma-4-E2B_q4_0-it.gguf",
+      "repo" : "google\/gemma-4-E2B-it-qat-q4_0-gguf"
+    }
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Have the Mac fetch the pinned file from Hugging Face and verify it. 202 with the entry while it is on its way — started now, resumed, or already running — and 200 once it is ready. Progress arrives on \/events as `download` frames with the id `ondevice:<id>`. `?verify=1` has the Mac hash a ready copy again first: call it once when the file you fetched does not hash to `sha256`, then fetch from zero."
+}

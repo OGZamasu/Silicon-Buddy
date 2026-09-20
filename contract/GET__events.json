@@ -135,6 +135,61 @@
         "turnActive" : true
       }
     },
+    "download" : {
+      "phone model" : {
+        "bytesExpected" : 3349516256,
+        "bytesPerSecond" : 48234496,
+        "bytesReceived" : 837379064,
+        "fraction" : 0.25,
+        "id" : "ondevice:gemma-4-e2b-q4_0",
+        "name" : "Gemma 4 E2B for your phone",
+        "stage" : "fetching"
+      },
+      "phone model checking" : {
+        "bytesExpected" : 1296764000,
+        "bytesPerSecond" : 0,
+        "bytesReceived" : 648382000,
+        "fraction" : 0.5,
+        "id" : "ondevice:qwen3.5-2b-q4_0",
+        "name" : "Qwen3.5 2B for your phone",
+        "stage" : "checking"
+      },
+      "phone model failed" : {
+        "bytesExpected" : 3349516256,
+        "bytesPerSecond" : 0,
+        "bytesReceived" : 0,
+        "error" : "Gemma 4 E2B arrived but did not match its published checksum, so the Mac deleted it. Prepare it again to download it afresh.",
+        "fraction" : 0,
+        "id" : "ondevice:gemma-4-e2b-q4_0",
+        "name" : "Gemma 4 E2B for your phone"
+      },
+      "phone model moving" : {
+        "bytesExpected" : 3349516256,
+        "bytesPerSecond" : 0,
+        "bytesReceived" : 0,
+        "fraction" : 0,
+        "id" : "ondevice:gemma-4-e2b-q4_0",
+        "name" : "Gemma 4 E2B for your phone",
+        "stage" : "moving"
+      },
+      "phone model ready" : {
+        "bytesExpected" : 1296764000,
+        "bytesPerSecond" : 0,
+        "bytesReceived" : 1296764000,
+        "fraction" : 1,
+        "id" : "ondevice:qwen3.5-2b-q4_0",
+        "name" : "Qwen3.5 2B for your phone"
+      },
+      "phone model removed" : {
+        "bytesExpected" : 3349516256,
+        "bytesPerSecond" : 0,
+        "bytesReceived" : 0,
+        "error" : "Removed from the Mac before it finished.",
+        "fraction" : 0,
+        "id" : "ondevice:gemma-4-e2b-q4_0",
+        "name" : "Gemma 4 E2B for your phone"
+      }
+    },
     "job" : {
       "failed" : {
         "id" : "9C2F-0003",

@@ -1,0 +1,83 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No phone model with that id. GET \/ondevice\/models lists the ones this Mac can fetch for a phone."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "503" : {
+      "error" : "The drive “External SSD” that holds this Mac's model library is not connected, and the phone models are kept beside the library. Connect it and try again — the Mac will not put them on its startup disk instead."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not fetch or manage the models this Mac keeps for your phone. They are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    }
+  },
+  "method" : "DELETE",
+  "path" : "\/ondevice\/models\/{id}",
+  "request" : null,
+  "response" : {
+    "id" : "qwen3.5-2b-q4_0",
+    "isDefault" : true,
+    "label" : "Qwen3.5 2B",
+    "licence" : "Apache-2.0",
+    "measured" : {
+      "conditions" : "phone hot and charging",
+      "device" : "Galaxy S24 Ultra",
+      "firstWordEstimated" : true,
+      "peakMemoryBytes" : 2586836992,
+      "peakMemoryContextTokens" : 640,
+      "promptTokensPerSecond" : 122.90000000000001,
+      "runtime" : "llama.cpp b11053, CPU",
+      "secondsToFirstWord300" : 2.5,
+      "sustainedMeasured" : false,
+      "threadSweep" : [
+        {
+          "threads" : 4,
+          "tokensPerSecond" : 19.199999999999999
+        },
+        {
+          "threads" : 6,
+          "tokensPerSecond" : 17.199999999999999
+        }
+      ],
+      "tokensPerSecond" : 19.199999999999999
+    },
+    "onMac" : {
+      "state" : "absent"
+    },
+    "recommended" : {
+      "contextLength" : 4096,
+      "minFreeMemoryBytes" : 3100000000,
+      "thinking" : false,
+      "threadsGenerate" : 4,
+      "threadsPrompt" : 6
+    },
+    "sha256" : "91c102fc9a86de80e427057ee938e1e34fcaf3bba956b7296e252406e05f36f6",
+    "sizeBytes" : 1296764000,
+    "slowerOnPhone" : false,
+    "source" : {
+      "commit" : "7d26695454df6de5fbcce2e58681e62dae06ce43",
+      "file" : "Qwen_Qwen3.5-2B-Q4_0.gguf",
+      "repo" : "bartowski\/Qwen_Qwen3.5-2B-GGUF"
+    }
+  },
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "Delete the Mac's copy and any partial download, stopping a fetch in flight. Idempotent; answers the entry as it now is."
+}

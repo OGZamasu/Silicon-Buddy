@@ -1,0 +1,44 @@
+{
+  "auth" : "device",
+  "errors" : {
+    "401" : {
+      "error" : "Invalid or missing control token."
+    },
+    "403" : {
+      "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
+    },
+    "404" : {
+      "error" : "No phone model with that id. GET \/ondevice\/models lists the ones this Mac can fetch for a phone."
+    },
+    "409" : {
+      "error" : "This Mac does not have that model ready yet. Ask for it with POST \/ondevice\/models\/{id}\/prepare, and fetch it once GET \/ondevice\/models says it is ready."
+    },
+    "411" : {
+      "error" : "This server needs a Content-Length. Chunked bodies are not read."
+    },
+    "413" : {
+      "error" : "That request body is larger than this device may send (4194304 bytes)."
+    },
+    "416" : {
+      "error" : "That byte range is not inside this file."
+    },
+    "503" : {
+      "error" : "The drive “External SSD” that holds this Mac's model library is not connected, and the phone models are kept beside the library. Connect it and try again — the Mac will not put them on its startup disk instead."
+    }
+  },
+  "errorVariants" : {
+    "403" : {
+      "swarm" : {
+        "error" : "A swarm node may not fetch or manage the models this Mac keeps for your phone. They are for the owner's own devices: pair one from Settings → Silicon Buddy."
+      }
+    }
+  },
+  "method" : "GET",
+  "path" : "\/ondevice\/models\/{id}\/file",
+  "request" : null,
+  "response" : null,
+  "scopes" : [
+    "full"
+  ],
+  "summary" : "The verified file. Answers bytes, not JSON: `application\/octet-stream`, `Content-Length`, `Accept-Ranges: bytes`, an `ETag` that is the quoted SHA-256, `X-Content-SHA256` and `Content-Disposition: attachment`. 206 for a `Range` — `bytes=N-` resumes with exactly the rest — and 304 for a matching `If-None-Match`. Resume with `If-Range` set to the `ETag`: a 200 to that request means the file is not the one you started, so discard the partial and keep the whole body."
+}

@@ -26,6 +26,8 @@ class LoopbackServer : AutoCloseable {
         val chunks: List<ByteArray>? = null,
         /** Close the connection straight after answering. */
         val closeAfter: Boolean = true,
+        /** Anything else the Mac would send: `Location`, for one. */
+        val extraHeaders: Map<String, String> = emptyMap(),
     )
 
     data class Received(
@@ -61,9 +63,9 @@ class LoopbackServer : AutoCloseable {
 
     // MARK: - What it answers
 
-    fun reply(path: String, status: Int, body: String) {
+    fun reply(path: String, status: Int, body: String, headers: Map<String, String> = emptyMap()) {
         synchronized(lock) {
-            repliesByPath[path] = Reply(status, body.toByteArray())
+            repliesByPath[path] = Reply(status, body.toByteArray(), extraHeaders = headers)
         }
     }
 
@@ -174,6 +176,7 @@ class LoopbackServer : AutoCloseable {
                 append("HTTP/1.1 ${reply.status} ${if (reply.status == 200) "OK" else "Error"}\r\n")
                 append("Content-Type: ${reply.contentType}\r\n")
                 append("Content-Length: ${reply.body.size}\r\n")
+                reply.extraHeaders.forEach { (name, value) -> append("$name: $value\r\n") }
                 append("Connection: close\r\n\r\n")
             }
             output.write(head.toByteArray())

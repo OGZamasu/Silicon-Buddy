@@ -83,17 +83,38 @@ class RestoreAfterDeathTest {
     fun tearDown() = Dispatchers.resetMain()
 
     /**
-     * The bug itself. A restored id, handed back before anything has been asked, must
-     * not become an empty transcript.
+     * The bug itself. A restored id, handed back before anything has been asked, must not
+     * become an empty transcript — so opening it waits for the Mac to say what it keeps,
+     * and then opens the real thing.
      */
     @Test
-    fun `an id restored before the Mac has been asked does not invent a transcript`() = runTest {
+    fun `an id restored before the Mac has been asked waits for the answer rather than inventing a transcript`() = runTest {
         assertTrue("precondition", !model.askedAboutConversations)
 
         model.open("c-1", mac)
 
-        assertNull("An empty conversation was fabricated", model.current)
-        assertEquals("The Mac should not have been asked yet", 0, mac.conversationCalls)
+        assertEquals("c-1", awaitCurrentId())
+        assertEquals("the Mac's own transcript, not an empty one", 2, model.current?.messages?.size)
+        assertEquals("Start in Alfama early.", model.current?.messages?.last()?.content)
+        assertTrue(model.askedAboutConversations)
+        assertEquals(1, mac.conversationCalls)
+    }
+
+    /**
+     * And when the Mac cannot be asked at all, nothing is invented: the conversation is
+     * probably on it, and an empty transcript under its id reads as the Mac having lost it.
+     */
+    @Test
+    fun `a Mac that cannot be reached leaves a restored id unopened`() = runTest {
+        val unreachable = object : HangingTransport() {
+            override suspend fun conversations(): List<ConversationSummary> =
+                throw dev.siliconoptimizer.buddy.transport.TransportError.Unreachable("100.64.0.9")
+        }
+
+        model.open("c-1", unreachable)
+
+        assertNull("An empty conversation was fabricated", awaitCurrentId(timeoutMs = 500))
+        assertTrue("and the question stays open for when it is back", !model.askedAboutConversations)
     }
 
     /** And once the answer is in, the same id opens the real thing. */

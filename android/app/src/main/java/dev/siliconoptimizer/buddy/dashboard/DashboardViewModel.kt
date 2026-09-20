@@ -29,6 +29,17 @@ class DashboardViewModel : ViewModel() {
 
     var status by mutableStateOf<Status?>(null)
         private set
+
+    /**
+     * When the Mac last answered anything here, as a clock reading.
+     *
+     * The dashboard asks the Mac every few seconds whether anyone is watching the chat or
+     * not, so it is usually the first to know that a Mac which was out of reach is back —
+     * earlier than the reachability probe, and without a stream. The chat reads this to take
+     * its "answer on this phone" offer down.
+     */
+    var macAnsweredAt by mutableStateOf(0L)
+        private set
     var profile by mutableStateOf<Profile?>(null)
         private set
     var metrics by mutableStateOf<Metrics?>(null)
@@ -108,6 +119,7 @@ class DashboardViewModel : ViewModel() {
             error = if (newStatus == null && newProfile == null && newMetrics == null) {
                 "Couldn't reach the Mac."
             } else {
+                macAnsweredAt = System.currentTimeMillis()
                 null
             }
             newStatus?.let { status = it }
@@ -136,7 +148,10 @@ class DashboardViewModel : ViewModel() {
                 delay(seconds * 1000)
                 val read = runCatching { transport.metrics() }
                 if (read.exceptionOrNull() is TransportError.Unauthorized) return@launch markUnpaired()
-                read.getOrNull()?.let { metrics = it }
+                read.getOrNull()?.let {
+                    metrics = it
+                    macAnsweredAt = System.currentTimeMillis()
+                }
                 // The status card comes from the event stream when the Mac has one.
                 if (pollsStatus) {
                     val asked = runCatching { transport.status() }

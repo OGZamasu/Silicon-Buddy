@@ -23,6 +23,17 @@ data class BuddySnapshot(
     val lastQuestion: String? = null,
     val lastAnswer: String? = null,
     val updatedAt: Long = 0L,
+    /**
+     * The phone model's name when the last answer came from the phone rather than the Mac,
+     * so a widget can label it as the chat does.
+     */
+    val lastAnswerOnPhone: String? = null,
+    /**
+     * Whether the Mac answered the last time anything here asked — the app, the widget or
+     * the tile — and when. Null until something has asked.
+     */
+    val macReachable: Boolean? = null,
+    val macCheckedAt: Long = 0L,
 ) {
     /** What the widget puts on its one line when nothing is loaded. */
     val modelLine: String get() = headline(loadedModelName)
@@ -101,15 +112,26 @@ class SnapshotStore(context: Context) {
      * chat screen, the share sheet, a widget's button — so "the last answer" means the
      * last one rather than the last one from the app.
      */
-    fun note(question: String, answer: String) {
+    fun note(question: String, answer: String, answeredOnPhone: String? = null) {
         val current = read() ?: BuddySnapshot()
         write(
             current.copy(
                 lastQuestion = BuddySnapshot.trim(question, 240),
                 lastAnswer = answer,
+                lastAnswerOnPhone = answeredOnPhone,
                 updatedAt = System.currentTimeMillis(),
             ),
         )
+    }
+
+    /**
+     * Records whether the Mac answered just now. The tile and the widget read it to say
+     * "Mac unreachable" — and, with a model on the phone, to offer the phone.
+     */
+    fun noteMacReachable(reachable: Boolean, at: Long = System.currentTimeMillis()) {
+        val current = read() ?: BuddySnapshot()
+        if (current.macReachable == reachable && at - current.macCheckedAt < 5_000) return
+        write(current.copy(macReachable = reachable, macCheckedAt = at))
     }
 
     /**

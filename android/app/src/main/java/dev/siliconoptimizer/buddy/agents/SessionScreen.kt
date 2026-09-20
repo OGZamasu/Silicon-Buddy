@@ -1,9 +1,7 @@
 package dev.siliconoptimizer.buddy.agents
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
-import android.content.ContextWrapper
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -83,6 +81,9 @@ import dev.siliconoptimizer.buddy.transport.AgentApproval
 import dev.siliconoptimizer.buddy.transport.AgentEngines
 import dev.siliconoptimizer.buddy.transport.AgentItem
 import dev.siliconoptimizer.buddy.transport.AgentScreening
+import dev.siliconoptimizer.buddy.ui.NoRecentsScreenshot
+import dev.siliconoptimizer.buddy.ui.Notifications
+import dev.siliconoptimizer.buddy.ui.findActivity
 import dev.siliconoptimizer.buddy.ui.Pill
 import java.time.Instant
 import java.time.ZoneId
@@ -122,7 +123,8 @@ fun SessionScreen(
     // person while the phone is in their pocket, so it is when notifications are asked for.
     LaunchedEffect(engine, model.resets) {
         model.watch(engine)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifier.isAllowed) {
+        if (!notifier.isAllowed && Notifications.canAsk(context)) {
+            Notifications.noteAsked(context)
             askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
@@ -247,17 +249,6 @@ fun SessionScreen(
     }
 }
 
-/** Keeps this screen out of the Recents thumbnail while it is showing. Android 13 and later. */
-@Composable
-private fun NoRecentsScreenshot() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-    val activity = LocalContext.current.findActivity() ?: return
-    DisposableEffect(activity) {
-        activity.setRecentsScreenshotEnabled(false)
-        onDispose { activity.setRecentsScreenshotEnabled(true) }
-    }
-}
-
 /**
  * Android 12's `setHideOverlayWindows`: while [active], windows other apps draw over this one
  * — chat heads, floating widgets, anything with "display over other apps" — are hidden, so
@@ -271,12 +262,6 @@ private fun HideOverlays(active: Boolean) {
         if (active) window.setHideOverlayWindows(true)
         onDispose { if (active) window.setHideOverlayWindows(false) }
     }
-}
-
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
 }
 
 @Composable

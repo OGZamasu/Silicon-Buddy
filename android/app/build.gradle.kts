@@ -8,6 +8,10 @@ plugins {
 android {
     namespace = "dev.siliconoptimizer.buddy"
     compileSdk = 35
+    // The same NDK the llama module builds with. The app needs it too: it is what strips the
+    // native libraries as they are packaged, and without one AGP packages them as built —
+    // llama.cpp alone is then 110 MB of symbols instead of 18 MB of code.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "dev.siliconoptimizer.buddy"
@@ -71,12 +75,22 @@ android {
             // res/xml/network_security_config.xml for the exception this needs.
             isMinifyEnabled = false
         }
+        // Release, plus one class: `OnDeviceProbe`, which the instrumented tests call by
+        // name to reach the engine inside a minified build. Same R8 rules, same signing,
+        // same everything else — but the APK the owner installs has no such class in it,
+        // because the probe's source set belongs to this build type alone.
+        create("releaseProbe") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            isMinifyEnabled = true
+            isShrinkResources = true
+        }
     }
 
     // Instrumented tests run against the *minified* build, because the thing worth
     // testing on a device is whether R8's keep rules survived. A debug APK keeps
     // everything and would prove nothing.
-    testBuildType = "release"
+    testBuildType = "releaseProbe"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -97,6 +111,16 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        jniLibs {
+            // The phone's own model (M5) is llama.cpp, and its CPU backend comes as seven
+            // libraries, one per ARM generation; at start it scans the app's native library
+            // folder and keeps the best one this phone can run. That folder only has files
+            // in it when the libraries are extracted at install, which is what legacy
+            // packaging means — so they are stored compressed in the APK and unpacked
+            // there. It is also what keeps the APK inside its 30 MB budget: stored
+            // uncompressed, the eleven libraries would add about 20 MB to it rather than 8.
+            useLegacyPackaging = true
+        }
     }
 
     testOptions {
@@ -139,6 +163,9 @@ dependencies {
     // would mean a second UI toolkit in this app for one screen's worth of content.
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
+
+    // llama.cpp, for answering on the phone when the Mac is out of reach.
+    implementation(project(":llama"))
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

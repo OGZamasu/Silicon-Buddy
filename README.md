@@ -11,8 +11,11 @@ over your own tailnet. Nothing public, no relay, no account.
   App Intents for Siri and Shortcuts.
 - `android/` — Kotlin and Jetpack Compose, phone and tablet. The same, with a Glance
   widget, a Quick Settings tile, a share target and launcher shortcuts, plus the
-  Create tab (video, image and 3D, and the Mac's render queue), the Machines page, and
-  the Agents tab: the Mac's Codex and Pi sessions, driven and approved from the phone.
+  Create tab (video, image and 3D, and the Mac's render queue), the Machines page, the
+  Agents tab (the Mac's Codex and Pi sessions, driven and approved from the phone), and a
+  small model of its own for when the Mac is out of reach (`android/llama`, llama.cpp).
+- `third_party/llama.cpp` — llama.cpp b11053, a submodule: clone with `--recursive`, or
+  `git submodule update --init --depth 1 third_party/llama.cpp`.
 - `contract/` — the control API as JSON fixtures exported by the Mac app's own
   `ContractExportTests`, plus `routes.md`. Both apps round-trip every type against these,
   so a change on the Mac fails a build here before it fails a user. Re-export with
@@ -157,6 +160,35 @@ the app comes back. On Android 13 and later a session screen leaves no Recents t
 off, Codex under "never ask" — the session carries a banner that cannot be dismissed,
 because it changes what the screen is for.
 
+## When the Mac is out of reach
+
+The Android app can answer on the phone itself, with a small GGUF model running on its own
+CPU through llama.cpp — never on its own initiative, and never without saying so.
+
+- **The model comes from the Mac, over the tailnet, and nowhere else.** Settings → On this
+  phone lists what the Mac offers (Qwen3.5 2B by default, 1.3 GB; Gemma 4 E2B, 3.35 GB,
+  larger and slower on a phone), with size, licence and the phone's free space, and asks
+  before anything moves. The Mac fetches the pinned file from Hugging Face and verifies
+  it; the phone copies it in one resumable, ranged transfer — Wi-Fi only unless you say
+  "use mobile data" for that download — and checks the SHA-256 again itself before it runs
+  a byte of it. A mismatch is deleted, the Mac is asked once to check its own copy, and the
+  file comes over once more. Full-control pairings only: a chat-only phone is told why.
+- **Offered, never silent.** When the Mac does not answer — unreachable, the app not
+  running, too slow, or no Mac paired — the chat says "Your Mac isn't answering" with
+  **Answer on this phone** and **Try again**. Tapping the first starts a new conversation
+  that lives only on the phone; every answer in it carries "On this phone · Qwen3.5 2B".
+  The Quick Settings tile and the widget say "Mac unreachable · phone model ready" and
+  open that offer; neither ever answers by itself.
+- **Kept on the phone.** Those conversations are stored in the app's no-backup folder and
+  listed apart ("On this phone — not synced"); nothing that talks to the Mac will take their
+  ids. When the Mac is back: **New Mac conversation**, or **Send to Mac…**, which asks
+  first and says how many messages go.
+- **Guarded.** It refuses to load below the free memory the Mac measured for the model and
+  offers the smaller one; it thins its threads when the phone is warm and stops only when
+  it is critically hot ("Stopped — phone too hot"); it writes only while the app is on the
+  screen, and lets the model go after 30 seconds in the background, at once when Android
+  asks for memory back, or after five idle minutes.
+
 ## Building
 
 Both apps talk to Silicon Optimizer over your tailnet, and to nothing else: every
@@ -169,8 +201,19 @@ emulator, Tailscale's `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. A scanned QR or
 cd ios && xcodegen generate
 xcodebuild -scheme SiliconBuddy -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' build test
 
-# Android — the JDK inside Android Studio, SDK 35
+# Android — the JDK inside Android Studio, SDK 35, NDK 29.0.14206865, the SDK's CMake 3.22.1
+git submodule update --init --depth 1 third_party/llama.cpp
 cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug
+
+# The local CI (GitHub Actions cannot run here): unit tests, the minified release, the keep
+# rules R8 cannot see, the native libraries and the 30 MB APK budget; --connected adds the
+# instrumented tests on $ANDROID_SERIAL, --ios the iOS suite.
+scripts/ci-android.sh
 ```
+
+llama.cpp's CMake fetches Arm's KleidiAI sources at configure time, pinned there by version
+and checksum; an offline machine can pass `-Pbuddy.kleidiaiSource=<unpacked folder>`. The
+native part is arm64 only: a build for another ABI carries no llama.cpp, and the app says
+the phone's own model is not available.
 
 The generated `ios/SiliconBuddy.xcodeproj` is not committed: `project.yml` is the source.
