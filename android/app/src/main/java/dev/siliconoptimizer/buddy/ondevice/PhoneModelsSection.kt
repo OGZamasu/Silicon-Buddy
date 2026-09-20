@@ -90,6 +90,9 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
     /** The model the delete confirmation is asking about. */
     var deleting by androidx.compose.runtime.mutableStateOf<String?>(null)
 
+    /** The model the "Make room" sheet is open for. */
+    var makingRoomFor by androidx.compose.runtime.mutableStateOf<PhoneModel?>(null)
+
     private var lastAsk = 0L
 
     /**
@@ -309,6 +312,7 @@ fun PhoneModelsSection(
                 onCancel = { model.cancel(context, id) },
                 onDelete = { model.deleting = id },
                 onDiscardPartial = { offered?.let { model.discardPartial(context, it) } },
+                onMakeRoom = { model.makingRoomFor = offered ?: here?.model },
                 onPrefer = { model.prefer(id) },
             )
         }
@@ -323,6 +327,13 @@ fun PhoneModelsSection(
             availableMemoryBytes = model.availableMemoryBytes,
             onDismiss = { model.consent = null },
             onDownload = { mobile -> model.download(context, asking, mobile) },
+        )
+    }
+    model.makingRoomFor?.let { asking ->
+        MakeRoomSheet(
+            model = asking,
+            installed = model.installed.firstOrNull { it.id == asking.id },
+            onDismiss = { model.makingRoomFor = null },
         )
     }
     model.deleting?.let { id ->
@@ -357,6 +368,7 @@ private fun PhoneModelRow(
     onCancel: () -> Unit,
     onDelete: () -> Unit,
     onDiscardPartial: () -> Unit,
+    onMakeRoom: () -> Unit,
     onPrefer: () -> Unit,
 ) {
     val entry = offered ?: installed?.model ?: return
@@ -373,13 +385,21 @@ private fun PhoneModelRow(
         OnDeviceNotices.expectation(entry)?.let {
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
+        // The floor and the context this phone will actually use for it, which are the
+        // sheet's numbers too: one story in both places.
+        val context = LocalContext.current
+        val engine = remember { OnDeviceEngine.get(context) }
+        val floorNow = installed?.let { engine.floorFor(it) }
+        val contextNow = installed?.let { engine.chosenContext(it) }
         // What it needs to run, beside what this phone has free right now — the number the
         // refusal will be about, before it is refused.
         Text(
-            PartialDownload.memoryLine(entry.recommended.minFreeMemoryBytes, availableMemoryBytes),
+            PartialDownload.memoryLine(entry, availableMemoryBytes, floorNow, contextNow),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.outline,
         )
+        val tightOnMemory = availableMemoryBytes != null &&
+            availableMemoryBytes < ResourceGuard.neededAt(entry, contextNow ?: entry.recommended.contextLength)
         val stopped = PartialDownload.line(partialBytes, entry.sizeBytes)
             .takeIf { download?.isActive != true && installed == null }
         val status = when {
@@ -415,6 +435,9 @@ private fun PhoneModelRow(
                 }
                 else -> Unit
             }
+            // Offered exactly when it is the answer: the phone has the model and not the
+            // memory to run it well.
+            if (tightOnMemory) TextButton(onClick = onMakeRoom) { Text("Make room…") }
             if (installed != null && !preferred) TextButton(onClick = onPrefer) { Text("Use this one") }
             // Deleting a model and throwing away a part-finished download are different
             // things; the second is the one that is otherwise invisible.
@@ -452,7 +475,7 @@ private fun ConsentDialog(
                 }
                 Text("Licence: ${model.licence}")
                 Text("Free on this phone: ${freeBytes?.let { Format.bytes(it) } ?: "unknown"}")
-                Text(PartialDownload.memoryLine(model.recommended.minFreeMemoryBytes, availableMemoryBytes))
+                Text(PartialDownload.memoryLine(model, availableMemoryBytes))
                 Text(
                     "From your Mac, which fetches it from ${model.source.repo} and checks it; " +
                         "this phone checks it again before using it.",
@@ -515,10 +538,25 @@ object PartialDownload {
         return "$percent% of ${Format.bytes(total)} is already here — paused"
     }
 
-    /** "Needs 3.1 GB of free memory to run · 1.6 GB free now". */
-    fun memoryLine(needed: Long, availableNow: Long?): String =
-        "Needs ${Format.bytes(needed)} of free memory to run" +
-            (availableNow?.let { " · ${Format.bytes(it)} free now" } ?: "")
+    /**
+      * What the memory gate is actually measuring, in one line.
+      *
+      * Two numbers, because there are two: the working memory that has to be free before
+      * it will run at all, and what it wants free to run well. The weights in between are
+      * memory-mapped — the kernel keeps what it can and reads the rest back off the file,
+      * which costs speed rather than a refusal.
+      */
+    fun memoryLine(model: PhoneModel, availableNow: Long?, floorNow: Long? = null, contextTokens: Int? = null): String {
+        val needed = ResourceGuard.neededAt(model, contextTokens ?: model.recommended.contextLength)
+        val floor = floorNow ?: ResourceGuard.residentFloor(model)
+        val wants = if (floor == null || floor >= needed) {
+            "Needs ${Format.bytes(needed)} of free memory to run"
+        } else {
+            "Needs ${Format.bytes(floor)} of free memory for its working memory, " +
+                "${Format.bytes(needed)} to run at its best"
+        }
+        return wants + (availableNow?.let { " · ${Format.bytes(it)} free now" } ?: "")
+    }
 }
 
 /** "libggml-cpu-android_armv8.6_1.so [NEON,…]" → "ARMv8.6 (i8mm, dot product)". */

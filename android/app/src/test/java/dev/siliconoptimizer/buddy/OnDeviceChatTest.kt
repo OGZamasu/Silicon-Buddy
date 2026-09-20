@@ -230,7 +230,11 @@ class OnDeviceChatTest {
     }
 
     private fun await(what: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + 10_000
+        // Twenty seconds, not ten: these wait on real coroutines on real dispatchers, and
+        // the whole suite runs in one JVM — once in about ten full runs, a wait that takes
+        // milliseconds on an idle machine did not get there in ten seconds on a busy one.
+        // The class's own 30-second rule is still what catches a test that truly hangs.
+        val deadline = System.currentTimeMillis() + 20_000
         while (!condition()) {
             if (System.currentTimeMillis() > deadline) fail("never: $what")
             Thread.sleep(10)
@@ -453,6 +457,67 @@ class OnDeviceChatTest {
         runBlocking { assertNotNull("the phone's copy stays", phone.conversations.conversation(phoneID)) }
     }
 
+    @Test
+    fun `a conversation whose model the Mac has replaced falls back to one that is here`() {
+        // The Mac's catalogue changes — a smaller model is added, an old id retired — and a
+        // conversation from before names something this phone no longer has.
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.answerOnPhone()
+        chat.current!!.let { conversation ->
+            runBlocking { phone.conversations.save(conversation.copy(phoneModelID = "qwen4-0.5b-q4_0")) }
+        }
+        chat.open(chat.current!!.id, mac)
+
+        chat.draft = "Still there?"
+        chat.send(mac)
+        await("answered") { !chat.isSending && chat.current!!.messages.lastOrNull()?.content?.isNotEmpty() == true }
+        assertEquals("answered by a model that is actually here", qwen.id, phone.answered.single().first)
+        assertNull("and no error about an id nobody knows", chat.error)
+    }
+
+    // MARK: - A phone with little memory to spare
+
+    @Test
+    fun `a warning is shown before the answer, not instead of it`() {
+        phone.preflightAnswer = {
+            Preflight.Warned("Your phone is low on memory: Qwen3.5 2B runs best with 3.10 GB free and this phone has 2.62 GB. Other apps may close, and answers may be slower.")
+        }
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.answerOnPhone()
+        chat.draft = "What is the capital of France?"
+        chat.send(mac)
+        await("answered") { !chat.isSending }
+
+        assertEquals("Hello from the phone.", chat.current!!.messages.last().content)
+        assertNotNull("the warning is up", chat.memoryWarning)
+        assertTrue(chat.memoryWarning!!.message.contains("Other apps may close"))
+        assertEquals("and it knows which model it is about", qwen.id, chat.memoryWarning!!.model.id)
+        assertNull("it is not a refusal", chat.refusal)
+
+        chat.dismissMemoryWarning()
+        assertNull(chat.memoryWarning)
+    }
+
+    @Test
+    fun `Try again after making room asks the same model the same question`() {
+        phone.preflightAnswer = { Preflight.Refused("Not enough free memory for Qwen3.5 2B.") }
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.answerOnPhone()
+        chat.draft = "What is the capital of France?"
+        chat.send(mac)
+        await("refused") { !chat.isSending && chat.refusal != null }
+        assertEquals("the sheet knows whose numbers to show", qwen.id, chat.refusal!!.model?.id)
+
+        // Room is made, and the same question goes again to the same model.
+        phone.preflightAnswer = { Preflight.Ready }
+        chat.retryOnPhone()
+        await("answered") { !chat.isSending && chat.current!!.messages.lastOrNull()?.content?.isNotEmpty() == true }
+        assertEquals(qwen.id, phone.answered.single().first)
+        assertEquals("What is the capital of France?", chat.current!!.messages.first().content)
+        assertEquals("the refused exchange was replaced, not kept beside", 2, chat.current!!.messages.size)
+        assertNull(chat.refusal)
+    }
+
     // MARK: - While the phone is working on it
 
     @Test
@@ -597,6 +662,7 @@ class OnDeviceChatTest {
         await("the ask failed") { chat.error != null }
         assertFalse("nothing was learned, so nothing is assumed", chat.askedAboutConversations)
         assertFalse(chat.usesRemoteConversations)
+        await("the ask settled") { !chat.conversationAskInFlight }
 
         chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
         chat.answerOnPhone()
@@ -625,6 +691,10 @@ class OnDeviceChatTest {
         chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
         assertTrue(chat.macState.isOutOfReach)
 
+        // The failed ask is not over when the error appears — the local store is read
+        // after it, on another thread — and a re-ask while it is still running is dropped
+        // by the in-flight guard rather than by the floor.
+        await("the ask settled") { !chat.conversationAskInFlight }
         mac.failure = null
         chat.noteMacAnswered()
         assertEquals(MacState.Answering, chat.macState)
@@ -751,9 +821,10 @@ class OnDeviceChatTest {
         assertEquals("From the Mac.", chat.current!!.messages.last().content)
 
         // And it is still in the list after the Mac's own list is read again.
+        // The count of asks rises when the request is made; the list is filled when it
+        // answers. Waiting on the second would be waiting on the wrong thing.
         chat.loadConversations(mac)
-        await("the list was read again") { mac.calls.count { it == "conversations" } >= 2 }
-        assertTrue("it is not dropped for not being the Mac's", chat.conversations.any { it.id == id })
+        await("it is not dropped for not being the Mac's") { chat.conversations.any { it.id == id } }
     }
 
     @Test
@@ -871,6 +942,9 @@ class OnDeviceChatTest {
         mac.failure = TransportError.Unreachable("100.64.0.9")
         chat.loadConversations(mac)
         await("the ask failed") { chat.error != null }
+        // …and finished failing: a re-ask while the first is still running is dropped by
+        // the in-flight guard, and the news that the Mac is back would be lost with it.
+        await("the ask settled") { !chat.conversationAskInFlight }
         chat.newConversation(mac)
         assertEquals("Kept on this device while your Mac is out of reach.", chat.storageNote)
 

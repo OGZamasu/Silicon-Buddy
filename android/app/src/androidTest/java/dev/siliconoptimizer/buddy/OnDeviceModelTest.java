@@ -3,6 +3,7 @@ package dev.siliconoptimizer.buddy;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Instrumentation;
@@ -186,6 +187,11 @@ public class OnDeviceModelTest {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(output.getFileDescriptor())))) {
             String line;
             while ((line = reader.readLine()) != null) text.append(line).append('\n');
+        } catch (java.io.IOException cut) {
+            // The pipe can be closed under the reader when the command ends. Whatever
+            // arrived is the answer; a failing test must report its own assertion, not
+            // this — which is how a screenshot helper came to hide the failure it was
+            // taken for.
         }
         return text.toString();
     }
@@ -198,6 +204,27 @@ public class OnDeviceModelTest {
         shell("screencap -p /data/local/tmp/m5-" + name + ".png");
         shell("uiautomator dump /data/local/tmp/m5-" + name + ".xml");
         shell("sh -c 'dumpsys activity processes " + PACKAGE + " > /data/local/tmp/m5-" + name + "-proc.txt'");
+    }
+
+    /**
+     * The [text] button in [label]'s row, scrolling [list] until both are on screen.
+     *
+     * A row is six lines now — the memory line carries two figures and what they are — so
+     * a label and its buttons no longer always fit in one screenful, and a button below
+     * the fold is not in the accessibility tree at all.
+     */
+    private UiObject2 rowButton(UiObject2 list, String label, String text) {
+        for (int attempt = 0; attempt < 6; attempt++) {
+            UiObject2 found = buttonUnder(label, text);
+            if (found != null) return found;
+            if (device.hasObject(By.text(label))) {
+                list.scroll(Direction.DOWN, 0.2f);
+            } else {
+                list.scrollUntil(Direction.UP, Until.findObject(By.text(label)));
+            }
+            device.waitForIdle();
+        }
+        return buttonUnder(label, text);
     }
 
     /** The first [text] button below [label] on screen: the one in that model's row. */
@@ -246,10 +273,20 @@ public class OnDeviceModelTest {
             .setPackage(PACKAGE)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         context.startActivity(link);
-        UiObject2 confirm = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
-        assertNotNull("the pairing confirmation never appeared", confirm);
-        boolean replacing = confirm.getText().startsWith("Replace");
-        confirm.click();
+        // Compose can redraw the dialog between finding the button and reading it, which
+        // makes the handle stale; the button is still there, so look again.
+        Boolean replacing = null;
+        for (int attempt = 0; attempt < 3 && replacing == null; attempt++) {
+            UiObject2 confirm = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
+            assertNotNull("the pairing confirmation never appeared", confirm);
+            try {
+                replacing = confirm.getText().startsWith("Replace");
+                confirm.click();
+            } catch (androidx.test.uiautomator.StaleObjectException redrawn) {
+                replacing = null;
+            }
+        }
+        assertNotNull("the pairing confirmation kept moving", replacing);
         if (replacing) {
             UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
             assertNotNull(replace);
@@ -461,7 +498,7 @@ public class OnDeviceModelTest {
         UiObject2 label = list.scrollUntil(Direction.DOWN, Until.findObject(By.text("Stories 260K")));
         assertNotNull("the Mac's list is in Settings", label);
         list.scrollUntil(Direction.DOWN, Until.findObject(By.desc("Stories 260K: Not on this phone")));
-        UiObject2 download = buttonUnder("Stories 260K", "Download…");
+        UiObject2 download = rowButton(list, "Stories 260K", "Download…");
         assertNotNull("a Download… button under Stories 260K", download);
         download.click();
 
@@ -487,7 +524,7 @@ public class OnDeviceModelTest {
 
         // Asked again, this time with mobile data allowed for this one download.
         device.wait(Until.findObject(By.desc("Stories 260K: Not on this phone")), WAIT);
-        UiObject2 again = buttonUnder("Stories 260K", "Download…");
+        UiObject2 again = rowButton(list, "Stories 260K", "Download…");
         assertNotNull(again);
         again.click();
         assertNotNull(device.wait(Until.findObject(By.text("Get Stories 260K for this phone?")), WAIT));
@@ -521,21 +558,21 @@ public class OnDeviceModelTest {
         // As a cancelled download leaves it: bytes on disk and the record of how many.
         probe("partial", context, STORIES_SHA256, 500_000L);
 
-        openPhoneModels();
+        UiObject2 list = openPhoneModels();
         UiObject2 paused = device.wait(Until.findObject(By.descContains("of 1.19 MB is already here — paused")), WAIT);
         if (paused == null) evidence("partial");
         assertNotNull("Settings says what is half-here", paused);
-        assertNotNull("and offers to carry on", buttonUnder("Stories 260K", "Resume…"));
-        assertNotNull("or to get the space back", buttonUnder("Stories 260K", "Delete"));
+        assertNotNull("and offers to carry on", rowButton(list, "Stories 260K", "Resume…"));
+        assertNotNull("or to get the space back", rowButton(list, "Stories 260K", "Delete"));
 
         // It is read off the disk, so leaving the app and coming back changes nothing.
         device.pressHome();
         Thread.sleep(1_000);
-        openPhoneModels();
+        list = openPhoneModels();
         assertNotNull("still there after leaving the app",
             device.wait(Until.findObject(By.descContains("of 1.19 MB is already here — paused")), WAIT));
 
-        buttonUnder("Stories 260K", "Delete").click();
+        rowButton(list, "Stories 260K", "Delete").click();
         assertNotNull("and deleting it says so", device.wait(Until.findObject(By.desc("Stories 260K: Not on this phone")), WAIT));
     }
 
@@ -543,7 +580,7 @@ public class OnDeviceModelTest {
      * Settings → On this phone, scrolled to Stories 260K — from wherever the app happens to
      * be, including Settings itself, which is where it comes back to after a trip to Home.
      */
-    private void openPhoneModels() throws Exception {
+    private UiObject2 openPhoneModels() throws Exception {
         bringToFront();
         if (!device.hasObject(By.text("Stories 260K"))) {
             UiObject2 settings = device.findObject(By.desc("Settings"));
@@ -551,13 +588,15 @@ public class OnDeviceModelTest {
                 settings.click();
                 device.waitForIdle();
             }
-            UiObject2 list = device.wait(Until.findObject(By.scrollable(true)), WAIT);
-            assertNotNull("the Settings screen", list);
-            if (list.scrollUntil(Direction.DOWN, Until.findObject(By.text("Stories 260K"))) == null) {
-                list.scrollUntil(Direction.UP, Until.findObject(By.text("Stories 260K")));
-            }
+        }
+        UiObject2 list = device.wait(Until.findObject(By.scrollable(true)), WAIT);
+        assertNotNull("the Settings screen", list);
+        if (!device.hasObject(By.text("Stories 260K")) &&
+            list.scrollUntil(Direction.DOWN, Until.findObject(By.text("Stories 260K"))) == null) {
+            list.scrollUntil(Direction.UP, Until.findObject(By.text("Stories 260K")));
         }
         assertNotNull("the phone models section", device.wait(Until.findObject(By.text("Stories 260K")), WAIT));
+        return list;
     }
 
     @Test
@@ -659,6 +698,57 @@ public class OnDeviceModelTest {
             device.wait(Until.findObject(By.text("Your Mac isn't answering.")), WAIT));
         assertEquals("still nothing answered", "Unloaded", state());
         mac.unreachable(0);
+    }
+
+    /**
+     * "Make room", on the screen: what this phone has free against what the model needs,
+     * what this app can give back, and the one thing it cannot do.
+     *
+     * The emulator has about a gigabyte free and Qwen3.5 2B wants three, so the row offers
+     * the sheet exactly as it does on the owner's own phone.
+     */
+    @Test
+    public void makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo() throws Exception {
+        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only with QWEN=1", mac.offers(QWEN));
+        mac.ondevice("{\"state\":{\"" + QWEN + "\":\"ready\"}}");
+        pair();
+        bringToFront();
+        UiObject2 settings = device.wait(Until.findObject(By.desc("Settings")), WAIT);
+        assertNotNull(settings);
+        settings.click();
+        UiObject2 list = device.wait(Until.findObject(By.scrollable(true)), WAIT);
+        assertNotNull(list);
+        assertNotNull(list.scrollUntil(Direction.DOWN, Until.findObject(By.text("Qwen3.5 2B"))));
+        // Its buttons are a row further down than its label; a button off the bottom of
+        // the screen is not a button the accessibility tree will hand back.
+        UiObject2 makeRoom = rowButton(list, "Qwen3.5 2B", "Make room…");
+        if (makeRoom == null) evidence("make-room-row");
+        assertNotNull("the row offers it when the phone is short", makeRoom);
+        makeRoom.click();
+
+        assertNotNull("the sheet is up", device.wait(Until.findObject(By.text("Make room for Qwen3.5 2B")), WAIT));
+        assertNotNull("with what is free now",
+            device.wait(Until.findObject(By.descStartsWith("Memory: ")), WAIT));
+        assertNotNull("and which number decides",
+            device.findObject(By.textContains("to run at all — that is the one that decides")));
+        assertNotNull("and the thing it cannot do",
+            device.findObject(By.textContains("can't do it for you")));
+
+        UiObject2 free = device.wait(Until.findObject(By.text("Free what this app is holding")), WAIT);
+        assertNotNull(free);
+        free.click();
+        // Either it gave something back, or — with nothing loaded and the caches empty —
+        // it says so. What it must not do is say nothing at all.
+        assertTrue("it says what came back", waitFor(WAIT, () ->
+            device.hasObject(By.textStartsWith("Let go of")) ||
+                device.hasObject(By.textStartsWith("This app was holding nothing"))));
+        // This emulator has no Samsung package, and an explicit component that resolves to
+        // nothing is what put a dead "Open Device care" button on every phone. The general
+        // screen is the one that should be offered here.
+        assertNotNull("a way to the phone's own settings", device.findObject(By.text("Open app settings")));
+        assertNull("and not one that goes nowhere", device.findObject(By.text("Open Device care")));
+        device.findObject(By.text("Close")).click();
+        device.wait(Until.gone(By.text("Make room for Qwen3.5 2B")), WAIT);
     }
 
     /** Whether this app's window is holding the screen awake, as the window manager sees it. */

@@ -12,6 +12,7 @@ import dev.siliconoptimizer.buddy.ondevice.DeviceState
 import dev.siliconoptimizer.buddy.ondevice.InstalledPhoneModel
 import dev.siliconoptimizer.buddy.ondevice.ModelRuntime
 import dev.siliconoptimizer.buddy.ondevice.ModelSession
+import dev.siliconoptimizer.buddy.ondevice.MemoryLog
 import dev.siliconoptimizer.buddy.ondevice.ModelStore
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceChat
 import dev.siliconoptimizer.buddy.ondevice.OnDeviceEngine
@@ -20,6 +21,7 @@ import dev.siliconoptimizer.buddy.ondevice.Preflight
 import dev.siliconoptimizer.buddy.ondevice.ResourceGuard
 import dev.siliconoptimizer.buddy.transport.ChatStreamEvent
 import dev.siliconoptimizer.buddy.transport.PhoneModel
+import dev.siliconoptimizer.buddy.transport.PhoneModelMeasured
 import dev.siliconoptimizer.buddy.transport.PhoneModelOnMac
 import dev.siliconoptimizer.buddy.transport.PhoneModelRecommended
 import dev.siliconoptimizer.buddy.transport.PhoneModelSource
@@ -99,14 +101,22 @@ class OnDeviceEngineTest {
     /** llama.cpp, with a load that can be held open. */
     class FakeRuntime : ModelRuntime {
         val sessions = CopyOnWriteArrayList<FakeSession>()
+        val settings = CopyOnWriteArrayList<LlamaSession.Settings>()
         val loadsCancelled = AtomicInteger(0)
         val freedMidLoad = AtomicInteger(0)
         var holdLoad: CompletableDeferred<Unit>? = null
         val loadStarted = CompletableDeferred<Unit>()
 
+        /** Thrown by the next load, as llama.cpp does when a file will not load. */
+        var failWith: IllegalStateException? = null
+
+        /** Run as the load finishes, for a phone whose memory changes with it. */
+        var onOpen: (() -> Unit)? = null
+
         override suspend fun availability() = LlamaRuntime.Availability.Ready("cpu")
 
         override suspend fun open(path: String, settings: LlamaSession.Settings): ModelSession {
+            this.settings += settings
             loadStarted.complete(Unit)
             try {
                 holdLoad?.await()
@@ -116,6 +126,8 @@ class OnDeviceEngineTest {
                 freedMidLoad.incrementAndGet()
                 throw gone
             }
+            failWith?.let { throw it }
+            onOpen?.invoke()
             return FakeSession().also { sessions += it }
         }
 
@@ -124,23 +136,55 @@ class OnDeviceEngineTest {
         }
     }
 
-    /** The phone: as hot and as full as the test says. */
+    /** The phone: as hot, as full, and as murderous as the test says. */
     class FakeDevice(var thermal: Int = 0, var available: Long = Long.MAX_VALUE, var low: Boolean = false) :
         DeviceState {
         override val thermalStatus: Int get() = thermal
         override fun memory(): Pair<Long, Boolean> = available to low
+
+        /** When this app's last process ended, and whether it chose to. */
+        var killedAt: Long? = null
+        var endingWasChosen = false
+        override fun lastUnwantedExit(): Pair<Long, Boolean>? = killedAt?.let { it to !endingWasChosen }
+
+        /** What `/proc/self/status` would say: set by the fake load. */
+        var anonymous = 0L
+        override fun anonymousBytes(): Long = anonymous
     }
 
     private lateinit var store: ModelStore
     private lateinit var runtime: FakeRuntime
     private lateinit var device: FakeDevice
+    private lateinit var log: MemoryLog.InMemory
+    private var now = 1_000L
 
     private fun engine(): OnDeviceEngine {
         store = ModelStore(folder.newFolder())
         runtime = FakeRuntime()
         device = FakeDevice()
-        return OnDeviceEngine(store, runtime, device)
+        log = MemoryLog.InMemory()
+        return OnDeviceEngine(store, runtime, device, log, clock = { now })
     }
+
+    /**
+     * The owner's own entry, measured, so the bands have something to be derived from: the
+     * peak beyond the weights is a tenth of the whole gate, which puts the floor an
+     * unmistakable distance below it.
+     */
+    private fun measured(entry: InstalledPhoneModel, peakBeyondWeights: Long): InstalledPhoneModel =
+        entry.copy(
+            model = entry.model.copy(
+                measured = PhoneModelMeasured(
+                    device = "Galaxy S24 Ultra", runtime = "llama.cpp b11053, CPU",
+                    conditions = "phone hot and charging", tokensPerSecond = 17.4,
+                    threadSweep = emptyList(), promptTokensPerSecond = 122.9,
+                    secondsToFirstWord300 = 2.5, firstWordEstimated = true,
+                    sustainedTokensPerSecond = null, sustainedMeasured = false,
+                    peakMemoryBytes = entry.model.sizeBytes + peakBeyondWeights,
+                    peakMemoryContextTokens = 640,
+                ),
+            ),
+        )
 
     /** A model on the phone: a file of [bytes] bytes, and the record that it was verified. */
     private fun install(id: String, label: String, minFree: Long, bytes: Int = 64): InstalledPhoneModel {
@@ -197,6 +241,244 @@ class OnDeviceEngineTest {
         device.low = true
         assertTrue(engine.preflight(qwen) is Preflight.Refused)
         assertTrue(runtime.sessions.isEmpty())
+    }
+
+    @Test
+    fun `a phone with room for the working memory but not the rest answers, and says what it costs`() = runBlocking {
+        val engine = engine()
+        // 800 MB beyond the weights, so the floor is 1.00 GB and the Mac's gate 3.10 GB.
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+
+        device.available = 3_100_000_000
+        assertEquals("room for all of it", Preflight.Ready, engine.preflight(qwen))
+
+        device.available = 2_554_596L * 1024
+        val warned = engine.preflight(qwen)
+        assertTrue("it runs, and says what it costs", warned is Preflight.Warned)
+        val message = (warned as Preflight.Warned).message
+        assertTrue(message.contains("3.10 GB"))
+        assertTrue(message.contains("2.62 GB"))
+        assertTrue(message.contains("Other apps may close"))
+
+        device.available = 999_999_999
+        val refused = engine.preflight(qwen)
+        assertTrue(refused is Preflight.Refused)
+        assertTrue(
+            "and below the working memory it is refused, honestly",
+            (refused as Preflight.Refused).message.contains("There is no smaller model on this phone"),
+        )
+        assertTrue("nothing was loaded on the way", runtime.sessions.isEmpty())
+    }
+
+    @Test
+    fun `a load that got the app killed is remembered - less context, a higher floor, and it says so`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 2_554_596L * 1024
+
+        // A load, and then Android takes the app for its memory while it is running.
+        log.noteBusy(qwen.id, now, device.available)
+        now += 1_000
+        device.killedAt = now
+
+        // The same reading is not tried again: it is the one that killed the app.
+        val refused = engine.preflight(qwen)
+        assertTrue("that reading is not tried again", refused is Preflight.Refused)
+        assertEquals("the kill is noticed once", now, log.noticedKillAt)
+        assertEquals(qwen.id, log.killedModelID)
+
+        // With meaningfully more room it runs again — asking for less, and saying so.
+        device.available = 3_000_000_000
+        val warned = engine.preflight(qwen)
+        assertTrue("more room is allowed again", warned is Preflight.Warned)
+        assertTrue("and it says what it will do about it", (warned as Preflight.Warned).message.contains("ran out of memory the last time"))
+        assertEquals("the next load remembers less of the conversation", 2048, engine.contextFor(qwen))
+
+        // It answers at that reading, the phone survives, and the kill is behind it.
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        val answering = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Hello?")), 128)
+                .collect { events += it }
+        }
+        await("it starts writing") { events.any { it is ChatStreamEvent.Token } }
+        assertEquals("loaded with the shorter context", 2048, runtime.settings.last().contextLength)
+        runtime.sessions.last().finish()
+        answering.join()
+        assertNull("the phone survived it, so that is over", log.killedModelID)
+        assertEquals(4096, engine.contextFor(qwen))
+    }
+
+    @Test
+    fun `a kill in the middle of an answer counts, which is when it is likeliest`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 2_900_000_000
+
+        // Loaded, answering — the moment the context and the compute buffers are all in
+        // use, and the moment a phone short of memory takes the app.
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        val answering = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Hello?")), 128)
+                .collect { events += it }
+        }
+        await("it is writing") { events.any { it is ChatStreamEvent.Token } }
+        now += 5_000
+        runtime.sessions.last().finish()
+        answering.join()
+
+        // …and the process ends there. The next run reads the system's record of it.
+        device.killedAt = now + 1_000
+        val engineAfterRestart = OnDeviceEngine(store, FakeRuntime(), device, log, clock = { now })
+        val refused = engineAfterRestart.preflight(qwen)
+
+        assertEquals("the kill is laid at this model's door", qwen.id, log.killedModelID)
+        assertTrue("and that reading is not tried again", refused is Preflight.Refused)
+        assertEquals("with a shorter context when it is", 2048, engineAfterRestart.contextFor(qwen))
+    }
+
+    @Test
+    fun `an ending the app chose is not a kill`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 2_900_000_000
+        log.noteBusy(qwen.id, now, device.available)
+        device.killedAt = now + 1_000
+        device.endingWasChosen = true
+
+        assertTrue(engine.preflight(qwen) is Preflight.Warned)
+        assertNull("swiped out of Recents is not the phone reclaiming memory", log.killedModelID)
+    }
+
+    @Test
+    fun `a load that failed leaves nothing for a later kill to be blamed on`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 2_900_000_000
+        runtime.failWith = IllegalStateException("llama.cpp could not load that model file")
+
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        engine.generate(qwen, dev.siliconoptimizer.buddy.llama.LlamaRequest(rawPrompt = "hi"))
+            .collect { events += it }
+        assertTrue("the load failed", events.any { it is ChatStreamEvent.Failed })
+
+        assertNull("the record was closed with the load that failed", log.busyModelID)
+
+        // A kill a second later — well inside the window a live load would have — is not
+        // this model's doing, because there is no longer a record saying it was busy.
+        device.killedAt = now + 1_000
+        runtime.failWith = null
+        assertTrue(engine.preflight(qwen) is Preflight.Warned)
+        assertNull("nothing was still open for it to be blamed on", log.killedModelID)
+        assertEquals(4096, engine.contextFor(qwen))
+    }
+
+    @Test
+    fun `what a load costs this phone is measured and used instead of the estimate`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 3_100_000_000
+        // The fake phone's own anonymous memory grows by 2.0 GB across the load: more than
+        // the Mac's measurement implies, which is the case that matters.
+        device.anonymous = 500_000_000
+        runtime.onOpen = { device.anonymous = 2_500_000_000 }
+
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        val answering = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Hello?")), 128)
+                .collect { events += it }
+        }
+        await("it is writing") { events.any { it is ChatStreamEvent.Token } }
+        runtime.sessions.last().finish()
+        answering.join()
+
+        assertEquals("recorded against this model and this context", 2_000_000_000L, engine.measuredAt(qwen, 4096))
+        assertEquals("and it is the floor now", (2_000_000_000 * 1.25).toLong(), engine.floorFor(qwen))
+        engine.unload("test")
+        device.available = 2_400_000_000
+        assertTrue(
+            "so a phone the estimate would have let through is refused",
+            engine.preflight(qwen) is Preflight.Refused,
+        )
+    }
+
+    @Test
+    fun `a kill that was not about a model of ours is not held against it`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 2_554_596L * 1024
+        // Killed while nothing was loading — the phone was short of memory for its own
+        // reasons, and this app happened to be the biggest thing running.
+        device.killedAt = now + 5_000
+
+        assertTrue(engine.preflight(qwen) is Preflight.Warned)
+        assertNull(log.killedModelID)
+        assertEquals(4096, engine.contextFor(qwen))
+    }
+
+    @Test
+    fun `a shorter context the owner chose is remembered, and the model let go of so it takes`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 3_100_000_000
+
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        val answering = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Hello?")), 128)
+                .collect { events += it }
+        }
+        await("it is writing") { events.any { it is ChatStreamEvent.Token } }
+        assertEquals(4096, runtime.settings.last().contextLength)
+        runtime.sessions.last().finish()
+        answering.join()
+
+        engine.chooseContext(qwen, 2048)
+        assertEquals(2048, engine.contextFor(qwen))
+        await("the loaded model was let go of, so the choice takes") { engine.state.value == OnDeviceEngine.State.Unloaded }
+
+        val again = CopyOnWriteArrayList<ChatStreamEvent>()
+        val second = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Again?")), 128)
+                .collect { again += it }
+        }
+        await("it is writing again") { again.any { it is ChatStreamEvent.Token } }
+        assertEquals("with what the owner chose", 2048, runtime.settings.last().contextLength)
+        runtime.sessions.last().finish()
+        second.join()
+    }
+
+    @Test
+    fun `making room lets go of the model this app is holding, and says what came back`() = runBlocking {
+        val engine = engine()
+        val qwen = measured(install("qwen3.5-2b-q4_0", "Qwen3.5 2B", 3_100_000_000), 800_000_000)
+        record(qwen)
+        device.available = 3_100_000_000
+
+        val events = CopyOnWriteArrayList<ChatStreamEvent>()
+        val answering = launch(Dispatchers.Default) {
+            engine.answer(qwen, listOf(ChatMessage(role = ChatMessage.ROLE_USER, content = "Hello?")), 128)
+                .collect { events += it }
+        }
+        await("it is writing, so there is something to finish") { events.any { it is ChatStreamEvent.Token } }
+        runtime.sessions.last().finish()
+        answering.join()
+
+        // The phone counts the model's memory back as this app lets go of it.
+        val session = runtime.sessions.last()
+        device.available = 1_800_000_000
+        val recovered = engine.makeRoom().also { device.available = 3_100_000_000 }
+
+        assertTrue("it was holding one", recovered.hadModel)
+        assertTrue("and let go of it", session.isClosed)
+        assertEquals(OnDeviceEngine.State.Unloaded, engine.state.value)
+        assertEquals("nothing left loaded to ask about", null, engine.loadedModel)
     }
 
     // MARK: - The file
@@ -304,6 +586,13 @@ class OnDeviceEngineTest {
         assertEquals("what the load had made was freed", 1, runtime.freedMidLoad.get())
         assertTrue("and no session was kept", runtime.sessions.isEmpty())
         assertNull(engine.loadedModel)
+        assertNull("and nothing is left saying this model was busy", log.busyModelID)
+
+        // So a kill a second later — the phone short of memory for its own reasons — is
+        // not laid at this model's door.
+        device.killedAt = now + 1_000
+        engine.preflight(qwen)
+        assertNull(log.killedModelID)
 
         // And the next question still works.
         runtime.holdLoad = null

@@ -36,6 +36,13 @@ import kotlinx.coroutines.withContext
 sealed interface Preflight {
     data object Ready : Preflight
 
+    /**
+     * It will run, and the owner should know what it will cost first: a phone with room
+     * for the model's working memory but not for the Mac's whole figure may close other
+     * apps for it, and will be slower while the weights are read back off the file.
+     */
+    data class Warned(val message: String) : Preflight
+
     /** Why not, in a sentence — and, for memory, a smaller model that would fit. */
     data class Refused(val message: String, val alternative: InstalledPhoneModel? = null) : Preflight
 }
@@ -58,7 +65,9 @@ class OnDeviceEngine internal constructor(
     val store: ModelStore,
     private val runtime: ModelRuntime,
     private val device: DeviceState,
+    private val log: MemoryLog = MemoryLog.InMemory(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
     sealed interface State {
@@ -153,7 +162,11 @@ class OnDeviceEngine internal constructor(
         if (loadedModel != null) unload("switching")
         val (available, low) = memory()
         val installed = store.installed()
-        val decision = ResourceGuard.memory(model, available, low, installed)
+        noticeAnyKill()
+        val decision = ResourceGuard.memory(
+            model, available, low, installed, killedWithFreeBytes(model),
+            measuredResident = measuredResident(model),
+        )
         if (decision is ResourceGuard.Memory.Refuse) {
             return Preflight.Refused(ResourceGuard.refusal(model, decision), decision.alternative)
         }
@@ -161,7 +174,112 @@ class OnDeviceEngine internal constructor(
             val stillGood = withContext(Dispatchers.IO) { store.reverify(model) }
             if (!stillGood) return Preflight.Refused(OnDeviceNotices.changedOnDisk(model.label))
         }
+        if (decision is ResourceGuard.Memory.Tight) {
+            return Preflight.Warned(
+                ResourceGuard.warning(model, decision) +
+                    if (log.killedModelID == model.id) " " + OnDeviceNotices.SHORTER_AFTER_A_KILL else "",
+            )
+        }
         return Preflight.Ready
+    }
+
+    // MARK: - What the phone has already done about it
+
+    /**
+     * Whether the phone ended this app while it was holding a model.
+     *
+     * Over the whole window, not only the load: the peak is in the middle of an answer,
+     * when the context and the compute buffers are all in use, and the first version of
+     * this looked only at a load in flight — so it missed the likeliest kill of all and
+     * held a stale "loading" record against a model hours later.
+     *
+     * Reason-agnostic, deliberately. One UI reports some of its reclaiming under reasons
+     * other than `REASON_LOW_MEMORY`; what is not in doubt is that this app did not choose
+     * to end while it was holding a gigabyte of weights.
+     */
+    private fun noticeAnyKill() {
+        val (endedAt, unwanted) = device.lastUnwantedExit() ?: return
+        if (endedAt <= log.noticedKillAt) return
+        log.noticedKillAt = endedAt
+        if (!unwanted) return
+        val model = log.busyModelID ?: return
+        val from = log.busySince
+        if (from == 0L || endedAt < from) return
+        // The window is kept open while a model is held, and its end is the last time this
+        // app was seen alive; an ending after that is the phone's doing, not a coincidence.
+        if (endedAt > log.busyUntil + KILL_WINDOW_MS) return
+        log.killedModelID = model
+        // What the phone had free when it decided it needed this app's memory more than
+        // this app did. Whatever the arithmetic says, that much is not enough.
+        log.killedWithFreeBytes = log.loadingFreeBytes
+        android.util.Log.i(LOG, "the phone ended this app while it held a model; it will ask for less")
+    }
+
+    /**
+     * After a kill, the arithmetic is not the last word: what the phone actually did is.
+     * The floor rises to what was free at the attempt that killed it, so the band that
+     * said "tight but fine" no longer covers the reading that proved otherwise.
+     */
+    private fun killedWithFreeBytes(model: InstalledPhoneModel): Long =
+        if (log.killedModelID == model.id) log.killedWithFreeBytes else 0
+
+    /** What this phone measured a load of [model] costing it at exactly [contextTokens]. */
+    fun measuredAt(model: InstalledPhoneModel, contextTokens: Int): Long =
+        log.measuredResident(model.id, contextTokens)
+
+    /** What this phone measured a load of [model] costing it, at the context it will use. */
+    internal fun measuredResident(model: InstalledPhoneModel): Long? =
+        log.measuredResident(model.id, contextFor(model)).takeIf { it > 0 }
+
+    /** The floor this phone will apply to [model] — for the Settings row and the sheet. */
+    fun floorFor(model: InstalledPhoneModel): Long? =
+        ResourceGuard.residentFloor(model.model, measuredResident(model))
+
+    /**
+     * The context to load with: the Mac's, the shorter one the owner chose for this model,
+     * and never more than half of the Mac's after a kill.
+     */
+    internal fun contextFor(model: InstalledPhoneModel): Int {
+        val recommended = model.model.recommended.contextLength
+        val chosen = log.chosenContext(model.id).takeIf { it in 1 until recommended } ?: recommended
+        if (log.killedModelID != model.id) return chosen
+        return maxOf(ResourceGuard.SMALLEST_CONTEXT, minOf(chosen, recommended / 2))
+    }
+
+    /** What the owner chose for [model], or the Mac's recommendation. */
+    fun chosenContext(model: InstalledPhoneModel): Int = contextFor(model)
+
+    /** Remember a shorter context for this model, and let the loaded one go so it takes. */
+    fun chooseContext(model: InstalledPhoneModel, tokens: Int) {
+        log.chooseContext(model.id, tokens)
+        if (sessionModel?.id == model.id) scope.launch { unload("context-changed") }
+    }
+
+    /** What letting go of everything this app holds recovered, and whether it held a model. */
+    data class Recovered(val before: Long, val after: Long, val hadModel: Boolean) {
+        val freed: Long get() = after - before
+    }
+
+    /**
+     * Gives back everything this app is holding: the model, and its own caches.
+     *
+     * It is the only half of "make room" this app can do — Android does not let one app
+     * close another — so it is done first, before the owner is asked to close anything.
+     */
+    suspend fun makeRoom(): Recovered {
+        val before = device.memory().first
+        val hadModel = session != null
+        if (hadModel) unload("make-room")
+        withContext(Dispatchers.IO) {
+            context?.let { app ->
+                runCatching { app.cacheDir.listFiles()?.forEach { it.deleteRecursively() } }
+                runCatching { app.codeCacheDir.listFiles()?.forEach { it.deleteRecursively() } }
+            }
+        }
+        // The kernel does not count freed pages back the instant they are freed, and a
+        // number that has not moved yet reads as a button that did nothing.
+        delay(SETTLE_MS)
+        return Recovered(before, device.memory().first, hadModel)
     }
 
     // MARK: - Answering
@@ -208,6 +326,10 @@ class OnDeviceEngine internal constructor(
             is ResourceGuard.Heat.Run -> heat.threads
         }
         loaded.setThreads(plan.prompt, plan.generate)
+        // Still holding it, and about to hold the most of it: this is where the context
+        // and the compute buffers are all in use, and where a phone short of memory takes
+        // the app. The window stays open until it is let go of.
+        log.noteStillBusy(clock())
         stopReason = null
         cancelUnloadTimer()
         _state.value = State.Answering(model, plan)
@@ -227,7 +349,14 @@ class OnDeviceEngine internal constructor(
                                         "Start a new conversation with a shorter question.",
                                 ),
                             )
-                            else -> emit(
+                            else -> {
+                                // It answered, and the phone is still here: whatever the
+                                // last kill was about, this model is not it any more.
+                                if (log.killedModelID == model.id) {
+                                    log.killedModelID = null
+                                    log.killedWithFreeBytes = 0
+                                }
+                                emit(
                                 ChatStreamEvent.Finished(
                                     ChatMetrics(
                                         promptTokens = event.metrics.promptTokens,
@@ -236,7 +365,8 @@ class OnDeviceEngine internal constructor(
                                         timeToFirstToken = event.metrics.firstTokenMillis / 1000.0,
                                     ),
                                 ),
-                            )
+                                )
+                            }
                         }
                     }
                 }
@@ -291,15 +421,27 @@ class OnDeviceEngine internal constructor(
             throw OnDeviceFailure(OnDeviceNotices.changedOnDisk(model.label))
         }
         _state.value = State.Loading(model)
+        // Written down before the largest allocation this app ever makes, so that if the
+        // phone takes the app for it — then, or at any point while it is held — the next
+        // run can tell that is what happened.
+        val context = contextFor(model)
+        log.noteBusy(model.id, clock(), device.memory().first)
+        val anonymousBefore = device.anonymousBytes()
         try {
             val opened = runtime.open(
                 store.file(model).absolutePath,
                 LlamaSession.Settings(
-                    contextLength = model.model.recommended.contextLength,
+                    contextLength = context,
                     threadsPrompt = plan.prompt,
                     threadsGenerate = plan.generate,
                 ),
             )
+            // What it actually cost this phone, rather than what another phone's
+            // measurement implies: anonymous memory is the part no kernel can take back
+            // cheaply, and KleidiAI's repacked weights are in it.
+            val anonymous = device.anonymousBytes() - anonymousBefore
+            if (anonymous > 0) log.noteResident(model.id, context, anonymous)
+            log.noteStillBusy(clock())
             session = opened
             sessionModel = model
             _state.value = State.Loaded(model, plan)
@@ -308,12 +450,15 @@ class OnDeviceEngine internal constructor(
             opened
         } catch (cancelled: CancellationException) {
             // The answer this was for is gone. LlamaSession.open frees what it made; all
-            // that is left here is to stop calling this loaded.
+            // that is left here is to stop calling this loaded — and to close the window,
+            // so a kill hours later is not laid at this model's door.
+            log.noteIdle()
             _state.value = State.Unloaded
             session = null
             sessionModel = null
             throw cancelled
         } catch (failure: IllegalStateException) {
+            log.noteIdle()
             _state.value = State.Unloaded
             throw OnDeviceFailure(
                 if (failure.message == "cancelled") OnDeviceNotices.LEFT_APP
@@ -324,6 +469,7 @@ class OnDeviceEngine internal constructor(
 
     /** Frees the model now. Any answer in progress stops first. */
     suspend fun unload(reason: String) {
+        log.noteIdle()
         session?.cancel()
         mutex.withLock {
             val current = session ?: return
@@ -407,6 +553,16 @@ class OnDeviceEngine internal constructor(
     companion object {
         private const val LOG = "SiliconBuddy"
 
+        /** How long to let the kernel count freed memory back before reading it again. */
+        private const val SETTLE_MS = 400L
+
+        /**
+         * How long after this app was last seen holding a model an ending still counts as
+         * the phone taking it. A minute: the app writes the window's end as it works, and
+         * a process that dies a minute after the last sign of life died doing that.
+         */
+        private const val KILL_WINDOW_MS = 60_000L
+
         @Volatile private var instance: OnDeviceEngine? = null
 
         fun get(context: Context): OnDeviceEngine = instance ?: synchronized(this) {
@@ -416,6 +572,7 @@ class OnDeviceEngine internal constructor(
                     store = ModelStore(app),
                     runtime = NativeModelRuntime(app.applicationInfo.nativeLibraryDir),
                     device = AndroidDeviceState(app),
+                    log = AndroidMemoryLog(app),
                 ).also {
                     it.watch(app)
                     instance = it
