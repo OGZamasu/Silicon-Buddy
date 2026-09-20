@@ -244,32 +244,53 @@ class ChatViewModel(
      * was asked at all: a "+" that does nothing, and a tile whose "Ask on this phone" lands
      * on a list rather than a composer, are how the phone's own model becomes unreachable
      * exactly when it is the only thing left that works.
+     *
+     * Asynchronous whenever there is a Mac to ask, because both questions it turns on —
+     * does this Mac keep conversations, and what id did it give this one — are the Mac's
+     * to answer. The conversation is open once it answers; the screen follows `current`.
      */
     fun newConversation(transport: ControlTransport? = null) {
-        lastTransport = transport ?: lastTransport
-        if (usesRemoteConversations && transport != null && !macState.isOutOfReach) {
-            viewModelScope.launch {
-                try {
-                    val created = transport.createConversation(null)
-                    current = Conversation(id = created.id, title = created.title)
-                    loadConversationsNow(transport)
-                } catch (failure: TransportError) {
-                    if (failure.isMissingRoute) {
-                        // No such route on this Mac: the device keeps them from now on.
-                        usesRemoteConversations = false
-                        startLocalConversation()
-                    } else {
-                        // The Mac was there a moment ago and is not now. One here, and the
-                        // offer with it if the phone can stand in.
-                        MacState.of(failure)?.let { macState = it }
-                        error = failure.message
-                        startLocalConversation()
-                    }
-                }
-            }
+        // The Mac the chat already has, when the caller brought none. A caller that
+        // forgets the transport is not the same thing as there being no Mac, and reading
+        // it that way is how "+" came to make conversations on the phone that the Mac had
+        // never heard of: missing from its list, missing from its other devices, and
+        // answered 404 by the conversation route on the very first message.
+        val mac = transport ?: lastTransport
+        lastTransport = mac
+        if (mac == null || macState.isOutOfReach) {
+            startLocalConversation()
             return
         }
-        startLocalConversation()
+        viewModelScope.launch {
+            // Nothing is known about what a Mac keeps until it has been asked, and
+            // `usesRemoteConversations` is false for "not asked yet" exactly as it is for
+            // "keeps none". Deciding on it inside the first round trip puts the first
+            // conversation of every session on the phone alone. `open` waits for the same
+            // answer for the same reason; this costs at most the one ask already in
+            // flight, and the screen shows the list until the conversation lands.
+            awaitConversationAnswer(mac)
+            if (!usesRemoteConversations || macState.isOutOfReach) {
+                startLocalConversation()
+                return@launch
+            }
+            try {
+                val created = mac.createConversation(null)
+                current = Conversation(id = created.id, title = created.title)
+                loadConversationsNow(mac)
+            } catch (failure: TransportError) {
+                if (failure.isMissingRoute) {
+                    // No such route on this Mac: the device keeps them from now on.
+                    usesRemoteConversations = false
+                    startLocalConversation()
+                } else {
+                    // The Mac was there a moment ago and is not now. One here, and the
+                    // offer with it if the phone can stand in.
+                    MacState.of(failure)?.let { macState = it }
+                    error = failure.message
+                    startLocalConversation()
+                }
+            }
+        }
     }
 
     /**
@@ -473,6 +494,16 @@ class ChatViewModel(
 
         /** The Mac has no such conversation: one this device made while it was away. */
         NoSuchConversation,
+
+        /**
+         * The route was there and said nothing: a stream that closed without one event.
+         *
+         * Not an answer, so the next route is worth trying — but not evidence about what
+         * the Mac has either, which is the difference that matters on the conversation
+         * route. A Mac that listed a conversation and then goes quiet about it has not
+         * stopped keeping conversations.
+         */
+        Silent,
     }
 
     /** True while the Mac is answering the open conversation, ours or anyone's. */
@@ -497,6 +528,11 @@ class ChatViewModel(
                     }
                     // Only this route is missing; plain streaming may still be there.
                     Outcome.MissingRoute -> usesRemoteConversations = false
+                    // The route answered and sent nothing. Plain streaming next — but the
+                    // Mac listed this conversation a moment ago, so silence about it says
+                    // nothing about whether it keeps conversations, and reading it as "it
+                    // keeps none" would move every one of them onto the phone.
+                    Outcome.Silent -> Unit
                     // This Mac keeps conversations and has never heard of this one: it was
                     // made here while the Mac was out of reach. It goes as plain history
                     // instead, and this device keeps the transcript. The Mac still keeps
@@ -522,7 +558,8 @@ class ChatViewModel(
                 Outcome.Answered -> {
                     finishStreaming(null); persist(transport); return
                 }
-                Outcome.NoSuchConversation, Outcome.MissingRoute -> usesStreaming = false
+                Outcome.NoSuchConversation, Outcome.MissingRoute, Outcome.Silent ->
+                    usesStreaming = false
                 Outcome.Busy -> {
                     isConversationBusy = true
                     persist(transport); return
@@ -631,7 +668,7 @@ class ChatViewModel(
             return Outcome.Failed
         }
         // A stream that ends without one event is not an answer; try the next thing.
-        return if (sawAnything || finished) Outcome.Answered else Outcome.MissingRoute
+        return if (sawAnything || finished) Outcome.Answered else Outcome.Silent
     }
 
     /**
