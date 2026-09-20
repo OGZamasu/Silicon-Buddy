@@ -109,6 +109,17 @@ class ChatViewModel(
     private var lastConversationAsk = 0L
 
     /**
+     * Conversations this device keeps although the Mac keeps its own: the ones made here
+     * while the Mac was out of reach. The Mac has never heard of them, so its conversation
+     * route answers 404 for them — which is a fact about that conversation, not about the
+     * Mac — and the transcript is this device's to save and to send as history.
+     */
+    private val keptHere = mutableSetOf<String>()
+
+    /** Whether an ask about the Mac's conversations is still running. For the tests. */
+    internal val conversationAskInFlight: Boolean get() = conversationsAsk?.isActive == true
+
+    /**
      * How long to leave between asking a Mac what it keeps, when the last ask failed for a
      * reason that says nothing. The dashboard polls every few seconds and every answer is
      * news that the Mac is up; without a floor, a Mac that answers `/metrics` and fails
@@ -183,7 +194,13 @@ class ChatViewModel(
                     val remote = transport.conversations()
                     usesRemoteConversations = true
                     askedAboutConversations = true
+                    // What this device made while the Mac was out of reach is in the store
+                    // and in no Mac's list. Dropping it here is how it would be lost —
+                    // including after a restart, where nothing else remembers it.
+                    val here = store.all().filterNot { stored -> remote.any { it.id == stored.id } }
+                    keptHere += here.map { it.id }
                     conversations.clear()
+                    conversations.addAll(here)
                     conversations.addAll(
                         remote.map {
                             Conversation(
@@ -261,6 +278,7 @@ class ChatViewModel(
      */
     private fun startLocalConversation() {
         val fresh = Conversation()
+        keptHere += fresh.id
         current = fresh
         conversations.add(0, fresh)
         refusal = null
@@ -324,15 +342,18 @@ class ChatViewModel(
                     )
                     return@launch
                 } catch (failure: TransportError) {
-                    if (failure.isMissingRoute) {
-                        // No /conversations on this Mac at all.
-                        usesRemoteConversations = false
-                    } else {
-                        // Including "no such conversation": the Mac still owns the rest.
-                        error = failure.message
-                        conversations.removeAll { it.id == id }
-                        current = null
-                        return@launch
+                    when {
+                        failure.isMissingRoute -> usesRemoteConversations = false
+                        // No such conversation *there*. It may be one this device made
+                        // while the Mac was out of reach, in which case it is here.
+                        failure is TransportError.NotFound && store.conversation(id) != null ->
+                            keptHere += id
+                        else -> {
+                            error = failure.message
+                            conversations.removeAll { it.id == id }
+                            current = null
+                            return@launch
+                        }
                     }
                 }
             }
@@ -447,7 +468,12 @@ class ChatViewModel(
         if (current?.onDevice == true) viewModelScope.launch { persistPhone() }
     }
 
-    private enum class Outcome { Answered, MissingRoute, Busy, Failed, Stopped }
+    private enum class Outcome {
+        Answered, MissingRoute, Busy, Failed, Stopped,
+
+        /** The Mac has no such conversation: one this device made while it was away. */
+        NoSuchConversation,
+    }
 
     /** True while the Mac is answering the open conversation, ours or anyone's. */
     var isConversationBusy by mutableStateOf(false)
@@ -464,13 +490,18 @@ class ChatViewModel(
             // First choice: the conversation route, so the Mac keeps the transcript.
             val id = current?.id
             val last = history.lastOrNull()
-            if (usesRemoteConversations && id != null && last != null) {
+            if (usesRemoteConversations && id != null && id !in keptHere && last != null) {
                 when (consume(transport.sendMessage(id, last, maxTokens), messageID)) {
                     Outcome.Answered -> {
                         finishStreaming(null); persist(transport); return
                     }
                     // Only this route is missing; plain streaming may still be there.
                     Outcome.MissingRoute -> usesRemoteConversations = false
+                    // This Mac keeps conversations and has never heard of this one: it was
+                    // made here while the Mac was out of reach. It goes as plain history
+                    // instead, and this device keeps the transcript. The Mac still keeps
+                    // its own, so that flag stays exactly as it was.
+                    Outcome.NoSuchConversation -> keptHere += id
                     Outcome.Busy -> {
                         // The Mac is still answering the previous message here. Sending
                         // it again would only be refused again.
@@ -491,7 +522,7 @@ class ChatViewModel(
                 Outcome.Answered -> {
                     finishStreaming(null); persist(transport); return
                 }
-                Outcome.MissingRoute -> usesStreaming = false
+                Outcome.NoSuchConversation, Outcome.MissingRoute -> usesStreaming = false
                 Outcome.Busy -> {
                     isConversationBusy = true
                     persist(transport); return
@@ -578,6 +609,10 @@ class ChatViewModel(
         } catch (failure: TransportError) {
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
+            // Nothing has been written into the reply yet, so it is still open for the
+            // next attempt: no sentence is left on it, and no error is shown for something
+            // the app is about to do another way.
+            if (failure is TransportError.NotFound && !sawAnything) return Outcome.NoSuchConversation
             if (failure is TransportError.Conflict) {
                 finishStreaming(failure.message)
                 error = failure.message
@@ -657,7 +692,7 @@ class ChatViewModel(
             persistPhone()
             return
         }
-        if (usesRemoteConversations) {
+        if (usesRemoteConversations && current?.id !in keptHere) {
             // The Mac keeps the transcript, so the list it publishes is the one worth
             // showing: the title and the count are its answers, not ours.
             loadConversationsNow(transport)
@@ -690,6 +725,7 @@ class ChatViewModel(
         conversationsAsk = null
         lastTransport = null
         lastConversationAsk = 0L
+        keptHere.clear()
         conversations.clear()
         // The phone's own conversations belong to no Mac, so a new one does not take them.
         if (current?.onDevice != true) current = null
@@ -702,6 +738,8 @@ class ChatViewModel(
     val storageNote: String
         get() = when {
             current?.onDevice == true -> "Kept only on this phone — not synced with your Mac."
+            current?.id in keptHere && usesRemoteConversations ->
+                "Kept on this device: your Mac was out of reach when this one started."
             usesRemoteConversations -> "Synced with the Mac."
             // The Mac has never answered, so whether it keeps conversations is not known —
             // and saying it does not would be a claim about a Mac nobody has heard from.

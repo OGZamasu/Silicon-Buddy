@@ -127,21 +127,31 @@ class OnDeviceChatTest {
             return listOf(ConversationSummary("mac-1", "On the Mac", "2026-09-19T00:00:00Z", 2))
         }
 
+        /** The ids this Mac has actually heard of — it 404s on anything else, as a Mac does. */
+        val known = java.util.concurrent.CopyOnWriteArraySet(listOf("mac-1"))
+
         override suspend fun createConversation(title: String?): ConversationSummary {
             record("createConversation:$title")
             fail()
+            known += "mac-new"
             return ConversationSummary("mac-new", title ?: "New conversation", "2026-09-19T00:00:00Z", 0)
         }
 
         override suspend fun conversation(id: String): ConversationDetail {
             record("conversation:$id")
             fail()
+            if (keepsConversations && id !in known) {
+                throw TransportError.NotFound("That conversation isn't on your Mac any more.")
+            }
             return ConversationDetail(id, "On the Mac", "2026-09-19T00:00:00Z", messages = emptyList())
         }
 
         override fun sendMessage(conversationID: String, message: ChatMessageWire, maxTokens: Int?): Flow<ChatStreamEvent> = flow {
             record("sendMessage:$conversationID")
             fail()
+            if (keepsConversations && conversationID !in known) {
+                throw TransportError.NotFound("That conversation isn't on your Mac any more.")
+            }
             sent += conversationID to message
             emit(ChatStreamEvent.Token("From the Mac."))
             emit(ChatStreamEvent.Finished(ChatMetrics(3, 3, 30.0)))
@@ -198,13 +208,15 @@ class OnDeviceChatTest {
     private lateinit var mac: RecordingMac
     private lateinit var phone: FakePhone
     private lateinit var chat: ChatViewModel
+    private lateinit var store: ConversationStore
 
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         mac = RecordingMac()
         phone = FakePhone(listOf(qwen))
-        chat = ChatViewModel(Application(), ConversationStore(folder.newFolder()), phone)
+        store = ConversationStore(folder.newFolder())
+        chat = ChatViewModel(Application(), store, phone)
     }
 
     @After
@@ -699,6 +711,100 @@ class OnDeviceChatTest {
     }
 
     @Test
+    fun `a conversation made while the Mac was away is answered by the Mac when it comes back`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+
+        // Made here, because the Mac was not answering.
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.newConversation(mac)
+        val id = chat.current!!.id
+
+        // The Mac comes back. The first thing sent has to be answered, not refused: the
+        // Mac has never heard of this conversation, and that is a fact about the
+        // conversation, not about the Mac's conversations route.
+        mac.failure = null
+        chat.noteMacAnswered()
+        ask("What is the capital of France?", mac)
+
+        val reply = chat.current!!.messages.last()
+        assertEquals("From the Mac.", reply.content)
+        assertNull("no sentence about a conversation that was never there", reply.failure)
+        assertNull(chat.error)
+        assertTrue("it went as history, which is what the Mac can answer", mac.calls.any { it == "chatStream" })
+        assertTrue(
+            "and the Mac was not asked about a conversation it never made",
+            mac.calls.none { it == "sendMessage:$id" },
+        )
+        assertTrue("the Mac still keeps its own conversations", chat.usesRemoteConversations)
+        assertEquals("kept here, since the Mac has nowhere to put it", id, chat.current!!.id)
+        assertTrue("the note says where it is kept", chat.storageNote.startsWith("Kept on this device"))
+        runBlocking {
+            assertEquals("and the transcript is saved here", 2, store.conversation(id)!!.messages.size)
+        }
+
+        // And a second question goes the same way.
+        ask("And Portugal?", mac)
+        assertEquals(0, mac.calls.count { it == "sendMessage:$id" })
+        assertEquals("From the Mac.", chat.current!!.messages.last().content)
+
+        // And it is still in the list after the Mac's own list is read again.
+        chat.loadConversations(mac)
+        await("the list was read again") { mac.calls.count { it == "conversations" } >= 2 }
+        assertTrue("it is not dropped for not being the Mac's", chat.conversations.any { it.id == id })
+    }
+
+    @Test
+    fun `a conversation the Mac has forgotten is still answered, and not called a dead end`() {
+        // The other way into the same place: a conversation the Mac *did* make and has
+        // since lost. A 404 from that route is about the conversation, and the question
+        // still deserves an answer rather than a sentence about the Mac's filing.
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+        chat.open("mac-1", mac)
+        await("opened") { chat.current?.id == "mac-1" }
+        mac.known -= "mac-1"
+
+        ask("What is the capital of France?", mac)
+
+        val reply = chat.current!!.messages.last()
+        assertEquals("From the Mac.", reply.content)
+        assertNull("no dead end", reply.failure)
+        assertNull(chat.error)
+        assertTrue("it did try the Mac's own route first", mac.calls.any { it == "sendMessage:mac-1" })
+        assertTrue("and fell back to plain history", mac.calls.any { it == "chatStream" })
+        assertTrue("the Mac still keeps its own conversations", chat.usesRemoteConversations)
+        runBlocking { assertNotNull("and this device keeps this one", store.conversation("mac-1")) }
+    }
+
+    @Test
+    fun `opening a conversation the Mac never made opens the copy on this device`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.newConversation(mac)
+        val id = chat.current!!.id
+        mac.failure = null
+        chat.noteMacAnswered()
+        ask("What is the capital of France?", mac)
+
+        // Away and back again — the Mac is asked about it, says no, and the device has it.
+        chat.open("mac-1", mac)
+        await("the Mac's conversation opened") { chat.current?.id == "mac-1" }
+        chat.open(id, mac)
+        await("back to ours") { chat.current?.id == id }
+
+        assertEquals("with what was said in it", 2, chat.current!!.messages.size)
+        assertNull("and no error about a conversation that is right here", chat.error)
+        assertTrue("it is still in the list", chat.conversations.any { it.id == id })
+    }
+
+    @Test
     fun `a Mac that goes away mid-request still leaves a conversation to type in`() {
         mac.keepsConversations = true
         chat.loadConversations(mac)
@@ -736,6 +842,11 @@ class OnDeviceChatTest {
         mac.conversationsFailure = TransportError.Server(500, "Boom")
         chat.loadConversations(mac)
         await("the ask failed") { chat.error != null }
+        // The ask is not over when the error appears: the local store is read after it, on
+        // another thread. A poll that lands in that window is dropped by the in-flight
+        // guard rather than by the floor — which is the same thing to the owner, whose
+        // next poll is four seconds away, and a coin toss to a test with a fixed clock.
+        await("the ask settled") { !chat.conversationAskInFlight }
         val asks = mac.calls.count { it == "conversations" }
         assertEquals(1, asks)
 
@@ -751,6 +862,7 @@ class OnDeviceChatTest {
         mac.conversationsFailure = null
         chat.noteMacAnswered()
         await("asked again") { chat.usesRemoteConversations }
+        await("and that ask settled too") { !chat.conversationAskInFlight }
         assertEquals(asks + 1, mac.calls.count { it == "conversations" })
     }
 
@@ -767,6 +879,16 @@ class OnDeviceChatTest {
         chat.conversationAskFloorMillis = 0
         chat.noteMacAnswered()
         await("asked again") { chat.usesRemoteConversations }
+        assertEquals(
+            "the one made while it was away stays here",
+            "Kept on this device: your Mac was out of reach when this one started.",
+            chat.storageNote,
+        )
+
+        // …and one the Mac makes now is the Mac's.
+        chat.noteReachability(Reachability.Ready("1.0", "Qwen3 4B"), paired = true)
+        chat.newConversation(mac)
+        await("the Mac made one") { chat.current?.id == "mac-new" }
         assertEquals("Synced with the Mac.", chat.storageNote)
     }
 

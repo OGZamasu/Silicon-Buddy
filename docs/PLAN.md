@@ -422,8 +422,11 @@ progress notification with Cancel; on 10–13 a `dataSync` foreground service th
 default network, pauses when it is not free, and says so when it finally gives up.
 
 "Wi-Fi only" is tested as Android's own `NOT_METERED` rather than the Wi-Fi transport: a
-phone tethered to another phone is Wi-Fi and is somebody's data allowance. Under a tunnel
-that carries no transports of its own, the networks underneath decide. A download that
+phone tethered to another phone is Wi-Fi and is somebody's data allowance. The tunnel is
+judged first, because on the owner's phone the default network *is* Tailscale: an unmetered
+tunnel is free, and a metered one is judged by the network underneath it — which keeps a
+tunnel over mobile data refused and a tunnel over the owner's own Wi-Fi allowed. The job's
+own constraint asks the system for the same thing. A download that
 stopped half-way is a gigabyte of the owner's storage with nothing on screen to show for it,
 so Settings says "42% of 1.19 MB is already here — paused" beside Resume and Delete, read
 off the disk and so unchanged by a restart; every model's row also says what it needs to run
@@ -434,6 +437,17 @@ old one left. A verified model is re-hashed before use if its size or modificati
 changes — before the preflight, and again in the load itself. The phone never leaves the
 tailnet: every request still goes through `TailnetHost`, which now also refuses to follow a
 redirect anywhere.
+
+A new conversation is the Mac's to make, on a Mac that keeps them — but only while it is
+answering. Out of reach, one is made here instead, with the offer on the screen beside it:
+a "+" that does nothing, and a tile whose "Ask on this phone" lands on a list rather than a
+composer, would make the phone's own model unreachable exactly when it is the only thing
+left that works. Such a conversation stays this device's — the Mac never heard of it, so it
+goes as plain history when the Mac comes back, is saved here, and sits in the list beside
+the Mac's own. A 404 from the Mac's conversation route means *that conversation*, not that
+route, so it falls back to history rather than ending the exchange: a Mac that has lost a
+conversation still answers the question. And a Mac that answers some routes while failing
+`/conversations` is asked again at most every thirty seconds, not on every dashboard poll.
 
 **The fallback.** `FallbackPolicy` offers the phone only when the Mac is out of reach —
 unreachable, the app not running, too slow, or no Mac paired (401 included) — a model is
@@ -493,7 +507,7 @@ and SmolLM2's labelled answer; and — on an install with no instrumentation att
 Android pins an instrumented process to the foreground and refuses it — `am send-trim-memory
 … BACKGROUND` unloading the model 15 ms later, inside the 30 s grace.
 
-Tests: Android 626 unit (91 new: the fallback truth table and what counts as out of reach;
+Tests: Android 629 unit (94 new: the fallback truth table and what counts as out of reach;
 the downloader over a socket against a fake Mac — fetch, 40% cut and resume with Range and
 If-Range, 200 restart, 416, 409, 503, a mismatch leading to `verify=1` once and a clean
 refetch, a second mismatch keeping nothing, a full disk, the Mac's own failure, a cancel
@@ -510,11 +524,14 @@ the Mac serving a different file than it listed, a 404 from a conversation route
 redirect the client refuses to follow; and after the second review: "+" and the tile's link
 opening a composer with the offer while the Mac is out of reach, a Mac that goes away
 mid-request, the floor between asks on a Mac that answers some routes and not others, and
-each way a Tailscale tunnel can present itself), 21 instrumented on the minified release
+each way a Tailscale tunnel can present itself; and after the third: a conversation made
+while the Mac was away being answered the moment it returns, one the Mac has forgotten being
+answered rather than refused, and opening either of them), 21 instrumented on the minified release
 build (15 new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of
 their own). Every protection was checked by undoing it and seeing a test fail (14 mutants
-in the first round, 5 for the first review's fixes and 5 for the second's, all caught).
-Release APK 17,932,829 bytes
+in the first round, 5 for the first review's fixes, 5 for the second's and 4 for the
+third's, all caught).
+Release APK 17,933,637 bytes
 (13,920,891 at M4); the llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in
 the APK. `scripts/ci-android.sh` is the local CI: unit tests — both modules, forced with
 `--rerun`, because an up-to-date test task prints nothing and passes, which is a gate that
@@ -552,6 +569,10 @@ and going away) runs on the host: `standin.sh start` in the M5 stand-in folder.
 
 Not done, and why:
 
+0. **An empty conversation left on the Mac.** If `createConversation` times out after the
+   Mac has already made one, the app makes its own here and the Mac is left with an empty
+   "New conversation" nobody asked for. The reply that would have named it never arrived,
+   so there is no id to clean up by; it appears in the list and can be deleted there.
 1. **The real phone.** Nothing here touched the owner's S24 Ultra. The benchmark there
    (llama-bench, 2026-09-19) is where the Mac's numbers come from; the app's own time to
    first word, speed, heat, the i8mm pick through the app, One UI's memory killer against a
