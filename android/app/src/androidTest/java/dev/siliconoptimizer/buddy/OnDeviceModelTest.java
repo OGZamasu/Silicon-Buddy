@@ -620,6 +620,47 @@ public class OnDeviceModelTest {
         assertFalse("and it is let go of as soon as the answer ends", screenIsKeptOn());
     }
 
+    /**
+     * The feature's own front door, from a phone that has already talked to its Mac.
+     *
+     * Once the app has learned the Mac keeps conversations, a new one is the Mac's to make —
+     * and with the Mac gone that call fails, which for one round left "+" and the tile's
+     * "Ask on this phone" opening nothing at all: the conversation list, no composer, and
+     * so no offer either. This is that, on the screen.
+     */
+    @Test
+    public void withTheMacGoneTheTileAndThePlusButtonStillOpenAComposerWithTheOffer() throws Exception {
+        install(SMOL);
+        probe("delete", context, STORIES);
+        probe("delete", context, QWEN);
+        pair();
+        // The app asks what this Mac keeps as soon as it is paired; wait until it knows.
+        assertTrue("the app read the Mac's conversations", waitFor(WAIT, () -> justSaw("GET /conversations")));
+
+        mac.unreachable(120);
+        context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("siliconbuddy://ask?offer=phone"))
+            .setPackage(PACKAGE)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP));
+
+        UiObject2 banner = device.wait(Until.findObject(By.text("Your Mac isn't answering.")), WAIT);
+        if (banner == null) evidence("tile-offer");
+        assertNotNull("the tile's link lands on the offer", banner);
+        assertNotNull("with a composer under it", device.wait(Until.findObject(By.clazz("android.widget.EditText")), WAIT));
+        assertEquals("and nothing answered by itself", "Unloaded", state());
+
+        // The "+" button, from the same state.
+        UiObject2 fresh = device.wait(Until.findObject(By.desc("New conversation")), WAIT);
+        assertNotNull(fresh);
+        fresh.click();
+        UiObject2 again = device.wait(Until.findObject(By.clazz("android.widget.EditText")), WAIT);
+        if (again == null) evidence("plus-offer");
+        assertNotNull("a new conversation opens rather than nothing", again);
+        assertNotNull("and says the Mac isn't answering",
+            device.wait(Until.findObject(By.text("Your Mac isn't answering.")), WAIT));
+        assertEquals("still nothing answered", "Unloaded", state());
+        mac.unreachable(0);
+    }
+
     /** Whether this app's window is holding the screen awake, as the window manager sees it. */
     private boolean screenIsKeptOn() throws Exception {
         String windows = shell("dumpsys window windows");

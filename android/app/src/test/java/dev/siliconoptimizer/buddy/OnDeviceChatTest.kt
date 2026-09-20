@@ -77,6 +77,8 @@ class OnDeviceChatTest {
     class RecordingMac : ControlTransport {
         val calls = CopyOnWriteArrayList<String>()
         @Volatile var failure: TransportError? = null
+        /** A Mac that answers everything else and falls over on this one route. */
+        @Volatile var conversationsFailure: TransportError? = null
         @Volatile var keepsConversations = false
         val sent = CopyOnWriteArrayList<Pair<String, ChatMessageWire>>()
 
@@ -119,6 +121,7 @@ class OnDeviceChatTest {
 
         override suspend fun conversations(): List<ConversationSummary> {
             record("conversations")
+            conversationsFailure?.let { throw it }
             fail()
             if (!keepsConversations) throw TransportError.RouteUnavailable("/conversations")
             return listOf(ConversationSummary("mac-1", "On the Mac", "2026-09-19T00:00:00Z", 2))
@@ -575,6 +578,8 @@ class OnDeviceChatTest {
     @Test
     fun `a Mac unreachable at launch is asked again when it comes back, before anything is sent to it`() {
         mac.keepsConversations = true
+        // The floor between asks is about a Mac that keeps failing; this one comes back.
+        chat.conversationAskFloorMillis = 0
         mac.failure = TransportError.Unreachable("100.64.0.9")
         chat.loadConversations(mac)
         await("the ask failed") { chat.error != null }
@@ -601,6 +606,7 @@ class OnDeviceChatTest {
     @Test
     fun `the dashboard's own polling counts as the Mac being back`() {
         mac.keepsConversations = true
+        chat.conversationAskFloorMillis = 0
         mac.failure = TransportError.Unreachable("100.64.0.9")
         chat.loadConversations(mac)
         await("the ask failed") { chat.error != null }
@@ -644,6 +650,124 @@ class OnDeviceChatTest {
         assertTrue(message.contains("**Phone (Qwen3.5 2B):** Hello from the phone."))
         assertTrue(message.contains("**Me:** And now?"))
         assertFalse("nothing empty was quoted", message.contains("**Assistant:** \n"))
+    }
+
+    // MARK: - A new conversation while the Mac is out of reach
+
+    @Test
+    fun `the plus button still makes a conversation when the Mac that keeps them is out of reach`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+
+        // The Mac goes. This is the moment the phone's own model exists for.
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.newConversation(mac)
+
+        val fresh = chat.current
+        assertNotNull("a composer, not an empty list", fresh)
+        assertFalse("made here, because the Mac could not make it", fresh!!.onDevice)
+        assertNotNull("and the offer is on the screen with it", chat.offer)
+        assertEquals(qwen.id, chat.offer!!.model.id)
+
+        // And it answers on the phone from there, with one tap and no Mac.
+        val before = mac.calls.size
+        chat.answerOnPhone()
+        chat.draft = "What is the capital of France?"
+        chat.send(mac)
+        await("the phone answered") { !chat.isSending && chat.current?.onDevice == true }
+        assertEquals("Hello from the phone.", chat.current!!.messages.last().content)
+        assertEquals("nothing was asked of the Mac", before, mac.calls.size)
+    }
+
+    @Test
+    fun `the tile's Ask on this phone opens a composer with the offer, even after the Mac had answered`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+
+        // What the tile does: says the Mac is out of reach, then asks for a conversation.
+        chat.offerFromShortcut()
+        chat.newConversation(mac)
+
+        assertNotNull("the composer is open", chat.current)
+        assertNotNull("with the offer above it", chat.offer)
+        assertTrue("and nothing has been answered", phone.answered.isEmpty())
+        assertEquals("the Mac was not asked to make it", 0, mac.calls.count { it.startsWith("createConversation") })
+    }
+
+    @Test
+    fun `a Mac that goes away mid-request still leaves a conversation to type in`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+
+        // Believed up, so it is asked — and it is gone by the time it is. The owner is
+        // left with a composer and the offer, not an error and an empty screen.
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+        chat.newConversation(mac)
+        await("a conversation was made here instead") { chat.current != null }
+
+        assertFalse("made on the device", chat.current!!.onDevice)
+        assertEquals(MacState.Unreachable, chat.macState)
+        assertNotNull("with the offer above it", chat.offer)
+        assertNotNull("and it says what happened", chat.error)
+    }
+
+    @Test
+    fun `a Mac that is answering still makes its own conversations`() {
+        mac.keepsConversations = true
+        chat.loadConversations(mac)
+        await("the Mac's list") { chat.usesRemoteConversations }
+
+        chat.newConversation(mac)
+        await("the Mac made one") { chat.current?.id == "mac-new" }
+        assertEquals(1, mac.calls.count { it.startsWith("createConversation") })
+        assertNull("nothing to offer: the Mac is right there", chat.offer)
+    }
+
+    @Test
+    fun `a Mac that answers metrics but not conversations is not asked again on every poll`() {
+        mac.keepsConversations = true
+        var now = 1_000L
+        chat.clock = { now }
+        mac.conversationsFailure = TransportError.Server(500, "Boom")
+        chat.loadConversations(mac)
+        await("the ask failed") { chat.error != null }
+        val asks = mac.calls.count { it == "conversations" }
+        assertEquals(1, asks)
+
+        // Ten dashboard polls in the next few seconds, each one news that the Mac is up.
+        repeat(10) {
+            now += 400
+            chat.noteMacAnswered()
+        }
+        assertEquals("one ask, not eleven", asks, mac.calls.count { it == "conversations" })
+
+        // Once the floor has passed, it tries again — and this time the Mac answers.
+        now += chat.conversationAskFloorMillis
+        mac.conversationsFailure = null
+        chat.noteMacAnswered()
+        await("asked again") { chat.usesRemoteConversations }
+        assertEquals(asks + 1, mac.calls.count { it == "conversations" })
+    }
+
+    @Test
+    fun `while the Mac has never answered, the transcript does not claim the Mac keeps nothing`() {
+        mac.failure = TransportError.Unreachable("100.64.0.9")
+        chat.loadConversations(mac)
+        await("the ask failed") { chat.error != null }
+        chat.newConversation(mac)
+        assertEquals("Kept on this device while your Mac is out of reach.", chat.storageNote)
+
+        mac.failure = null
+        mac.keepsConversations = true
+        chat.conversationAskFloorMillis = 0
+        chat.noteMacAnswered()
+        await("asked again") { chat.usesRemoteConversations }
+        assertEquals("Synced with the Mac.", chat.storageNote)
     }
 
     // MARK: - The Mac-facing code refuses phone ids outright

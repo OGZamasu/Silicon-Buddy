@@ -493,7 +493,7 @@ and SmolLM2's labelled answer; and — on an install with no instrumentation att
 Android pins an instrumented process to the foreground and refuses it — `am send-trim-memory
 … BACKGROUND` unloading the model 15 ms later, inside the 30 s grace.
 
-Tests: Android 619 unit (84 new: the fallback truth table and what counts as out of reach;
+Tests: Android 626 unit (91 new: the fallback truth table and what counts as out of reach;
 the downloader over a socket against a fake Mac — fetch, 40% cut and resume with Range and
 If-Range, 200 restart, 416, 409, 503, a mismatch leading to `verify=1` once and a clean
 refetch, a second mismatch keeping nothing, a full disk, the Mac's own failure, a cancel
@@ -507,10 +507,14 @@ file that changed under it, a Mac unreachable at launch being asked again when i
 back, the question saved before the model is loaded, the screen kept awake, the newest
 turns only, metered Wi-Fi, a digest that is not a digest, a new pin replacing the old file,
 the Mac serving a different file than it listed, a 404 from a conversation route, and a
-redirect the client refuses to follow), 20 instrumented on the minified release build (14
-new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of their
-own). Every protection was checked by undoing it and seeing a test fail (14 mutants in the
-first round, 5 more for the review's fixes, all caught). Release APK 17,930,693 bytes
+redirect the client refuses to follow; and after the second review: "+" and the tile's link
+opening a composer with the offer while the Mac is out of reach, a Mac that goes away
+mid-request, the floor between asks on a Mac that answers some routes and not others, and
+each way a Tailscale tunnel can present itself), 21 instrumented on the minified release
+build (15 new, below), iOS 275 (5 new: the new types round-trip, and 503/507 have cases of
+their own). Every protection was checked by undoing it and seeing a test fail (14 mutants
+in the first round, 5 for the first review's fixes and 5 for the second's, all caught).
+Release APK 17,932,829 bytes
 (13,920,891 at M4); the llama.cpp libraries are 17.0 MB unpacked and 6.7 MB compressed in
 the APK. `scripts/ci-android.sh` is the local CI: unit tests — both modules, forced with
 `--rerun`, because an up-to-date test task prints nothing and passes, which is a gate that
@@ -537,7 +541,9 @@ trim unloads at once; a model comes through Settings — waiting on mobile data,
 consented to — and is verified; a download stopped half-way says how much is here and
 offers Resume and Delete, unchanged by a trip to Home; and an unreachable Mac offers the
 phone, whose answer carries its chip, holds the screen awake while it writes and lets go
-the moment it stops, and never reaches the Mac. Then a second pass, on the fresh install
+the moment it stops, and never reaches the Mac; and — from a phone that had already talked
+to its Mac, which is what made this a regression rather than a gap — the tile's link and
+the "+" button each open a composer with the offer on it while the Mac is gone. Then a second pass, on the fresh install
 every run begins with: `NotificationsOffTest` alone, because another class grants
 notifications for the whole of the first pass, checking the owner's own case — nothing
 granted, and the Agents tab and the Create queue each say so, with Allow. The stand-in

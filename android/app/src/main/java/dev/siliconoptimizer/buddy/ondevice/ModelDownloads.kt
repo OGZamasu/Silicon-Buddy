@@ -98,10 +98,23 @@ object DownloadNetwork {
 
     fun allows(now: NetworkNow, useMobileData: Boolean): Boolean {
         if (useMobileData) return true
+        // The tunnel first, because on the owner's phone the default network *is* the
+        // tunnel: Tailscale copies the Wi-Fi transport onto it, and whether it also copies
+        // "not metered" varies by Android version and by what it is riding on. An unmetered
+        // tunnel is free; a metered one is judged by the network underneath it, which keeps
+        // a tunnel over mobile data refused.
+        if (now.isVpn) return now.unmetered || now.underneath.any { it.isWired && it.unmetered }
         if (now.isWired) return now.unmetered
-        // A tunnel that says nothing about what it rides on: look underneath it.
-        if (now.isVpn) return now.underneath.any { it.isWired && it.unmetered }
         return false
+    }
+
+    /**
+     * The capabilities the job asks the system for. Separate from [request] because a
+     * `NetworkRequest` built in a JVM test is a stub that answers nothing.
+     */
+    fun capabilities(useMobileData: Boolean): Set<Int> = buildSet {
+        add(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        if (!useMobileData) add(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
     /**
@@ -111,11 +124,8 @@ object DownloadNetwork {
      * rule as [allows], enforced by the system while the job waits.
      */
     fun request(useMobileData: Boolean): NetworkRequest = NetworkRequest.Builder()
-        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-        .apply {
-            if (!useMobileData) addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        }
+        .apply { capabilities(useMobileData).forEach { addCapability(it) } }
         .build()
 
     /** The phone's default network right now, and what it rides on. */
@@ -126,8 +136,10 @@ object DownloadNetwork {
         val capabilities = connectivity.getNetworkCapabilities(active)
             ?: return NetworkNow(emptySet(), false)
         val now = read(capabilities)
-        if (!now.isVpn || now.isWired) return now
-        // Under the tunnel: every other connected network this app can see.
+        if (!now.isVpn) return now
+        // Under the tunnel: every other connected network this app can see. Asked for even
+        // when the tunnel carries a transport of its own, because a tunnel marked metered
+        // over free Wi-Fi is the owner's own phone.
         val underneath = connectivity.allNetworks
             .filter { it != active }
             .mapNotNull { connectivity.getNetworkCapabilities(it) }

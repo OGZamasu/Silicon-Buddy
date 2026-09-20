@@ -90,6 +90,23 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
     /** The model the delete confirmation is asking about. */
     var deleting by androidx.compose.runtime.mutableStateOf<String?>(null)
 
+    private var lastAsk = 0L
+
+    /**
+     * The Mac has answered something — the event stream, or the dashboard's polling.
+     *
+     * Only worth acting on when the last ask got nothing: this section's list comes from the
+     * Mac, and a Mac that was out of reach when Settings was opened leaves it saying so for
+     * as long as the screen stays open. The floor is because the news arrives every few
+     * seconds while the dashboard polls.
+     */
+    fun macIsBack(transport: ControlTransport?, canControl: Boolean, now: Long = System.currentTimeMillis()) {
+        if (problem == null || loading) return
+        if (now - lastAsk < ASK_FLOOR_MILLIS) return
+        lastAsk = now
+        refresh(transport, canControl)
+    }
+
     fun refresh(transport: ControlTransport?, canControl: Boolean) {
         viewModelScope.launch {
             loading = true
@@ -201,6 +218,10 @@ class PhoneModelsViewModel(application: Application) : AndroidViewModel(applicat
     fun prefer(id: String) {
         settings.preferredModelID = id
         preferredID = id
+    }
+
+    private companion object {
+        const val ASK_FLOOR_MILLIS = 15_000L
     }
 
     fun installedNow() {

@@ -333,11 +333,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             is LinkArrival.Refused -> refusedLink = arrival.reason
             is LinkArrival.Compose -> {
                 destination = Destination.Chat
+                // The offer first: the tile and the widget only send this when *they* found
+                // the Mac unreachable, and a chat that knows that makes the conversation here
+                // instead of asking a Mac that will not answer — which is the difference
+                // between a composer and a spinner over a list.
+                if (arrival.offerPhone) chat.offerFromShortcut()
                 if (chat.current == null) chat.newConversation(app.transport)
                 openConversation = chat.current?.id
                 openingNew = openConversation == null
                 arrival.text?.let { chat.draft = it }
-                if (arrival.offerPhone) chat.offerFromShortcut()
                 arriving.value = null
             }
             LinkArrival.OpenPhoneModels -> {
@@ -399,8 +403,17 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     }
 
     // …and on a Mac with no event stream, the dashboard's polling is the news instead.
+    // Settings → On this phone listens to the same news: its list of models comes from the
+    // Mac, and a Mac that was out of reach when it was opened leaves it saying so.
     LaunchedEffect(dashboard.macAnsweredAt) {
-        if (dashboard.macAnsweredAt > 0L) chat.noteMacAnswered()
+        if (dashboard.macAnsweredAt > 0L) {
+            chat.noteMacAnswered()
+            phoneModels.macIsBack(app.transport, app.canControl)
+        }
+    }
+
+    LaunchedEffect(events.isLive) {
+        if (events.isLive) phoneModels.macIsBack(app.transport, app.canControl)
     }
 
     // A conversation the chat moved to by itself — the phone's own, answering; a new one on

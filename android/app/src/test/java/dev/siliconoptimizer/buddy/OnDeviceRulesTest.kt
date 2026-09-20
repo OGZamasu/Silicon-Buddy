@@ -217,10 +217,11 @@ class OnDeviceRulesTest {
         assertTrue(DownloadNetwork.allows(on(ethernet), false))
         assertTrue("Tailscale over Wi-Fi", DownloadNetwork.allows(on(vpn, wifi), false))
         assertFalse(DownloadNetwork.allows(on(cell), false))
-        assertFalse("Tailscale over mobile data", DownloadNetwork.allows(on(vpn, cell), false))
+        // Mobile data is metered, and so is a tunnel that rides on it.
+        assertFalse("Tailscale over mobile data", DownloadNetwork.allows(on(vpn, cell, unmetered = false), false))
         assertFalse("no network at all", DownloadNetwork.allows(NetworkNow(emptySet(), true), false))
         assertTrue(DownloadNetwork.allows(on(cell), true))
-        assertTrue(DownloadNetwork.allows(on(vpn, cell), true))
+        assertTrue(DownloadNetwork.allows(on(vpn, cell, unmetered = false), true))
     }
 
     @Test
@@ -228,20 +229,60 @@ class OnDeviceRulesTest {
         // A phone tethered to another phone, or a hotel network Android has marked
         // metered: Wi-Fi by transport, somebody's data allowance by the byte.
         assertFalse("metered Wi-Fi", DownloadNetwork.allows(on(wifi, unmetered = false), false))
-        assertFalse("metered Wi-Fi under Tailscale", DownloadNetwork.allows(on(vpn, wifi, unmetered = false), false))
+        assertFalse(
+            "metered Wi-Fi under Tailscale, with nothing free underneath",
+            DownloadNetwork.allows(on(vpn, wifi, unmetered = false, under = listOf(on(wifi, unmetered = false))), false),
+        )
         assertTrue("and the owner can still say yes to it", DownloadNetwork.allows(on(wifi, unmetered = false), true))
     }
 
     @Test
-    fun `a tunnel that says nothing about itself is judged by what it rides on`() {
-        // Some builds hand out a VPN network with no underlying transports on it at all.
-        val overWifi = on(vpn, under = listOf(on(wifi), on(cell, unmetered = false)))
-        val overMobile = on(vpn, unmetered = false, under = listOf(on(cell, unmetered = false)))
-        val overMeteredWifi = on(vpn, under = listOf(on(wifi, unmetered = false)))
-        assertTrue("Tailscale with Wi-Fi underneath", DownloadNetwork.allows(overWifi, false))
-        assertFalse("Tailscale with only mobile data underneath", DownloadNetwork.allows(overMobile, false))
-        assertFalse("Tailscale over metered Wi-Fi", DownloadNetwork.allows(overMeteredWifi, false))
-        assertFalse("nothing underneath and nothing said", DownloadNetwork.allows(on(vpn), false))
+    fun `a tunnel is judged by itself first and then by what it rides on`() {
+        // On the owner's S24 the default network *is* the Tailscale tunnel. Whether it
+        // carries the Wi-Fi transport, and whether it is marked metered, varies — so an
+        // unmetered tunnel is free, and a metered one is judged by the network underneath.
+        assertTrue("an unmetered tunnel", DownloadNetwork.allows(on(vpn), false))
+        assertTrue("an unmetered tunnel carrying Wi-Fi", DownloadNetwork.allows(on(vpn, wifi), false))
+        assertTrue(
+            "a metered tunnel over free Wi-Fi — the owner's phone",
+            DownloadNetwork.allows(on(vpn, wifi, unmetered = false, under = listOf(on(wifi))), false),
+        )
+        assertTrue(
+            "…and the same with nothing of the tunnel's own to go on",
+            DownloadNetwork.allows(on(vpn, unmetered = false, under = listOf(on(wifi), on(cell, unmetered = false))), false),
+        )
+        assertFalse(
+            "a metered tunnel over mobile data",
+            DownloadNetwork.allows(on(vpn, unmetered = false, under = listOf(on(cell, unmetered = false))), false),
+        )
+        assertFalse(
+            "a metered tunnel over metered Wi-Fi",
+            DownloadNetwork.allows(on(vpn, wifi, unmetered = false, under = listOf(on(wifi, unmetered = false))), false),
+        )
+        assertFalse(
+            "a metered tunnel with nothing underneath that this app can see",
+            DownloadNetwork.allows(on(vpn, unmetered = false), false),
+        )
+        assertTrue(
+            "and the owner can still say yes to any of it",
+            DownloadNetwork.allows(on(vpn, unmetered = false, under = listOf(on(cell, unmetered = false))), true),
+        )
+    }
+
+    @Test
+    fun `the job asks the system for the same rule it applies itself`() {
+        // The job waits on this while the app is closed, so it is where the rule actually
+        // holds; `allows` only decides what to say on screen.
+        assertTrue(
+            NetworkCapabilities.NET_CAPABILITY_NOT_METERED in DownloadNetwork.capabilities(useMobileData = false),
+        )
+        assertFalse(
+            "…and not once the owner has agreed to spend their data on it",
+            NetworkCapabilities.NET_CAPABILITY_NOT_METERED in DownloadNetwork.capabilities(useMobileData = true),
+        )
+        assertTrue(
+            NetworkCapabilities.NET_CAPABILITY_INTERNET in DownloadNetwork.capabilities(useMobileData = false),
+        )
     }
 
     @Test

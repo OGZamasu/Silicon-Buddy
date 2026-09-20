@@ -106,6 +106,18 @@ class ChatViewModel(
      */
     private var conversationsAsk: Job? = null
     private var lastTransport: ControlTransport? = null
+    private var lastConversationAsk = 0L
+
+    /**
+     * How long to leave between asking a Mac what it keeps, when the last ask failed for a
+     * reason that says nothing. The dashboard polls every few seconds and every answer is
+     * news that the Mac is up; without a floor, a Mac that answers `/metrics` and fails
+     * `/conversations` would be asked — and would show an error — on every one of them.
+     */
+    var conversationAskFloorMillis = 30_000L
+
+    /** Replaced in tests, where waiting thirty seconds is not an option. */
+    internal var clock: () -> Long = System::currentTimeMillis
 
     // MARK: - The phone's own model
 
@@ -137,6 +149,7 @@ class ChatViewModel(
         // Two reads, neither waiting on the other: the Mac is asked at once, as before, and
         // the phone's own list comes off the phone's disk beside it.
         lastTransport = transport ?: lastTransport
+        lastConversationAsk = clock()
         conversationsAsk = viewModelScope.launch { loadConversationsNow(transport) }
         viewModelScope.launch { loadPhoneConversations() }
     }
@@ -206,8 +219,18 @@ class ChatViewModel(
             }
     }
 
+    /**
+     * A new conversation, wherever one can be had.
+     *
+     * On a Mac that keeps conversations, the Mac makes it — but only while the Mac is
+     * answering. Out of reach, this makes one here instead, as it always did before the Mac
+     * was asked at all: a "+" that does nothing, and a tile whose "Ask on this phone" lands
+     * on a list rather than a composer, are how the phone's own model becomes unreachable
+     * exactly when it is the only thing left that works.
+     */
     fun newConversation(transport: ControlTransport? = null) {
-        if (usesRemoteConversations && transport != null) {
+        lastTransport = transport ?: lastTransport
+        if (usesRemoteConversations && transport != null && !macState.isOutOfReach) {
             viewModelScope.launch {
                 try {
                     val created = transport.createConversation(null)
@@ -215,11 +238,15 @@ class ChatViewModel(
                     loadConversationsNow(transport)
                 } catch (failure: TransportError) {
                     if (failure.isMissingRoute) {
+                        // No such route on this Mac: the device keeps them from now on.
                         usesRemoteConversations = false
                         startLocalConversation()
                     } else {
-                        // The Mac keeps these; a failure now is a failure to say so.
+                        // The Mac was there a moment ago and is not now. One here, and the
+                        // offer with it if the phone can stand in.
+                        MacState.of(failure)?.let { macState = it }
                         error = failure.message
+                        startLocalConversation()
                     }
                 }
             }
@@ -228,10 +255,16 @@ class ChatViewModel(
         startLocalConversation()
     }
 
+    /**
+     * A conversation on the device, and — when the Mac is out of reach and this phone has a
+     * model — the offer on the screen beside it. Nothing is answered until it is tapped.
+     */
     private fun startLocalConversation() {
         val fresh = Conversation()
         current = fresh
         conversations.add(0, fresh)
+        refusal = null
+        if (macState.isOutOfReach) refreshOffer(null, null)
     }
 
     fun open(id: String, transport: ControlTransport?) {
@@ -656,6 +689,7 @@ class ChatViewModel(
         askedAboutConversations = false
         conversationsAsk = null
         lastTransport = null
+        lastConversationAsk = 0L
         conversations.clear()
         // The phone's own conversations belong to no Mac, so a new one does not take them.
         if (current?.onDevice != true) current = null
@@ -666,12 +700,14 @@ class ChatViewModel(
 
     /** Where the transcript came from, said plainly so nobody wonders. */
     val storageNote: String
-        get() = if (current?.onDevice == true) {
-            "Kept only on this phone — not synced with your Mac."
-        } else if (usesRemoteConversations) {
-            "Synced with the Mac."
-        } else {
-            "Kept on this device — the Mac doesn't store conversations yet."
+        get() = when {
+            current?.onDevice == true -> "Kept only on this phone — not synced with your Mac."
+            usesRemoteConversations -> "Synced with the Mac."
+            // The Mac has never answered, so whether it keeps conversations is not known —
+            // and saying it does not would be a claim about a Mac nobody has heard from.
+            lastTransport != null && !askedAboutConversations ->
+                "Kept on this device while your Mac is out of reach."
+            else -> "Kept on this device — the Mac doesn't store conversations yet."
         }
 
     /** Adds a picture, or says why it cannot be added. The cap is the Mac's. */
@@ -756,6 +792,9 @@ class ChatViewModel(
     private fun askAgainIfTheMacWasOutOfReach() {
         if (askedAboutConversations) return
         val transport = lastTransport ?: return
+        if (conversationsAsk?.isActive == true) return
+        if (clock() - lastConversationAsk < conversationAskFloorMillis) return
+        lastConversationAsk = clock()
         conversationsAsk = viewModelScope.launch { loadConversationsNow(transport) }
     }
 
