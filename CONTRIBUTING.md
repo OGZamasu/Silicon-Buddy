@@ -33,11 +33,16 @@ xcodebuild -scheme SiliconBuddy -destination 'platform=iOS Simulator,name=iPad m
 
 ## What has to be green
 
-`.github/workflows/android.yml` runs on every pull request, on a GitHub runner: unit tests,
-the R8-minified release, a check that the keep rules R8 cannot infer actually kept what they
-claim, and the APK size budget. If that is red, the change is not ready.
+`.github/workflows/android.yml` is set to run on every pull request — unit tests, the
+R8-minified release, a check that the keep rules R8 cannot infer actually kept what they
+claim, and the APK size budget.
 
-Two suites cannot run there and are run locally before a merge:
+**It is not running at the moment.** Hosted runners are unavailable to this account, so
+every job fails at start with no steps executed, on pull requests and on `main` alike. A
+red cross on your PR right now says nothing about your change. Until that is fixed, run
+`scripts/ci-android.sh` yourself and say the result in the PR.
+
+Two suites could never run there, and are run locally before a merge either way:
 
 - the **instrumented** tests, which need a device or emulator and a Mac to talk to
 - the **iOS** suite, which needs Xcode
