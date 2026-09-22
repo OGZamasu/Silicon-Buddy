@@ -99,6 +99,7 @@ public struct PairingView: View {
                     )
                     Button("Enter it by hand") { mode = .advanced }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(Theme.onAccent)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

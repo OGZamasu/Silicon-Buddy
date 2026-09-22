@@ -50,6 +50,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.NavigationBarItemDefaults
+import dev.siliconoptimizer.buddy.ui.EmptyState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -526,6 +529,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
                     Text(
                         when (destination) {
@@ -538,6 +542,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                             Destination.Settings -> "Settings"
                         },
                         maxLines = 1,
+                        style = MaterialTheme.typography.titleLarge,
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
@@ -664,10 +669,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         },
         bottomBar = {
             if (!wide) {
-                NavigationBar {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                     destinations.filter { it != Destination.Settings }.forEach { entry ->
                         NavigationBarItem(
                             selected = destination == entry,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            ),
                             onClick = { destination = entry },
                             icon = { DestinationIcon(entry, agents.board.pendingTotal) },
                             // Six destinations on a phone, at whatever text size the
@@ -888,6 +898,15 @@ private fun ConversationList(
     onOpen: (String) -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
+        if (chat.conversations.isEmpty() && chat.phoneConversations.isEmpty()) {
+            item {
+                EmptyState(
+                    "A space for your next idea",
+                    "Start a conversation with the + button. Your chats will be here when you come back.",
+                    Icons.AutoMirrored.Filled.Chat,
+                )
+            }
+        }
         // Conversations the phone answered itself: their own section, and never the Mac's.
         if (chat.phoneConversations.isNotEmpty()) {
             item {

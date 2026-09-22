@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// The small amount of shared look the app needs: a card, a labelled stat, a bar, a
-/// pill. Everything else is stock SwiftUI, which is the point — it should feel like an
-/// Apple app, not like a web page wearing a phone costume.
+/// Shared surfaces and spacing, with native controls and Dynamic Type on every screen.
 public enum Theme {
-    public static let cardCorner: CGFloat = 14
+    public static let cardCorner: CGFloat = 24
     public static let tight: CGFloat = 6
-    public static let gap: CGFloat = 12
+    public static let gap: CGFloat = 16
+    public static var canvas: Color { Color("Canvas") }
+    public static var surface: Color { Color("CardSurface") }
+    public static var border: Color { Color("CardBorder") }
+    public static var onAccent: Color { Color("OnAccent") }
 }
 
 /// A titled block on the dashboard.
@@ -30,11 +32,14 @@ public struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: Theme.gap) {
             HStack(spacing: Theme.tight) {
                 Image(systemName: systemImage)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(9)
+                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
                     .accessibilityHidden(true)
                 Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                 Spacer(minLength: 0)
                 if let footnote {
                     Text(footnote)
@@ -45,9 +50,12 @@ public struct Card<Content: View>: View {
             }
             content
         }
-        .padding(Theme.gap + 2)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardCorner))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cardCorner))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.cardCorner).strokeBorder(Theme.border, lineWidth: 1)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
@@ -68,7 +76,7 @@ public struct Stat: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.title3.weight(.medium))
+                .font(.title2.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(tint)
                 .lineLimit(1)
@@ -134,8 +142,8 @@ public struct Pill: View {
     public var body: some View {
         Text(text)
             .font(.caption2.weight(.medium))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
             .background(
                 filled ? AnyShapeStyle(tint.opacity(0.18)) : AnyShapeStyle(.quaternary),
                 in: Capsule()
@@ -158,7 +166,15 @@ public struct Placeholder: View {
 
     public var body: some View {
         ContentUnavailableView {
-            Label(title, systemImage: systemImage)
+            VStack(spacing: 16) {
+                Image(systemName: systemImage)
+                    .font(.title)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(20)
+                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
+                    .accessibilityHidden(true)
+                Text(title).font(.title2.weight(.semibold))
+            }
         } description: {
             Text(message)
         }

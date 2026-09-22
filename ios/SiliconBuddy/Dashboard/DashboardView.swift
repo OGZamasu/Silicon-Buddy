@@ -4,26 +4,28 @@ import SwiftUI
 public struct DashboardView: View {
     @Environment(AppModel.self) private var app
     @State private var model = DashboardModel()
+    @State private var showingPairing = false
 
     public init() {}
 
     public var body: some View {
         ScrollView {
             LazyVStack(spacing: Theme.gap) {
-                ConnectionCard()
                 if app.isPaired {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("WORKSPACE").font(.caption.weight(.semibold))
+                            .tracking(1.5).foregroundStyle(Color.accentColor)
+                        Text("Your Mac, at a glance.")
+                            .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ConnectionCard()
                     loadedModelCard
                     metricsCard
                     machineCard
                     swarmCard
                 } else {
-                    Placeholder(
-                        title: "No Mac paired",
-                        message: "Scan the code in Silicon Optimizer → Settings → Silicon Buddy, "
-                            + "or enter the address by hand.",
-                        systemImage: "qrcode.viewfinder"
-                    )
-                    .padding(.top, 40)
+                    WelcomeView { showingPairing = true }
                 }
                 if !app.events.downloads.isEmpty || !app.events.jobs.isEmpty {
                     activityCard
@@ -35,9 +37,12 @@ public struct DashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(Theme.gap)
+            .frame(maxWidth: 720)
+            .padding(20)
+            .frame(maxWidth: .infinity)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Theme.canvas)
+        .sheet(isPresented: $showingPairing) { PairingView() }
         .navigationTitle("Silicon Buddy")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await reload() }
@@ -114,7 +119,7 @@ public struct DashboardView: View {
         ) {
             VStack(alignment: .leading, spacing: Theme.tight) {
                 Text(model.loadedModelTitle)
-                    .font(.title3.weight(.semibold))
+                    .font(.title2.weight(.semibold))
                     .lineLimit(2)
                 Text(model.loadedModelDetail)
                     .font(.footnote)
@@ -352,6 +357,7 @@ public struct ConnectionCard: View {
                 if !app.isPaired {
                     Button("Pair") { showingPairing = true }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(Theme.onAccent)
                         .controlSize(.small)
                 }
             }

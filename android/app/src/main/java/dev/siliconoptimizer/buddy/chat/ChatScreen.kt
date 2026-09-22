@@ -53,6 +53,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -434,6 +436,12 @@ fun ChatScreen(
                 placeholder = { Text(if (onPhone) "Ask this phone" else "Message") },
                 modifier = Modifier.weight(1f),
                 maxLines = 6,
+                shape = RoundedCornerShape(20.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                ),
             )
             PushToTalkButton(voice, hasMicrophone) {
                 microphonePermission.launch(android.Manifest.permission.RECORD_AUDIO)
@@ -443,7 +451,7 @@ fun ChatScreen(
                     Icon(Icons.Filled.Stop, contentDescription = "Stop generating")
                 }
             } else {
-                IconButton(
+                FilledIconButton(
                     onClick = { model.send(app.transport) },
                     enabled = (model.draft.isNotBlank() || model.attachments.isNotEmpty()) &&
                         !model.isConversationBusy,
