@@ -26,7 +26,9 @@ public struct PairingConfirmationView: View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("Address", value: "\(invite.host):\(invite.port)")
+                    LabeledContent(
+                        "Address", value: "\(TailnetHost.forURL(invite.host)):\(invite.port)"
+                    )
                     LabeledContent("Code", value: displayCode)
                 } header: {
                     Text("Pair with this Mac?")

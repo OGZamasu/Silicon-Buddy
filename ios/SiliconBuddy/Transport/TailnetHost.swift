@@ -46,6 +46,15 @@ public enum TailnetHost {
         return false
     }
 
+    /// `host` as it goes into a URL or an address line: an IPv6 literal in brackets, which
+    /// a URL without them cannot hold; anything else as it is. Brackets already there are
+    /// not doubled.
+    public static func forURL(_ host: String) -> String {
+        let bare = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return bare.contains(":") ? "[\(bare)]" : bare
+    }
+
     /// Four bytes, or nil when this is not a dotted-quad IPv4 literal. Strict: no
     /// octal, no shorthand, no trailing text.
     static func ipv4Bytes(_ text: String) -> [UInt8]? {

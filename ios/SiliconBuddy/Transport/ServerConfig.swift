@@ -36,22 +36,23 @@ public struct ServerConfig: Sendable, Equatable {
     public var baseURL: URL? {
         var components = URLComponents()
         components.scheme = "http"
-        components.host = host
+        components.host = TailnetHost.forURL(host)
         components.port = port
         return components.url
     }
 
+    /// Nil when the host cannot be put in a URL. It used to fall back to `file:///`, and a
+    /// request sent there never answered.
     public func url(path: String, query: [URLQueryItem] = []) -> URL? {
-        guard var components = URLComponents(
-            url: baseURL?.appendingPathComponent(path) ?? URL(fileURLWithPath: "/"),
-            resolvingAgainstBaseURL: false
+        guard let baseURL, var components = URLComponents(
+            url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false
         ) else { return nil }
         if !query.isEmpty { components.queryItems = query }
         return components.url
     }
 
     /// A one-line description for the connection row. Never includes the token.
-    public var displayAddress: String { "\(host):\(port)" }
+    public var displayAddress: String { "\(TailnetHost.forURL(host)):\(port)" }
 }
 
 extension ServerConfig: CustomStringConvertible {

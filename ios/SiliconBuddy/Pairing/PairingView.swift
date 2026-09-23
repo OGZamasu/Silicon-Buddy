@@ -160,6 +160,10 @@ public struct PairingView: View {
                         .keyboardType(.numberPad)
                         .font(.body.monospacedDigit())
                         .multilineTextAlignment(.trailing)
+                        .onChange(of: code) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed, keepSpaces: true)
+                            if digits != typed { code = digits }
+                        }
                 }
                 LabeledContent("Address") {
                     TextField("100.x.y.z", text: $host)
@@ -167,12 +171,16 @@ public struct PairingView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .multilineTextAlignment(.trailing)
-                        .onChange(of: host) { _, typed in fill(fromLink: typed) }
+                        .onChange(of: host) { _, typed in offer(pastedLink: typed) }
                 }
                 LabeledContent("Port") {
                     TextField(String(PairingInvite.defaultPort), text: $codePort)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
+                        .onChange(of: codePort) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed)
+                            if digits != typed { codePort = digits }
+                        }
                 }
             } header: {
                 Text("The code on your Mac")
@@ -181,13 +189,14 @@ public struct PairingView: View {
                     "In Silicon Optimizer, open Settings → Silicon Buddy and choose Pair a "
                         + "device. Type the six-digit code it shows and the address beside it; "
                         + "the port is \(String(PairingInvite.defaultPort)) unless your Mac says "
-                        + "otherwise. A copied pairing link can go in the address field instead."
+                        + "otherwise. A pairing link pasted into the address field is shown to you "
+                        + "to confirm, as a scanned code is."
                 )
             }
 
             Section {
                 Button {
-                    if app.isPaired {
+                    if app.isPaired, !PairingInvite.isLink(host) {
                         confirmingReplacement = true
                     } else {
                         pairTyped()
@@ -210,16 +219,13 @@ public struct PairingView: View {
         }
     }
 
-    /// A pasted link fills all three fields, so what will be dialled is on screen before
-    /// anything is.
-    private func fill(fromLink text: String) {
-        guard PairingInvite.isLink(text) else { return }
+    /// A pasted link is not something the person typed: whoever made it chose its host. So
+    /// it goes where a scanned code goes — the confirmation, with its warning — and this
+    /// form's Pair never sees it.
+    private func offer(pastedLink text: String) {
         do {
-            let invite = try PairingInvite.parse(text)
-            host = invite.host
-            codePort = String(invite.port)
-            code = "\(invite.code.prefix(3)) \(invite.code.suffix(3))"
-            status = .idle
+            guard try app.holdPastedLink(text) else { return }
+            dismiss()
         } catch {
             status = .failed(error.localizedDescription)
         }
@@ -228,8 +234,13 @@ public struct PairingView: View {
     /// A typed code goes where a scanned one does — `AppModel.pair(with:)`, and from there
     /// `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
     /// which is there because whoever printed a QR chose its host; here the person holding
-    /// the device typed it. Replacing a paired Mac still asks first.
+    /// the device typed it. Replacing a paired Mac still asks first. A link left in the
+    /// address field is the exception, and goes to that confirmation instead.
     private func pairTyped() {
+        if PairingInvite.isLink(host) {
+            offer(pastedLink: host)
+            return
+        }
         let invite: PairingInvite
         do {
             invite = try PairingInvite.typed(address: host, code: code, port: codePort)
@@ -268,6 +279,10 @@ public struct PairingView: View {
                     TextField("From control.json", text: $developerPort)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
+                        .onChange(of: developerPort) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed)
+                            if digits != typed { developerPort = digits }
+                        }
                 }
                 LabeledContent("Token") {
                     SecureField("Control token", text: $token)

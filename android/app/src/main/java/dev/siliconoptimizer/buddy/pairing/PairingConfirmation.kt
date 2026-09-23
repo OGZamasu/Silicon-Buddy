@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
+import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.launch
 
@@ -94,7 +95,10 @@ fun PairingConfirmation(
         title = { Text("Pair with this Mac?") },
         text = {
             Column {
-                Text("${invite.host}:${invite.port}", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${TailnetHost.forUrl(invite.host)}:${invite.port}",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Text("Code $displayCode", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     "Silicon Buddy will ask that address for a token of its own and keep it " +

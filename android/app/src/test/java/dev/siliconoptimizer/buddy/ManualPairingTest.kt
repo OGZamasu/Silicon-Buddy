@@ -2,6 +2,8 @@ package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.transport.DeviceScope
+import dev.siliconoptimizer.buddy.transport.ServerConfig
+import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -62,14 +64,94 @@ class ManualPairingTest {
         val invite = PairingInvite.typed("fd7a:115c:a1e0::9", "418203")
         assertEquals("fd7a:115c:a1e0::9", invite.host)
         assertEquals(PairingInvite.DEFAULT_PORT, invite.port)
+        val bracketed = PairingInvite.typed("[fd7a:115c:a1e0::9]:8924", "418203")
+        assertEquals(PairingInvite("fd7a:115c:a1e0::9", 8924, "418203"), bracketed)
+        assertEquals("fd7a:115c:a1e0::9", PairingInvite.typed("[fd7a:115c:a1e0::9]", "418203").host)
     }
 
     @Test
-    fun `a pasted pairing link is read as the link`() {
+    fun `an IPv6 tailnet address is dialled in brackets`() {
+        val config = ServerConfig("fd7a:115c:a1e0::9", 8788, "t")
+        assertEquals("http://[fd7a:115c:a1e0::9]:8788/health", config.url("/health").toString())
+        assertEquals("[fd7a:115c:a1e0::9]:8788", config.displayAddress)
+        // Brackets already there are not doubled, and IPv4 gets none.
+        assertEquals("[fd7a:115c:a1e0::9]", TailnetHost.forUrl("[fd7a:115c:a1e0::9]"))
+        assertEquals("http://100.64.0.9:8788/health", ServerConfig("100.64.0.9", 8788, "t").url("/health").toString())
+    }
+
+    @Test
+    fun `an IPv6 invite reaches the Mac`() = runBlocking {
+        // ::1 is the one IPv6 address a test can listen on. The request has to be a URL
+        // before it can go anywhere, which unbracketed it was not.
+        val server = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("::1"))
+        val answered = kotlin.concurrent.thread(isDaemon = true) {
+            server.accept().use { socket ->
+                // Read the request whole — headers, then the body they announce — so
+                // closing the socket afterwards cannot reset it under the client.
+                val reader = socket.getInputStream().bufferedReader()
+                var length = 0
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isEmpty()) break
+                    if (line.startsWith("content-length:", ignoreCase = true)) {
+                        length = line.substringAfter(':').trim().toInt()
+                    }
+                }
+                val request = CharArray(length)
+                var read = 0
+                while (read < length) {
+                    val count = reader.read(request, read, length - read)
+                    if (count < 0) break
+                    read += count
+                }
+                val body = """{"deviceID":"D6","token":"v6","macName":"Six","port":8788}"""
+                socket.getOutputStream().write(
+                    ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                        "Content-Length: ${body.length}\r\nConnection: close\r\n\r\n$body").toByteArray(),
+                )
+            }
+        }
+        try {
+            val config = PairingInvite("::1", server.localPort, "418203").exchange("Pixel", "android")
+            assertEquals("v6", config.token)
+            assertEquals("::1", config.host)
+        } finally {
+            answered.join(5_000)
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a pasted link is held for confirmation, never spent as typed`() {
+        // Someone else chose a link's host, so the form's own Pair button never spends
+        // one: `pasted` hands it on for the confirmation a tapped link gets, and `typed`
+        // refuses it outright.
         val link = "siliconbuddy://pair?host=100.64.0.9&port=8788&code=418203"
         assertTrue(PairingInvite.isLink(" $link"))
         assertFalse(PairingInvite.isLink("100.64.0.9"))
-        assertEquals(PairingInvite.parse(link), PairingInvite.typed(link, "", ""))
+        assertEquals(PairingInvite("100.64.0.9", 8788, "418203"), PairingInvite.pasted(" $link"))
+        assertNull("an address is not a link", PairingInvite.pasted("100.64.0.9"))
+        assertThrows(PairingInvite.ParseError.LinkNotTyped::class.java) {
+            PairingInvite.typed(link, "418203", "8788")
+        }
+    }
+
+    @Test
+    fun `a pasted link off the tailnet is refused before anything is offered`() {
+        assertThrows(PairingInvite.ParseError.HostNotOnTailnet::class.java) {
+            PairingInvite.pasted("siliconbuddy://pair?host=evil.example.com&port=8788&code=418203")
+        }
+        assertThrows(PairingInvite.ParseError::class.java) {
+            PairingInvite.pasted("siliconbuddy://pair?host=100.64.0.9&port=8788")
+        }
+    }
+
+    @Test
+    fun `digits from any script go into the fields as ASCII`() {
+        assertEquals("418 203", PairingInvite.asciiDigits("٤١٨ ٢٠٣", keepSpaces = true))
+        assertEquals("418203", PairingInvite.asciiDigits("４１８２０３"))
+        assertEquals("8788", PairingInvite.asciiDigits("8 7-8a8"))
+        assertEquals("418203", PairingInvite.typed("100.64.0.9", PairingInvite.asciiDigits("۴۱۸۲۰۳")).code)
     }
 
     @Test
@@ -79,9 +161,6 @@ class ManualPairingTest {
                 PairingInvite.typed(host, "418203")
             }
             assertEquals(host, error.host)
-        }
-        assertThrows(PairingInvite.ParseError.HostNotOnTailnet::class.java) {
-            PairingInvite.typed("siliconbuddy://pair?host=evil.example.com&port=8788&code=418203", "")
         }
     }
 

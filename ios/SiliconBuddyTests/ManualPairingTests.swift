@@ -51,13 +51,102 @@ final class ManualPairingTests: XCTestCase {
         let invite = try PairingInvite.typed(address: "fd7a:115c:a1e0::9", code: "418203")
         XCTAssertEqual(invite.host, "fd7a:115c:a1e0::9")
         XCTAssertEqual(invite.port, PairingInvite.defaultPort)
+        XCTAssertEqual(
+            try PairingInvite.typed(address: "[fd7a:115c:a1e0::9]:8924", code: "418203"),
+            PairingInvite(host: "fd7a:115c:a1e0::9", port: 8924, code: "418203")
+        )
+        XCTAssertEqual(
+            try PairingInvite.typed(address: "[fd7a:115c:a1e0::9]", code: "418203").host,
+            "fd7a:115c:a1e0::9"
+        )
     }
 
-    func testAPastedPairingLinkIsReadAsTheLink() throws {
+    func testAnIPv6TailnetAddressIsDialledInBrackets() {
+        let config = ServerConfig(host: "fd7a:115c:a1e0::9", port: 8788, token: "t")
+        XCTAssertEqual(
+            config.url(path: "/health")?.absoluteString, "http://[fd7a:115c:a1e0::9]:8788/health"
+        )
+        XCTAssertEqual(config.displayAddress, "[fd7a:115c:a1e0::9]:8788")
+        // Brackets already there are not doubled, and IPv4 gets none.
+        XCTAssertEqual(TailnetHost.forURL("[fd7a:115c:a1e0::9]"), "[fd7a:115c:a1e0::9]")
+        XCTAssertEqual(
+            ServerConfig(host: "100.64.0.9", port: 8788, token: "t").url(path: "/health")?.absoluteString,
+            "http://100.64.0.9:8788/health"
+        )
+    }
+
+    func testAnIPv6InviteReachesTheMac() async throws {
+        // ::1 is the one IPv6 address a test can reach. The request has to be a URL before
+        // it can go anywhere, which unbracketed it was not.
+        server.reply("/buddy/pair", 200, """
+        {"deviceID":"D6","token":"v6","macName":"Six","port":8788}
+        """)
+        // Checked first, because a request to an address that is not one does not always
+        // fail: it can wait on nothing until the test runner gives up on it.
+        let url = ServerConfig(host: "::1", port: server.port, token: "").url(path: "/buddy/pair")
+        guard url?.absoluteString == "http://[::1]:\(server.port)/buddy/pair" else {
+            return XCTFail("::1 is not a URL: \(String(describing: url))")
+        }
+        do {
+            let config = try await PairingInvite(host: "::1", port: server.port, code: "418203")
+                .exchange(deviceName: "iPad", platform: "ipados")
+            XCTAssertEqual(config.token, "v6")
+            XCTAssertEqual(config.host, "::1")
+        } catch {
+            XCTFail("An IPv6 invite never reached the Mac: \(error)")
+        }
+    }
+
+    func testAPastedLinkIsHeldForConfirmationNeverSpentAsTyped() throws {
+        // Someone else chose a link's host, so the form's own Pair button never spends one:
+        // `pasted` hands it on for the confirmation a tapped link gets, and `typed` refuses it.
         let link = "siliconbuddy://pair?host=100.64.0.9&port=8788&code=418203"
         XCTAssertTrue(PairingInvite.isLink(" \(link)"))
         XCTAssertFalse(PairingInvite.isLink("100.64.0.9"))
-        XCTAssertEqual(try PairingInvite.typed(address: link, code: ""), try PairingInvite.parse(link))
+        XCTAssertEqual(
+            try PairingInvite.pasted(" \(link)"),
+            PairingInvite(host: "100.64.0.9", port: 8788, code: "418203")
+        )
+        XCTAssertNil(try PairingInvite.pasted("100.64.0.9"), "an address is not a link")
+        XCTAssertThrowsError(try PairingInvite.typed(address: link, code: "418203", port: "8788")) {
+            XCTAssertEqual($0 as? PairingInvite.ParseError, .linkNotTyped)
+        }
+    }
+
+    @MainActor
+    func testTheFormHandsAPastedLinkToTheConfirmationAndPairsNothing() throws {
+        let app = makeAppModel()
+        let link = "siliconbuddy://pair?host=100.64.0.9&port=8788&code=418203"
+
+        XCTAssertTrue(try app.holdPastedLink(link))
+        // Where the confirmation sheet looks — the same place a tapped link lands.
+        XCTAssertEqual(app.pendingInvite, PairingInvite(host: "100.64.0.9", port: 8788, code: "418203"))
+        XCTAssertFalse(app.isPaired, "nothing is paired until the person says so")
+    }
+
+    @MainActor
+    func testAnAddressIsNotHeldAndABadLinkHoldsNothing() {
+        let app = makeAppModel()
+        XCTAssertFalse(try app.holdPastedLink("100.64.0.9"))
+        XCTAssertNil(app.pendingInvite)
+        XCTAssertThrowsError(try app.holdPastedLink(
+            "siliconbuddy://pair?host=evil.example.com&port=8788&code=418203"
+        )) {
+            XCTAssertEqual($0 as? PairingInvite.ParseError, .hostNotOnTailnet("evil.example.com"))
+        }
+        XCTAssertThrowsError(try app.holdPastedLink("siliconbuddy://pair?host=100.64.0.9&port=8788"))
+        XCTAssertNil(app.pendingInvite)
+    }
+
+    func testDigitsFromAnyScriptGoIntoTheFieldsAsASCII() throws {
+        XCTAssertEqual(PairingInvite.asciiDigits("٤١٨ ٢٠٣", keepSpaces: true), "418 203")
+        XCTAssertEqual(PairingInvite.asciiDigits("４１８２０３"), "418203")
+        XCTAssertEqual(PairingInvite.asciiDigits("8 7-8a8"), "8788")
+        XCTAssertEqual(PairingInvite.asciiDigits("五"), "", "a numeral is not a digit")
+        XCTAssertEqual(
+            try PairingInvite.typed(address: "100.64.0.9", code: PairingInvite.asciiDigits("۴۱۸۲۰۳")).code,
+            "418203"
+        )
     }
 
     func testATypedAddressOffTheTailnetIsRefusedAsAScannedOneIs() {
@@ -65,11 +154,6 @@ final class ManualPairingTests: XCTestCase {
             XCTAssertThrowsError(try PairingInvite.typed(address: host, code: "418203")) {
                 XCTAssertEqual($0 as? PairingInvite.ParseError, .hostNotOnTailnet(host))
             }
-        }
-        XCTAssertThrowsError(try PairingInvite.typed(
-            address: "siliconbuddy://pair?host=evil.example.com&port=8788&code=418203", code: ""
-        )) {
-            XCTAssertEqual($0 as? PairingInvite.ParseError, .hostNotOnTailnet("evil.example.com"))
         }
     }
 
@@ -167,6 +251,20 @@ final class ManualPairingTests: XCTestCase {
             XCTFail("Expected a TransportError, got \(error)")
         }
         XCTAssertEqual(built.value, 0)
+    }
+}
+
+extension ManualPairingTests {
+    @MainActor
+    fileprivate func makeAppModel() -> AppModel {
+        let suite = "buddy.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let tokens = TokenStore(service: "dev.siliconoptimizer.buddy.tests.\(UUID().uuidString)")
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suite)
+            tokens.delete()
+        }
+        return AppModel(defaults: defaults, tokens: tokens)
     }
 }
 

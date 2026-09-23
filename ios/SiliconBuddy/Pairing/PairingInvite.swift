@@ -22,6 +22,7 @@ public struct PairingInvite: Sendable, Equatable {
         case badPort(String)
         case badCode(String)
         case noAddress
+        case linkNotTyped
         case hostNotOnTailnet(String)
 
         public var errorDescription: String? {
@@ -36,6 +37,8 @@ public struct PairingInvite: Sendable, Equatable {
                 "\"\(value)\" isn't a six-digit pairing code."
             case .noAddress:
                 "Type the Mac's address too. Silicon Optimizer shows it beside the code."
+            case .linkNotTyped:
+                "That's a pairing link. Silicon Buddy asks before it uses one."
             case .hostNotOnTailnet(let host):
                 "\(host) isn't a tailnet address. " + TailnetHost.explanation
             }
@@ -95,25 +98,62 @@ public struct PairingInvite: Sendable, Equatable {
             .lowercased().hasPrefix("siliconbuddy:")
     }
 
+    /// A `siliconbuddy://pair` link pasted where an address goes: the invite when `text` is
+    /// one, nil when it is not a link at all, and the parse error when it is a link that
+    /// doesn't parse.
+    ///
+    /// The code form's own Pair button never spends one. Someone else chose a link's host —
+    /// the Mac has no button that copies one — so it goes to the confirmation a tapped link
+    /// gets, with its "only pair with a code you can see on your own Mac's screen".
+    public static func pasted(_ text: String) throws -> PairingInvite? {
+        isLink(text) ? try parse(text) : nil
+    }
+
+    /// `text` with every decimal digit, from any script, as its ASCII one, and everything
+    /// else but a space dropped. For the code and port fields: a keyboard that types ٤ or
+    /// ４ puts 4 in the field, rather than a character `typed` then refuses as "not a
+    /// six-digit pairing code" without saying why.
+    public static func asciiDigits(_ text: String, keepSpaces: Bool = false) -> String {
+        var result = ""
+        for character in text {
+            // One scalar, and a decimal digit by Unicode's own account: not "五", which
+            // has a numeric value but is not a digit anyone types into a code.
+            if character.unicodeScalars.count == 1,
+               let scalar = character.unicodeScalars.first,
+               scalar.properties.numericType == .decimal,
+               let value = scalar.properties.numericValue {
+                result.append(String(Int(value)))
+            } else if keepSpaces, character == " " {
+                result.append(" ")
+            }
+        }
+        return result
+    }
+
     /// What someone types when the camera won't do: the code the Mac shows under its QR,
-    /// the address beside it, and — only if it isn't `defaultPort` — a port. A pasted
-    /// `siliconbuddy://pair?…` link in the address field is read as the link.
+    /// the address beside it, and — only if it isn't `defaultPort` — a port.
     ///
     /// Held to the same rules as a scan, because it ends at the same `/buddy/pair`. The
-    /// code may carry the space the Mac shows it with, or a dash; nothing else.
+    /// code may carry the space the Mac shows it with, or a dash; nothing else. A link is
+    /// refused here: see `pasted(_:)`.
     public static func typed(
         address: String, code: String, port: String = ""
     ) throws -> PairingInvite {
-        if isLink(address) { return try parse(address) }
+        if isLink(address) { throw ParseError.linkNotTyped }
         var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
         var portText = port.trimmingCharacters(in: .whitespacesAndNewlines)
-        // `100.64.0.9:8788`, as the address is often written. One colon only: an IPv6
-        // address is all colons and is never split.
-        if host.filter({ $0 == ":" }).count == 1, let colon = host.firstIndex(of: ":") {
+        if host.hasPrefix("["), let close = host.range(of: "]:") {
+            // `[fd7a:115c:a1e0::9]:8788`: the only way to put a port after IPv6.
+            portText = host[close.upperBound...].trimmingCharacters(in: .whitespaces)
+            host = String(host[host.index(after: host.startIndex)..<close.lowerBound])
+        } else if host.filter({ $0 == ":" }).count == 1, let colon = host.firstIndex(of: ":") {
+            // `100.64.0.9:8788`, as the address is often written. One colon only: a bare
+            // IPv6 address is all colons and is never split.
             portText = host[host.index(after: colon)...]
                 .trimmingCharacters(in: .whitespaces)
             host = host[..<colon].trimmingCharacters(in: .whitespaces)
         }
+        host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         guard !host.isEmpty else { throw ParseError.noAddress }
         guard TailnetHost.isAllowed(host) else { throw ParseError.hostNotOnTailnet(host) }
         let portNumber: Int

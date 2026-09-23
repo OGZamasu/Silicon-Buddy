@@ -54,6 +54,8 @@ data class PairingInvite(
         data class BadPort(val value: String) : ParseError("\"$value\" isn't a port number.")
         data class BadCode(val value: String) :
             ParseError("\"$value\" isn't a six-digit pairing code.")
+        data object LinkNotTyped :
+            ParseError("That's a pairing link. Silicon Buddy asks before it uses one.")
         data object NoAddress :
             ParseError("Type the Mac's address too. Silicon Optimizer shows it beside the code.")
         data class HostNotOnTailnet(val host: String) :
@@ -121,23 +123,56 @@ data class PairingInvite(
             text.trim().startsWith("siliconbuddy:", ignoreCase = true)
 
         /**
+         * A `siliconbuddy://pair` link pasted where an address goes: the invite when
+         * [text] is one, null when it is not a link at all, and the parse error when it
+         * is a link that doesn't parse.
+         *
+         * The code form's own Pair button never spends one. Someone else chose a link's
+         * host — the Mac has no button that copies one — so it goes to the confirmation a
+         * tapped link gets, with its "only pair with a code on your own Mac's screen".
+         */
+        fun pasted(text: String): PairingInvite? = if (isLink(text)) parse(text) else null
+
+        /**
+         * [text] with every decimal digit, from any script, as its ASCII one, and
+         * everything else but a space dropped. For the code and port fields: a keyboard
+         * that types ٤ or ４ puts 4 in the field, rather than a character [typed] then
+         * refuses as "not a six-digit pairing code" without saying why.
+         */
+        fun asciiDigits(text: String, keepSpaces: Boolean = false): String = buildString {
+            for (character in text) {
+                val value = Character.digit(character, 10)
+                if (value >= 0) {
+                    append('0' + value)
+                } else if (keepSpaces && character == ' ') {
+                    append(' ')
+                }
+            }
+        }
+
+        /**
          * What someone types when the camera won't do: the code the Mac shows under its
-         * QR, the address beside it, and — only if it isn't [DEFAULT_PORT] — a port. A
-         * pasted `siliconbuddy://pair?…` link in the address field is read as the link.
+         * QR, the address beside it, and — only if it isn't [DEFAULT_PORT] — a port.
          *
          * Held to the same rules as a scan, because it ends at the same `/buddy/pair`.
          * The code may carry the space the Mac shows it with, or a dash; nothing else.
+         * A link is refused here: see [pasted].
          */
         fun typed(address: String, code: String, port: String = ""): PairingInvite {
-            if (isLink(address)) return parse(address)
+            if (isLink(address)) throw ParseError.LinkNotTyped
             var host = address.trim()
             var portText = port.trim()
-            // `100.64.0.9:8788`, as the address is often written. One colon only: an
-            // IPv6 address is all colons and is never split.
-            if (host.count { it == ':' } == 1) {
+            if (host.startsWith("[") && host.contains("]:")) {
+                // `[fd7a:115c:a1e0::9]:8788`: the only way to put a port after IPv6.
+                portText = host.substringAfter("]:").trim()
+                host = host.substringBefore("]:").removePrefix("[")
+            } else if (host.count { it == ':' } == 1) {
+                // `100.64.0.9:8788`, as the address is often written. One colon only:
+                // a bare IPv6 address is all colons and is never split.
                 portText = host.substringAfter(':').trim()
                 host = host.substringBefore(':').trim()
             }
+            host = host.removePrefix("[").removeSuffix("]")
             if (host.isEmpty()) throw ParseError.NoAddress
             if (!TailnetHost.isAllowed(host)) throw ParseError.HostNotOnTailnet(host)
             val portNumber = if (portText.isEmpty()) {

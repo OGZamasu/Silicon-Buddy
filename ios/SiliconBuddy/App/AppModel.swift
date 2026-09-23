@@ -97,6 +97,16 @@ public final class AppModel {
         await refreshReachability()
     }
 
+    /// A link pasted into the code form, held for the confirmation a tapped link gets —
+    /// never spent by that form's own Pair button, because whoever made the link chose its
+    /// host. False when `text` is not a link at all; throws for a link that doesn't parse,
+    /// including one whose host is off the tailnet, and then holds nothing.
+    public func holdPastedLink(_ text: String) throws -> Bool {
+        guard let invite = try PairingInvite.pasted(text) else { return false }
+        pendingInvite = invite
+        return true
+    }
+
     /// Stores a Mac this device can already talk to: the end of `pair(with:)`, and the
     /// Developer form's host, port and control.json token, which only the Simulator can use.
     public func connect(_ newConfig: ServerConfig) throws {

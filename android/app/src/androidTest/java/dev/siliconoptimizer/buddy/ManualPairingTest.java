@@ -132,6 +132,66 @@ public class ManualPairingTest {
     }
 
     /**
+     * A link pasted into the code form is not something the person typed: whoever made it
+     * chose its host. So it gets the confirmation a tapped link gets — the host, the code,
+     * and "only pair with a code you can see on your own Mac's screen" — and nothing is
+     * dialled until that is agreed to. The form's own Pair button never spends it.
+     */
+    @Test
+    public void aPastedLinkIsConfirmedBeforeAnythingIsDialled() {
+        openCodeForm();
+
+        List<UiObject2> fields = device.wait(Until.findObjects(By.clazz("android.widget.EditText")), WAIT);
+        assertNotNull(fields);
+        assertTrue("expected the code, the address and the port, got " + fields.size(), fields.size() >= 3);
+        // One change carrying the whole link, which is what a paste is.
+        fields.get(1).setText("siliconbuddy://pair?host=127.0.0.1&port=" + mac.port() + "&code=246810");
+
+        assertNotNull("a pasted link is confirmed like a tapped one",
+            device.wait(Until.findObject(By.text("Pair with this Mac?")), WAIT));
+        assertNotNull("with the warning a tapped link carries",
+            device.findObject(By.textContains("Only pair with a code you can see on your own Mac's screen")));
+        assertNotNull(device.findObject(By.text("127.0.0.1:" + mac.port())));
+        assertNotNull(device.findObject(By.text("Code 246 810")));
+        assertTrue("nothing is dialled before the person agrees", !mac.saw("POST", "/buddy/pair"));
+        // The form went away, so its own Pair button is not the one found below.
+        assertTrue("the code form stays up behind the confirmation",
+            device.wait(Until.gone(By.text("Pairing code")), WAIT));
+
+        UiObject2 confirm = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
+        assertNotNull(confirm);
+        boolean replacing = confirm.getText().startsWith("Replace");
+        confirm.click();
+        if (replacing) {
+            UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
+            assertNotNull(replace);
+            replace.click();
+        }
+        assertTrue("agreed to, the link's code reaches /buddy/pair",
+            waitFor(() -> mac.saw("POST", "/buddy/pair")));
+        String body = mac.bodyOf("POST", "/buddy/pair");
+        assertTrue(body, body.contains("\"code\":\"246810\""));
+    }
+
+    /** Settings, pairing, and the camera refused: which lands on the code form. */
+    private void openCodeForm() {
+        Intent launch = context.getPackageManager().getLaunchIntentForPackage(PACKAGE);
+        assertNotNull(launch);
+        context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+        UiObject2 settings = device.wait(Until.findObject(By.desc("Settings")), WAIT);
+        if (settings == null) settings = device.wait(Until.findObject(By.text("Settings")), WAIT);
+        assertNotNull("no way to Settings", settings);
+        settings.click();
+        UiObject2 open = device.wait(Until.findObject(By.text(Pattern.compile("Pair with (a|another) Mac"))), WAIT);
+        assertNotNull("Settings has no pairing button", open);
+        open.click();
+        UiObject2 deny = device.wait(Until.findObject(
+            By.res(Pattern.compile(".*permissioncontroller:id/permission_deny_button"))), 5_000);
+        if (deny != null) deny.click();
+        assertNotNull("the code form", device.wait(Until.findObject(By.text("Pairing code")), WAIT));
+    }
+
+    /**
      * A link is read once. The critic's case: pair through a link, then change the display
      * density (or the font size) — which recreates the activity with the intent it was
      * opened with — and "Pair with this Mac?" came back with the code already spent.

@@ -149,8 +149,10 @@ fun PairingScreen(
 
     /**
      * A scanned code is a claim about which machine to trust, made by whoever printed
-     * the QR. It goes to the confirmation dialog, which names the host and — when a Mac
-     * is already paired — asks a second time before replacing it.
+     * the QR — and a pasted link is the same claim, made by whoever sent it. Both go to
+     * the confirmation dialog, which names the host, says to pair only with a code on
+     * your own Mac's screen, and — when a Mac is already paired — asks a second time
+     * before replacing it.
      */
     fun usePairingCode(text: String) {
         val invite = runCatching { PairingInvite.parse(text) }.getOrElse {
@@ -167,9 +169,14 @@ fun PairingScreen(
      * A typed code goes where a scanned one does — [AppState.pair], and from there
      * `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
      * which is there because whoever printed a QR chose its host; here the person
-     * holding the phone typed it. Replacing a paired Mac still asks first.
+     * holding the phone typed it. Replacing a paired Mac still asks first. A link left
+     * in the address field is the exception, and goes to that confirmation instead.
      */
     fun pairTyped() {
+        if (PairingInvite.isLink(host)) {
+            usePairingCode(host)
+            return
+        }
         val invite = runCatching { PairingInvite.typed(host, code, codePort) }.getOrElse {
             message = it.message
             return
@@ -218,9 +225,14 @@ fun PairingScreen(
                     selected = mode == each,
                     onClick = { mode = each },
                     shape = SegmentedButtonDefaults.itemShape(index, PairingMode.entries.size),
-                    // Three labels share a phone's width; the selected one's tick would
-                    // cut "Enter code" short before the fill says which is chosen anyway.
+                    // Three labels share a phone's width, and the selected one's tick
+                    // would cut "Enter code" short. So the choice is marked by a fill
+                    // strong enough to see — the default one is a near-white tint.
                     icon = {},
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = MaterialTheme.colorScheme.primary,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
                 ) { Text(each.label) }
             }
         }
@@ -262,13 +274,16 @@ fun PairingScreen(
                 Text(
                     "In Silicon Optimizer, open Settings, Silicon Buddy, and choose Pair a " +
                         "device. Type the six-digit code it shows and the address beside it. " +
-                        "A copied pairing link can go in the address field instead.",
+                        "A pairing link pasted into the address field is shown to you to " +
+                        "confirm, as a scanned code is.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = code,
-                    onValueChange = { typed -> code = typed.filter { it.isDigit() || it == ' ' } },
+                    onValueChange = { typed ->
+                        code = PairingInvite.asciiDigits(typed, keepSpaces = true)
+                    },
                     label = { Text("Pairing code") },
                     placeholder = { Text("123 456") },
                     singleLine = true,
@@ -280,20 +295,10 @@ fun PairingScreen(
                 OutlinedTextField(
                     value = host,
                     onValueChange = { typed ->
-                        // A pasted link fills all three fields, so what will be dialled is
-                        // on screen before anything is.
-                        if (PairingInvite.isLink(typed)) {
-                            runCatching { PairingInvite.parse(typed) }
-                                .onSuccess {
-                                    host = it.host
-                                    codePort = it.port.toString()
-                                    code = "${it.code.take(3)} ${it.code.takeLast(3)}"
-                                    message = null
-                                }
-                                .onFailure { message = it.message }
-                        } else {
-                            host = typed
-                        }
+                        host = typed
+                        // A pasted link is not something the person typed: whoever made
+                        // it chose its host. It never reaches this form's Pair.
+                        if (PairingInvite.isLink(typed)) usePairingCode(typed)
                     },
                     label = { Text("Mac's address") },
                     placeholder = { Text("100.x.y.z") },
@@ -305,7 +310,7 @@ fun PairingScreen(
                 )
                 OutlinedTextField(
                     value = codePort,
-                    onValueChange = { codePort = it.filter(Char::isDigit) },
+                    onValueChange = { codePort = PairingInvite.asciiDigits(it) },
                     label = { Text("Port") },
                     supportingText = {
                         Text("${PairingInvite.DEFAULT_PORT} unless your Mac says otherwise")
@@ -322,7 +327,11 @@ fun PairingScreen(
                     enabled = host.isNotBlank() && code.isNotBlank() && !working,
                     working = working,
                     onClick = {
-                        if (app.isPaired) replacing = host.trim() to ::pairTyped else pairTyped()
+                        if (app.isPaired && !PairingInvite.isLink(host)) {
+                            replacing = host.trim() to ::pairTyped
+                        } else {
+                            pairTyped()
+                        }
                     },
                 )
             }
@@ -355,7 +364,7 @@ fun PairingScreen(
                 )
                 OutlinedTextField(
                     value = developerPort,
-                    onValueChange = { developerPort = it.filter(Char::isDigit) },
+                    onValueChange = { developerPort = PairingInvite.asciiDigits(it) },
                     label = { Text("Port") },
                     placeholder = { Text("From control.json") },
                     singleLine = true,
