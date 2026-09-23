@@ -85,9 +85,16 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     private(set) var videoQueueReads = 0
     private(set) var sentControls: [ControlAPI.VideoQueueControl] = []
 
+    /// How long `GET /video/queue` takes to answer; the answer is the queue as it was asked.
+    var videoQueueDelay: Duration?
+
     func videoQueue() async throws -> ControlAPI.VideoQueueView {
         videoQueueReads += 1
-        return try videoQueueResult.get()
+        let answer = videoQueueResult
+        if let videoQueueDelay {
+            await Task.detached { try? await Task.sleep(for: videoQueueDelay) }.value
+        }
+        return try answer.get()
     }
     func controlVideoQueue(
         _ request: ControlAPI.VideoQueueControl

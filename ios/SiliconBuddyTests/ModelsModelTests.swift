@@ -22,15 +22,39 @@ final class ModelsModelTests: XCTestCase {
     private let log = "load_tensors: loading model tensors\nloaded multimodal model, 'mmproj-Q8_0.gguf'"
 
     private func failed(
-        _ reason: String, detail: String?? = .none, replaced: Bool = false, state: String? = nil
+        _ reason: String, detail: String?? = .none, replaced: Bool = false, state: String? = nil,
+        modelID: String? = nil
     ) -> ControlAPI.Status {
         ControlAPI.Status(
             state: state ?? killed,
             failure: ControlAPI.LoadFailure(
                 reason: reason, detail: detail ?? log, runtime: "llama.cpp", signal: 9,
-                wasReplaced: replaced, at: "2026-09-19T11:04:38Z"
+                wasReplaced: replaced, at: "2026-09-19T11:04:38Z", modelID: modelID
             )
         )
+    }
+
+    /// What a Mac with `interruptedLoads` (OGZamasu/silicon-optimizer#97) says of a load it stopped.
+    private func stopped(
+        _ reason: String, replacedBy: String? = nil, state: String = "Loading weights… 42%"
+    ) -> ControlAPI.Status {
+        ControlAPI.Status(
+            state: state,
+            interruptedLoads: [.init(modelID: id, reason: reason, replacedBy: replacedBy, at: "2026-09-19T11:04:38Z")]
+        )
+    }
+
+    /// Starts a load, lets it follow, and pushes `pushed` as the Mac's next status frame.
+    private func follow(until pushed: ControlAPI.Status) async throws -> ModelsModel {
+        let model = quickModel()
+        model.eventsLive = true
+        let mac = mac(answering: loading)
+        await model.refresh(using: mac)
+        let following = Task { await model.load(modelID: id, using: mac) }
+        try await until("following") { model.job?.message == "Loading Test Model…" }
+        model.statusChanged(pushed)
+        await following.value
+        return model
     }
 
     /// A model whose clock runs in milliseconds, so a ten-minute follow fits in a test.
@@ -360,6 +384,100 @@ final class ModelsModelTests: XCTestCase {
         XCTAssertFalse(model.installedFailed)
         XCTAssertEqual(model.installed.map(\.id), [id])
         XCTAssertFalse(model.isLoading)
+    }
+
+    // MARK: - A Mac that says which loads it stopped, and whose failure it is (#97)
+
+    func testALoadAnotherLoadReplacedEndsAtOnceSaysByWhatAndOffersNoRetry() async throws {
+        // The replacing load's line and no failure at all: only `interruptedLoads` says it.
+        let model = try await follow(until: stopped("replaced", replacedBy: "qwen3-coder-30b"))
+        XCTAssertNil(model.job, "following ends at the Mac's word")
+        XCTAssertEqual(model.problem?.title, "Test Model wasn't loaded")
+        XCTAssertEqual(model.problem?.message, "Replaced by qwen3-coder-30b before it finished loading.")
+        XCTAssertEqual(model.problem?.isFault, false)
+        XCTAssertNil(model.problem?.retry, "asking again would undo somebody's choice")
+    }
+
+    func testALoadAnUnloadStoppedSaysSoBeforeTheFailureLineHasSettled() async throws {
+        let model = try await follow(until: stopped("cancelled", state: "Not loaded"))
+        XCTAssertNil(model.job)
+        XCTAssertEqual(model.problem?.message, "Stopped by an unload before it finished loading.")
+        XCTAssertEqual(model.problem?.isFault, false)
+        XCTAssertNil(model.problem?.retry)
+    }
+
+    func testAnotherModelsFailureIsNotThisLoadsFault() async throws {
+        let theirs = failed("killed", modelID: "fails-to-load@Q4_K_M")
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(theirs, modelID: id), .replaced)
+        let model = try await follow(until: theirs)
+        XCTAssertNil(model.job)
+        XCTAssertEqual(model.problem?.title, "Test Model wasn't loaded")
+        XCTAssertEqual(model.problem?.isFault, false, "not this load's fault")
+        XCTAssertNil(model.problem?.detail, "nor its log")
+        XCTAssertNil(model.problem?.retry)
+    }
+
+    func testThisModelsOwnFailureIsStillAFailureWithItsLogAndARetry() async throws {
+        let ours = failed("killed", modelID: id)
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(ours, modelID: id), .failed)
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(ours, modelID: "test-model"), .failed, "the catalogue spelling too")
+        let model = try await follow(until: ours)
+        XCTAssertEqual(model.problem?.title, "Couldn't load Test Model")
+        XCTAssertEqual(model.problem?.isFault, true)
+        XCTAssertEqual(model.problem?.detail, log)
+        XCTAssertEqual(model.problem?.retry, .load(modelID: id, quantization: nil))
+    }
+
+    func testAnOlderMacWithoutEitherFieldIsReadAsBefore() {
+        // No `modelID`: the failure is taken as this load's, as it always was.
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(failed("killed"), modelID: id), .failed)
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(failed("cancelled"), modelID: id), .cancelled)
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(failed("killed", replaced: true), modelID: id), .replaced)
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(loading, modelID: id), .pending)
+        // Another model's stopped load says nothing about this one.
+        let someoneElses = ControlAPI.Status(
+            state: "Loading Test Model…",
+            interruptedLoads: [.init(modelID: "qwen3-coder-30b", reason: "replaced", replacedBy: id, at: "2026-09-19T11:04:38Z")]
+        )
+        XCTAssertEqual(ModelsModel.LoadOutcome.of(someoneElses, modelID: id), .pending)
+    }
+
+    func testTheSameModelAskedForAgainIsFollowedToItsEndNotCalledReplaced() async throws {
+        // A newer load of the same model: the answer is the live status, nothing is listed.
+        let model = quickModel()
+        let mac = mac(answering: weights, then: [weights, loaded])
+        await model.load(modelID: id, using: mac)
+        XCTAssertNil(model.job)
+        XCTAssertNil(model.problem)
+        XCTAssertTrue(model.isLoaded(id))
+    }
+
+    func testA409ForALoadThatWasStoppedIsTheMacsSentenceAndNotAFault() async throws {
+        let sentence = "Test Model was not loaded: another load (Qwen3-Coder 30B A3B) replaced it before it finished."
+        let model = quickModel()
+        let mac = mac(answering: stopped("replaced", replacedBy: "qwen3-coder-30b"))
+        await model.refresh(using: mac)
+        mac.loadResult = .failure(TransportError.conflict(sentence))
+        let reads = mac.statusReads
+        await model.load(modelID: id, using: mac)
+        XCTAssertNil(model.job)
+        XCTAssertEqual(model.problem?.title, "Test Model wasn't loaded")
+        XCTAssertEqual(model.problem?.message, sentence)
+        XCTAssertEqual(model.problem?.isFault, false)
+        XCTAssertNil(model.problem?.retry)
+        XCTAssertEqual(mac.statusReads, reads + 1, "the status is read once, for the list")
+    }
+
+    func testA409BecauseAnotherLoadIsRunningIsStillSomethingToRetry() async throws {
+        let busy = "This Mac is already loading bonsai-2-27b (started 12s ago), and this route runs one load at a time. Nothing was changed."
+        let model = quickModel()
+        let mac = mac(answering: ControlAPI.Status(state: "Loading Bonsai 2 27B…"))
+        await model.refresh(using: mac)
+        mac.loadResult = .failure(TransportError.conflict(busy))
+        await model.load(modelID: id, using: mac)
+        XCTAssertEqual(model.problem?.title, "Couldn't load Test Model")
+        XCTAssertEqual(model.problem?.message, busy)
+        XCTAssertNotNil(model.problem?.retry)
     }
 
     func testAnOutcomeIsReadFromOneStatus() {

@@ -249,6 +249,32 @@ final class QueueModelTests: XCTestCase {
         XCTAssertNil(model.error)
     }
 
+    /// A re-pair on the Queue screen: the root and the screen both say which pairing they
+    /// mean, in whichever order SwiftUI runs them. The new Mac's first read, already under
+    /// way when the second of them runs, must not be dropped — that left the list blank
+    /// until the next read, five seconds later.
+    func testARepairOnTheScreenKeepsTheNewMacsFirstReadWhicheverSaysItFirst() async throws {
+        for screenFirst in [true, false] {
+            let model = QueueModel()
+            model.connect(0)
+            await model.refresh(using: mac(queue(item())))
+            XCTAssertEqual(model.items.map(\.id), [clip])
+
+            let other = mac(queue(item(canCancel: false, id: "4D00-0001")))
+            other.videoQueueDelay = .milliseconds(150)
+            if !screenFirst { model.connect(1) }   // the root's onChange first
+            model.connect(1)                       // the screen's task
+            let reading = Task { await model.refresh(using: other) }
+            try await until("the first read is out") { other.videoQueueReads == 1 }
+            model.connect(1)                       // the other of the two, while it is out
+            await reading.value
+            XCTAssertEqual(
+                model.items.map(\.id), ["4D00-0001"],
+                "the new Mac's first read lands (\(screenFirst ? "screen" : "root") first)"
+            )
+        }
+    }
+
     func testAFailedReadKeepsTheLastQueueAndSaysSo() async {
         let model = QueueModel()
         let mac = mac(queue(item()))

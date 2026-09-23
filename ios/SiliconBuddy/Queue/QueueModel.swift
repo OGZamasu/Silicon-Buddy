@@ -30,6 +30,8 @@ public final class QueueModel {
     /// Bumped by `reset()`. An answer that set out before a re-pair is the last Mac's,
     /// and is dropped rather than shown as this one's queue.
     private var generation = 0
+    /// The pairing this model holds the queue of (`AppModel.connectionGeneration`).
+    private var connection: Int?
 
     public init() {}
 
@@ -70,6 +72,18 @@ public final class QueueModel {
     }
 
     static let unreadable = "Couldn't read the Mac's render queue."
+
+    /// Holds the queue of pairing `connection`, starting afresh only when it is a new one.
+    ///
+    /// Both the root (on a re-pair) and the screen (as it starts reading) say which pairing
+    /// they mean, in whichever order SwiftUI runs them. Only the first of the two resets:
+    /// were the second to, it would drop the new Mac's first read already under way and
+    /// leave the list blank until the next one.
+    public func connect(_ connection: Int) {
+        guard connection != self.connection else { return }
+        if self.connection != nil { reset() }
+        self.connection = connection
+    }
 
     /// A different Mac has a different queue. Only a re-pair calls this: coming back to
     /// the screen is not a different Mac.

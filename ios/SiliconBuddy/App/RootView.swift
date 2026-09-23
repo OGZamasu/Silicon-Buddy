@@ -34,7 +34,7 @@ public struct RootView: View {
             models.reset()
             Task { await models.refresh(using: app.transport) }
             // The last Mac's queue, and anything still on its way to it, is not this one's.
-            queue.reset()
+            queue.connect(app.connectionGeneration)
         }
         // What the Mac pushes is what the list shows, and a load it started is followed by
         // it — `POST /load` may answer "still loading" and carry on — on whichever screen.

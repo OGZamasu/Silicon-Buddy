@@ -80,9 +80,10 @@ public struct QueueView: View {
         .navigationTitle("Render queue")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await model.refresh(using: app.transport) }
-        // Read while on screen. A re-pair restarts this against the new Mac; the root has
-        // already emptied the model for it.
+        // Read while on screen. A re-pair restarts this against the new Mac; whichever of
+        // this and the root's `connect` runs first empties the model for it, once.
         .task(id: app.connectionGeneration) {
+            model.connect(app.connectionGeneration)
             while !Task.isCancelled {
                 await model.refresh(using: app.transport)
                 try? await Task.sleep(for: .seconds(5))

@@ -569,6 +569,9 @@ final class ContractTests: XCTestCase {
         "POST__ondevice_models__id__prepare 403 swarm",
         // The queue's controls are the owner's: the swarm secret is refused every verb.
         "POST__video_queue_control 403 swarm",
+        // A load this Mac stopped before it finished (OGZamasu/silicon-optimizer#97).
+        "POST__load 409 replaced by another load before it finished",
+        "POST__load 409 stopped by an unload before it finished",
     ]
 
     /// The refusals a status can carry beyond the one in `errors`, read strictly: each is
@@ -877,10 +880,13 @@ final class ContractTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(decoded.count, 5)
         for (label, status) in decoded {
-            let failure = try XCTUnwrap(status.failure, label)
             XCTAssertFalse(status.state.contains("\n"), "\(label): state stays one line")
             XCTAssertNil(status.loadedModelID, label)
-            XCTAssertFalse(failure.at.isEmpty, label)
+            if let failure = status.failure { XCTAssertFalse(failure.at.isEmpty, label) }
+            XCTAssertTrue(
+                status.failure != nil || status.interruptedLoads != nil,
+                "\(label): a failure or a stopped load"
+            )
         }
 
         let killed = try XCTUnwrap(decoded["after a failed load"]?.failure)
@@ -888,17 +894,61 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(killed.signal, 9)
         XCTAssertTrue(killed.detail?.contains("load_tensors") == true, "the log is the detail")
         XCTAssertEqual(killed.facts, "llama.cpp · signal 9")
+        XCTAssertEqual(killed.modelID, "bonsai-2-27b", "whose load it was")
 
-        let replaced = try XCTUnwrap(decoded["after a load that was replaced"]?.failure)
-        XCTAssertTrue(replaced.wasReplaced)
-        XCTAssertEqual(replaced.kind, .replaced)
-        XCTAssertEqual(decoded["after a load that was cancelled"]?.failure?.kind, .cancelled)
+        // Replaced: no failure at all — the state line is the new load's, and the ending is
+        // in `interruptedLoads` only.
+        let replaced = try XCTUnwrap(decoded["after a load that was replaced"])
+        XCTAssertNil(replaced.failure)
+        let stopped = try XCTUnwrap(replaced.interruption(of: "bonsai-2-27b@Q4_K_M"))
+        XCTAssertEqual(stopped.kind, .replaced)
+        XCTAssertEqual(stopped.replacedBy, "qwen3-coder-30b")
+        XCTAssertNil(replaced.interruption(of: "qwen3-coder-30b"), "not a model that was stopped")
+
+        // Cancelled by an unload: both, for a phone from before `interruptedLoads`.
+        let cancelled = try XCTUnwrap(decoded["after a load that was cancelled"])
+        XCTAssertEqual(cancelled.failure?.kind, .cancelled)
+        XCTAssertEqual(cancelled.interruption(of: "bonsai-2-27b")?.kind, .cancelled)
         XCTAssertEqual(decoded["after a load that never answered"]?.failure?.kind, .timedOut)
 
         // A device paired for chat is told the same failure without the runtime's log.
         let withheld = try XCTUnwrap(decoded["as a chat-scope device or a peer sees it"])
         XCTAssertNil(withheld.failure?.detail)
         XCTAssertEqual(withheld.state, decoded["after a failed load"]?.state)
+    }
+
+    func testAStopThisAppDoesNotKnowReadsAsCancelledAndAnOlderMacSendsNeither() throws {
+        let json = Data(#"{"state":"Not loaded","expertStreaming":false,"interruptedLoads":[{"modelID":"m","reason":"evicted","at":"2026-09-19T11:04:38Z"}]}"#.utf8)
+        let status = try JSONDecoder.buddy.decode(ControlAPI.Status.self, from: json)
+        XCTAssertEqual(status.interruption(of: "m")?.kind, .cancelled)
+        let older = Data(#"{"state":"x","expertStreaming":false,"failure":{"reason":"killed","wasReplaced":false,"at":"2026-09-19T11:04:38Z"}}"#.utf8)
+        let old = try JSONDecoder.buddy.decode(ControlAPI.Status.self, from: older)
+        XCTAssertNil(old.interruptedLoads)
+        XCTAssertNil(old.failure?.modelID)
+    }
+
+    /// A load another load or an unload stopped inside the Mac's patience: a 409, in words.
+    func testALoadStoppedBeforeItFinishedIsAConflictTheMacExplains() throws {
+        for label in ["replaced by another load before it finished", "stopped by an unload before it finished"] {
+            let body = try JSONEncoder().encode(
+                try XCTUnwrap(try fixture("POST__load")["errorVariants"]?["409"]?[label])
+            )
+            guard case .conflict(let sentence)? = TransportError.from(status: 409, body: body, path: "/load") else {
+                return XCTFail("\(label) should be a conflict")
+            }
+            XCTAssertTrue(sentence.hasPrefix("Bonsai 2 27B was not loaded:"), label)
+        }
+    }
+
+    /// Render and queue results name their files for a device, never where they sit.
+    func testQueueItemsNameTheirFilesNotWhereTheySit() throws {
+        for name in ["GET__video_queue", "POST__video_queue", "POST__video_queue_control"] {
+            for item in try roundTrip(ControlAPI.VideoQueueView.self, name).items {
+                for value in [item.outputDirectory] + [item.file].compactMap({ $0 }) {
+                    XCTAssertFalse(value.contains("/") || value.hasPrefix("~"), "\(name): \(value) is a path")
+                }
+            }
+        }
     }
 
     func testAFailureReasonThisAppDoesNotKnowReadsAsExited() throws {

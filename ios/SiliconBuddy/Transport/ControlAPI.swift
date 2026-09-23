@@ -247,12 +247,18 @@ public enum ControlAPI {
         /// loading or loaded, and on a Mac from before it existed. `state` is still the line
         /// to show; this is what lies behind it.
         public var failure: LoadFailure?
+        /// Loads this Mac stopped before they finished — an unload part-way, or another
+        /// load started meanwhile. Newest first, at most four, one per model; absent when
+        /// there are none, and on a Mac from before it said so. A new load of a model clears
+        /// its entry, so one for the model this phone has just asked for is that load's
+        /// ending.
+        public var interruptedLoads: [LoadInterruption]?
 
         public init(
             state: String, loadedModelID: String? = nil, loadedModelName: String? = nil,
             contextLength: Int? = nil, expertStreaming: Bool = false,
             lastGenerationTokensPerSecond: Double? = nil, activity: String? = nil,
-            failure: LoadFailure? = nil
+            failure: LoadFailure? = nil, interruptedLoads: [LoadInterruption]? = nil
         ) {
             self.state = state
             self.loadedModelID = loadedModelID
@@ -262,10 +268,45 @@ public enum ControlAPI {
             self.lastGenerationTokensPerSecond = lastGenerationTokensPerSecond
             self.activity = activity
             self.failure = failure
+            self.interruptedLoads = interruptedLoads
         }
 
         /// True when a language model is resident and ready to answer.
         public var hasLoadedModel: Bool { loadedModelID != nil }
+
+        /// How the Mac stopped a load of `modelID`, when it did.
+        public func interruption(of modelID: String) -> LoadInterruption? {
+            interruptedLoads?.first { Self.sameModel($0.modelID, modelID) }
+        }
+
+        /// An installed id carries its quantization ("model@Q4_K_M"); a status may use either.
+        public static func sameModel(_ a: String, _ b: String) -> Bool {
+            a == b || a.hasPrefix(b + "@") || b.hasPrefix(a + "@")
+        }
+    }
+
+    /// A load the Mac stopped before it finished. Not a fault: somebody changed their mind.
+    public struct LoadInterruption: Codable, Sendable, Equatable {
+        public enum Kind: Sendable { case cancelled, replaced }
+
+        /// As `loadedModelID` spells it.
+        public var modelID: String
+        /// `cancelled` for an unload, `replaced` for another load. Kept as text: it may grow.
+        public var reason: String
+        /// The model whose load took over, when it was replaced.
+        public var replacedBy: String?
+        /// ISO 8601, in the Mac's own offset.
+        public var at: String
+
+        public init(modelID: String, reason: String, replacedBy: String? = nil, at: String) {
+            self.modelID = modelID
+            self.reason = reason
+            self.replacedBy = replacedBy
+            self.at = at
+        }
+
+        /// The Mac's rule: a reason this app does not know reads as `cancelled`.
+        public var kind: Kind { reason == "replaced" ? .replaced : .cancelled }
     }
 
     /// The facts behind a failed load. The sentence is not here: it is `Status.state`, and
@@ -291,10 +332,14 @@ public enum ControlAPI {
         public var wasReplaced: Bool
         /// ISO 8601, in the Mac's own offset.
         public var at: String
+        /// Whose load it was, as `loadedModelID` spells it. Absent from an older Mac. A
+        /// failure naming another model is somebody else's load, not the one being followed.
+        public var modelID: String?
 
         public init(
             reason: String, detail: String? = nil, runtime: String? = nil,
-            exitStatus: Int? = nil, signal: Int? = nil, wasReplaced: Bool = false, at: String
+            exitStatus: Int? = nil, signal: Int? = nil, wasReplaced: Bool = false, at: String,
+            modelID: String? = nil
         ) {
             self.reason = reason
             self.detail = detail
@@ -303,6 +348,7 @@ public enum ControlAPI {
             self.signal = signal
             self.wasReplaced = wasReplaced
             self.at = at
+            self.modelID = modelID
         }
 
         public var kind: Reason { wasReplaced ? .replaced : Reason(rawValue: reason) ?? .exited }
