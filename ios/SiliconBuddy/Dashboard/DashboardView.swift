@@ -155,7 +155,7 @@ public struct DashboardView: View {
                         fraction: metrics.cpuUtilization,
                         tint: .teal
                     )
-                    HStack {
+                    StatRow {
                         Stat("Pressure", metrics.memoryPressure)
                         Stat("Swap", Format.bytes(metrics.swapUsedBytes))
                         Stat("Wired", Format.bytes(metrics.memoryWiredBytes))
@@ -173,12 +173,12 @@ public struct DashboardView: View {
                 VStack(alignment: .leading, spacing: Theme.gap) {
                     Text(profile.chip)
                         .font(.headline)
-                    HStack {
+                    StatRow {
                         Stat("GPU cores", "\(profile.gpuCores)")
                         Stat("CPU", "\(profile.performanceCores)P + \(profile.efficiencyCores)E")
                         Stat("Neural", "\(profile.neuralEngineCores)")
                     }
-                    HStack {
+                    StatRow {
                         Stat("Memory", Format.bytes(profile.totalMemoryBytes))
                         Stat("Model budget", Format.bytes(profile.modelBudgetBytes))
                         Stat("Disk free", Format.bytes(profile.diskFreeBytes))
