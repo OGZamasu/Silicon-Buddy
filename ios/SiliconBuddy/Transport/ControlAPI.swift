@@ -21,12 +21,21 @@ public enum ControlAPI {
         public var pid: Int32?
         public var token: String
         public var version: String
+        /// The app's CFBundleShortVersionString and CFBundleVersion, as `/health` says them.
+        /// Absent from a file an older Mac wrote.
+        public var appVersion: String?
+        public var appBuild: String?
 
-        public init(port: Int, pid: Int32? = nil, token: String, version: String) {
+        public init(
+            port: Int, pid: Int32? = nil, token: String, version: String,
+            appVersion: String? = nil, appBuild: String? = nil
+        ) {
             self.port = port
             self.pid = pid
             self.token = token
             self.version = version
+            self.appVersion = appVersion
+            self.appBuild = appBuild
         }
     }
 
@@ -977,12 +986,42 @@ public enum ControlAPI {
     }
 
     /// `GET /health`, the one unauthenticated route.
+    ///
+    /// `appVersion` and `appBuild` are the Mac app's own CFBundleShortVersionString and
+    /// CFBundleVersion. A Mac from before them sends only `version`, which it wrote as a
+    /// literal "0.1.0" whatever it was (OGZamasu/silicon-optimizer#81); a newer one repeats
+    /// `appVersion` there for the clients that read nothing else.
     public struct Health: Codable, Sendable, Equatable {
         public var status: String
-        public var version: String
-        public init(status: String, version: String) {
+        public var version: String?
+        public var appVersion: String?
+        public var appBuild: String?
+        public init(
+            status: String, version: String? = nil,
+            appVersion: String? = nil, appBuild: String? = nil
+        ) {
             self.status = status
             self.version = version
+            self.appVersion = appVersion
+            self.appBuild = appBuild
+        }
+
+        /// What the device calls the Mac's version: "0.5.0 (157)" from a Mac that says
+        /// both, the old `version` from one that says neither, nil from one that says
+        /// nothing. Only a named app version brings its build along — a build number beside
+        /// the old literal would dress it up as something it isn't.
+        public var appVersionLabel: String? {
+            if let named = appVersion?.trimmingCharacters(in: .whitespaces), !named.isEmpty {
+                if let build = appBuild?.trimmingCharacters(in: .whitespaces),
+                   !build.isEmpty, build != named {
+                    return "\(named) (\(build))"
+                }
+                return named
+            }
+            guard let old = version?.trimmingCharacters(in: .whitespaces), !old.isEmpty else {
+                return nil
+            }
+            return old
         }
     }
 

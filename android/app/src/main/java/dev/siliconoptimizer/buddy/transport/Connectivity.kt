@@ -11,8 +11,11 @@ sealed interface Reachability {
     data object Unknown : Reachability
     data object Checking : Reachability
 
-    /** The Mac answered and took the token. */
-    data class Ready(val version: String, val loadedModel: String?) : Reachability
+    /**
+     * The Mac answered and took the token. [version] is the Mac app's, as [Health.appVersionLabel]
+     * reads it, and null when the Mac did not say.
+     */
+    data class Ready(val version: String?, val loadedModel: String?) : Reachability
 
     /** `/health` answered but `/status` came back 401. */
     data object Unauthorized : Reachability
@@ -42,8 +45,10 @@ sealed interface Reachability {
         get() = when (this) {
             is Unknown -> "No Mac paired yet."
             is Checking -> "Talking to the Mac…"
-            is Ready -> loadedModel?.let { "Silicon Optimizer $version — $it" }
-                ?: "Silicon Optimizer $version"
+            is Ready -> {
+                val app = version?.let { "Silicon Optimizer $it" } ?: "Silicon Optimizer"
+                loadedModel?.let { "$app — $it" } ?: app
+            }
             is Unauthorized -> "The Mac refused this device's token. Pair again."
             is AppNotRunning -> "The Mac is awake but Silicon Optimizer is closed."
             is Unreachable -> "Nothing answered at $host. Is Tailscale on?"
@@ -61,7 +66,7 @@ class ConnectivityProbe(private val transport: ControlTransport) {
 
     suspend fun check(): Reachability {
         val version = try {
-            transport.health().version
+            transport.health().appVersionLabel
         } catch (error: TransportError) {
             return when (error) {
                 is TransportError.AppNotRunning -> Reachability.AppNotRunning
@@ -69,7 +74,7 @@ class ConnectivityProbe(private val transport: ControlTransport) {
                 is TransportError.TimedOut -> Reachability.Unreachable("the Mac")
                 is TransportError.Cancelled -> Reachability.Unknown
                 // A Mac old enough to lack /health still proves it is listening.
-                is TransportError.RouteUnavailable -> return authorizedCheck("unknown")
+                is TransportError.RouteUnavailable -> return authorizedCheck(null)
                 else -> Reachability.Failed(error.message ?: "Unknown error")
             }
         } catch (error: Exception) {
@@ -78,7 +83,7 @@ class ConnectivityProbe(private val transport: ControlTransport) {
         return authorizedCheck(version)
     }
 
-    private suspend fun authorizedCheck(version: String): Reachability = try {
+    private suspend fun authorizedCheck(version: String?): Reachability = try {
         val status = transport.status()
         Reachability.Ready(version, status.loadedModelName ?: status.state)
     } catch (error: TransportError) {

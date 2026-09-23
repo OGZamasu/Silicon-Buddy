@@ -87,27 +87,28 @@ public final class AppModel {
 
     /// Trades an invite the person has agreed to for a per-device token.
     ///
-    /// Only ever called from a confirmation the person tapped. Scanning a code, or
-    /// following a link, sets `pendingInvite`; this is the other side of that.
+    /// Only ever called from something the person tapped: the confirmation a scanned
+    /// code or a followed link gets (they set `pendingInvite`), or Pair under a code they
+    /// typed themselves.
     public func pair(with invite: PairingInvite) async throws {
-        guard TailnetHost.isAllowed(invite.host) else {
-            throw TransportError.forbidden(TailnetHost.explanation)
-        }
-        let probe = ControlClient(config: ServerConfig(host: invite.host, port: invite.port, token: ""))
-        let paired = try await probe.pair(
-            code: invite.code, deviceName: Self.deviceName, platform: Self.platform
-        )
         try connect(
-            ServerConfig(
-                host: invite.host, port: paired.port, token: paired.token,
-                macName: paired.macName, deviceID: paired.deviceID,
-                scope: BuddyAPI.DeviceScope(wire: paired.scope)
-            )
+            try await invite.exchange(deviceName: Self.deviceName, platform: Self.platform)
         )
         await refreshReachability()
     }
 
-    /// The advanced form: host, port and the token from the Mac's control.json.
+    /// A link pasted into the code form, held for the confirmation a tapped link gets —
+    /// never spent by that form's own Pair button, because whoever made the link chose its
+    /// host. False when `text` is not a link at all; throws for a link that doesn't parse,
+    /// including one whose host is off the tailnet, and then holds nothing.
+    public func holdPastedLink(_ text: String) throws -> Bool {
+        guard let invite = try PairingInvite.pasted(text) else { return false }
+        pendingInvite = invite
+        return true
+    }
+
+    /// Stores a Mac this device can already talk to: the end of `pair(with:)`, and the
+    /// Developer form's host, port and control.json token, which only the Simulator can use.
     public func connect(_ newConfig: ServerConfig) throws {
         guard TailnetHost.isAllowed(newConfig.host) else {
             throw TransportError.forbidden(TailnetHost.explanation)

@@ -7,11 +7,13 @@
   "path" : "\/health",
   "request" : null,
   "response" : {
+    "appBuild" : "157",
+    "appVersion" : "0.5.0",
     "status" : "ok",
-    "version" : "0.1.0"
+    "version" : "0.5.0"
   },
   "scopes" : [
 
   ],
-  "summary" : "Unauthenticated, so a client can tell a dead app from a bad token."
+  "summary" : "Unauthenticated, so a client can tell a dead app from a bad token. Says which build of the app is answering: `appVersion` and `appBuild` are its CFBundleShortVersionString and CFBundleVersion, and `version` repeats `appVersion` for clients written before those existed."
 }

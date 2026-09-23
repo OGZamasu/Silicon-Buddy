@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// Two ways to reach a Mac: scan the code it shows, or type the address in.
+/// Three ways to reach a Mac: scan the code it shows, type that same code in, or — from
+/// the Simulator on the Mac itself — use the Mac's own control token.
 ///
-/// The advanced form is not a debugging leftover — it is the path that works today,
-/// before the Mac has `POST /buddy/pair`, and it stays afterwards for anyone whose Mac
-/// is on a screen they cannot point a camera at.
+/// Scan and Enter code both end at `POST /buddy/pair`, and they are how an iPhone or iPad
+/// gets in. The token in the Mac's control.json is accepted on the Mac's loopback listener
+/// and nowhere else, so over the tailnet it is refused whatever a device does with it.
+/// Developer stays for the Simulator, which shares the Mac's loopback, and says so.
 public struct PairingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -12,14 +14,19 @@ public struct PairingView: View {
     @State private var mode: Mode = .scan
     @State private var cameraState: QRScannerView.CameraState = .scanning
     @State private var host = ""
-    @State private var port = "8788"
+    @State private var code = ""
+    @State private var codePort = String(PairingInvite.defaultPort)
+    @State private var developerHost = ""
+    @State private var developerPort = ""
     @State private var token = ""
     @State private var status: Status = .idle
     @State private var confirmingReplacement = false
 
     enum Mode: String, CaseIterable, Identifiable {
         case scan = "Scan"
-        case advanced = "Advanced"
+        case code = "Enter code"
+        /// The Mac's own control token, which the Mac takes only from itself.
+        case developer = "Developer"
         var id: String { rawValue }
     }
 
@@ -29,6 +36,10 @@ public struct PairingView: View {
         case failed(String)
         case paired(String)
     }
+
+    /// What a Mac without `POST /buddy/pair` gets told, however its code was spent.
+    static let macTooOldForCodes =
+        "That Mac is too old for pairing codes. Update Silicon Optimizer on it, then pair again."
 
     public init() {}
 
@@ -43,7 +54,8 @@ public struct PairingView: View {
 
                 switch mode {
                 case .scan: scanner
-                case .advanced: advancedForm
+                case .code: codeForm
+                case .developer: developerForm
                 }
             }
             .navigationTitle("Pair with a Mac")
@@ -54,12 +66,18 @@ public struct PairingView: View {
                 }
             }
             .overlay(alignment: .bottom) { statusBar }
+            .onAppear {
+                if host.isEmpty, let current = app.config { host = current.host }
+            }
             .confirmationDialog(
                 "Replace \(app.macDisplayName)?",
                 isPresented: $confirmingReplacement,
                 titleVisibility: .visible
             ) {
-                Button("Replace with \(host)", role: .destructive) { connect() }
+                // Only the form on screen can have asked, so it is the one that goes on.
+                Button("Replace with \(mode == .developer ? developerHost : host)", role: .destructive) {
+                    if mode == .developer { connect() } else { pairTyped() }
+                }
                 Button("Keep \(app.macDisplayName)", role: .cancel) {}
             } message: {
                 Text(
@@ -77,7 +95,17 @@ public struct PairingView: View {
             if cameraState == .scanning {
                 QRScannerView(
                     onFound: { code in handleScan(code) },
-                    onState: { cameraState = $0 }
+                    onState: { state in
+                        // A camera refused before now is reported while the scanner is
+                        // still being built, so the change waits for that to finish.
+                        Task { @MainActor in
+                            cameraState = state
+                            guard state == .denied else { return }
+                            // Straight to the form that works without it, saying why.
+                            mode = .code
+                            status = .failed("Camera denied. Type the code your Mac shows instead.")
+                        }
+                    }
                 )
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .top) {
@@ -93,11 +121,11 @@ public struct PairingView: View {
                     Placeholder(
                         title: cameraState == .denied ? "Camera is off" : "No camera here",
                         message: cameraState == .denied
-                            ? "Allow the camera in Settings, or use Advanced to type the address."
-                            : "This device has no camera. Use Advanced to type the address in.",
+                            ? "Allow the camera in Settings, or type the code your Mac shows under the QR."
+                            : "This device has no camera. Type the code your Mac shows under the QR.",
                         systemImage: "camera.badge.ellipsis"
                     )
-                    Button("Enter it by hand") { mode = .advanced }
+                    Button("Enter the code by hand") { mode = .code }
                         .buttonStyle(.borderedProminent)
                         .foregroundStyle(Theme.onAccent)
                 }
@@ -113,7 +141,7 @@ public struct PairingView: View {
         do {
             let invite = try PairingInvite.parse(code)
             host = invite.host
-            port = String(invite.port)
+            codePort = String(invite.port)
             app.pendingInvite = invite
             dismiss()
         } catch {
@@ -122,22 +150,139 @@ public struct PairingView: View {
         }
     }
 
-    // MARK: - Advanced
+    // MARK: - Enter code
 
-    private var advancedForm: some View {
+    private var codeForm: some View {
+        Form {
+            Section {
+                LabeledContent("Code") {
+                    TextField("123 456", text: $code)
+                        .keyboardType(.numberPad)
+                        .font(.body.monospacedDigit())
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: code) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed, keepSpaces: true)
+                            if digits != typed { code = digits }
+                        }
+                }
+                LabeledContent("Address") {
+                    TextField("100.x.y.z", text: $host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: host) { _, typed in offer(pastedLink: typed) }
+                }
+                LabeledContent("Port") {
+                    TextField(String(PairingInvite.defaultPort), text: $codePort)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: codePort) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed)
+                            if digits != typed { codePort = digits }
+                        }
+                }
+            } header: {
+                Text("The code on your Mac")
+            } footer: {
+                Text(
+                    "In Silicon Optimizer, open Settings → Silicon Buddy and choose Pair a "
+                        + "device. Type the six-digit code it shows and the address beside it; "
+                        + "the port is \(String(PairingInvite.defaultPort)) unless your Mac says "
+                        + "otherwise. A pairing link pasted into the address field is shown to you "
+                        + "to confirm, as a scanned code is."
+                )
+            }
+
+            Section {
+                Button {
+                    if app.isPaired, !PairingInvite.isLink(host) {
+                        confirmingReplacement = true
+                    } else {
+                        pairTyped()
+                    }
+                } label: {
+                    HStack {
+                        Text(app.isPaired ? "Replace this Mac…" : "Pair")
+                        Spacer()
+                        if status == .working { ProgressView().controlSize(.small) }
+                    }
+                }
+                .disabled(
+                    host.trimmingCharacters(in: .whitespaces).isEmpty
+                        || code.trimmingCharacters(in: .whitespaces).isEmpty
+                        || status == .working
+                )
+            }
+
+            forgetSection
+        }
+    }
+
+    /// A pasted link is not something the person typed: whoever made it chose its host. So
+    /// it goes where a scanned code goes — the confirmation, with its warning — and this
+    /// form's Pair never sees it.
+    private func offer(pastedLink text: String) {
+        do {
+            guard try app.holdPastedLink(text) else { return }
+            dismiss()
+        } catch {
+            status = .failed(error.localizedDescription)
+        }
+    }
+
+    /// A typed code goes where a scanned one does — `AppModel.pair(with:)`, and from there
+    /// `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
+    /// which is there because whoever printed a QR chose its host; here the person holding
+    /// the device typed it. Replacing a paired Mac still asks first. A link left in the
+    /// address field is the exception, and goes to that confirmation instead.
+    private func pairTyped() {
+        if PairingInvite.isLink(host) {
+            offer(pastedLink: host)
+            return
+        }
+        let invite: PairingInvite
+        do {
+            invite = try PairingInvite.typed(address: host, code: code, port: codePort)
+        } catch {
+            status = .failed(error.localizedDescription)
+            return
+        }
+        status = .working
+        Task {
+            do {
+                try await app.pair(with: invite)
+                status = .paired(app.macDisplayName)
+                try? await Task.sleep(for: .milliseconds(500))
+                dismiss()
+            } catch let error as TransportError where error.isMissingRoute {
+                status = .failed(Self.macTooOldForCodes)
+            } catch {
+                status = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Developer
+
+    private var developerForm: some View {
         Form {
             Section {
                 LabeledContent("Host") {
-                    TextField("100.x.y.z or 127.0.0.1", text: $host)
+                    TextField("127.0.0.1", text: $developerHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .multilineTextAlignment(.trailing)
                 }
                 LabeledContent("Port") {
-                    TextField("8788", text: $port)
+                    TextField("From control.json", text: $developerPort)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
+                        .onChange(of: developerPort) { _, typed in
+                            let digits = PairingInvite.asciiDigits(typed)
+                            if digits != typed { developerPort = digits }
+                        }
                 }
                 LabeledContent("Token") {
                     SecureField("Control token", text: $token)
@@ -146,13 +291,14 @@ public struct PairingView: View {
                         .multilineTextAlignment(.trailing)
                 }
             } header: {
-                Text("Silicon Optimizer")
+                Text("Local Simulator and development only")
             } footer: {
                 Text(
-                    "The Mac writes these to ~/Library/Application Support/SiliconOptimizer/"
-                        + "control.json when it starts. On the iOS Simulator the Mac is 127.0.0.1; "
-                        + "on a device it is the Mac's tailnet address (100.x.y.z). "
-                        + "Nothing else is accepted."
+                    "This is the Mac's own control token, from ~/Library/Application Support/"
+                        + "SiliconOptimizer/control.json. The Mac accepts it only on its local "
+                        + "listener, so it works from the iOS Simulator on that Mac (127.0.0.1, "
+                        + "the port in control.json) and never from an iPhone or iPad over "
+                        + "Tailscale. To pair a device, use Scan or Enter code."
                 )
             }
 
@@ -170,26 +316,34 @@ public struct PairingView: View {
                         if status == .working { ProgressView().controlSize(.small) }
                     }
                 }
-                .disabled(host.isEmpty || token.isEmpty || Int(port) == nil || status == .working)
+                .disabled(
+                    developerHost.isEmpty || token.isEmpty || Int(developerPort) == nil
+                        || status == .working
+                )
             }
 
-            if app.isPaired {
-                Section {
-                    Button("Forget this Mac", role: .destructive) {
-                        app.forget()
-                        status = .idle
-                    }
+            forgetSection
+        }
+    }
+
+    @ViewBuilder
+    private var forgetSection: some View {
+        if app.isPaired {
+            Section {
+                Button("Forget this Mac", role: .destructive) {
+                    app.forget()
+                    status = .idle
                 }
             }
         }
     }
 
     private func connect() {
-        guard let portNumber = Int(port), (1...65535).contains(portNumber) else {
+        guard let portNumber = Int(developerPort), (1...65535).contains(portNumber) else {
             status = .failed("That port isn't a number between 1 and 65535.")
             return
         }
-        let trimmedHost = host.trimmingCharacters(in: .whitespaces)
+        let trimmedHost = developerHost.trimmingCharacters(in: .whitespaces)
         guard TailnetHost.isAllowed(trimmedHost) else {
             status = .failed(TailnetHost.explanation)
             return

@@ -34,13 +34,13 @@ data class ServerConfig(
     /** Whether this device may change what the Mac is running. */
     val canControl: Boolean get() = scope.canControl
 
-    val displayAddress: String get() = "$host:$port"
+    val displayAddress: String get() = "${TailnetHost.forUrl(host)}:$port"
 
     fun url(path: String, query: Map<String, String> = emptyMap()): URL {
         val suffix = if (query.isEmpty()) "" else "?" + query.entries.joinToString("&") {
             "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}"
         }
-        return URL("http://$host:$port$path$suffix")
+        return URL("http://${TailnetHost.forUrl(host)}:$port$path$suffix")
     }
 
     /** Never prints the token. */
