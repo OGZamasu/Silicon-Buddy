@@ -35,7 +35,9 @@ import dev.siliconoptimizer.buddy.ui.MeterRow
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
 import dev.siliconoptimizer.buddy.ui.Stat
+import dev.siliconoptimizer.buddy.ui.StatRow
 import dev.siliconoptimizer.buddy.ui.StatusDot
+import dev.siliconoptimizer.buddy.ui.WelcomeCard
 
 /** The first screen: what the Mac is doing right now. */
 @Composable
@@ -47,31 +49,21 @@ fun DashboardScreen(
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+        modifier = modifier.fillMaxSize().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 12.dp, bottom = 24.dp),
     ) {
-        item { ConnectionCard(app, onPair) }
-
         if (!app.isPaired) {
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(top = 48.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("No Mac paired", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "Scan the code in Silicon Optimizer, Settings, Silicon Buddy — " +
-                            "or enter the address by hand.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(onClick = onPair) { Text("Pair with a Mac") }
-                }
-            }
+            item { WelcomeCard(onPair) }
             return@LazyColumn
         }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("WORKSPACE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text("Your Mac, at a glance.", style = MaterialTheme.typography.headlineLarge)
+            }
+        }
+        item { ConnectionCard(app, onPair) }
 
         if (events.downloads.isNotEmpty() || events.jobs.isNotEmpty()) {
             item { ActivityCard(events) }
@@ -155,7 +147,7 @@ private fun LoadedModelCard(model: DashboardViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         model.status?.lastGenerationTokensPerSecond?.let {
-            Pill(Format.rate(it), tint = Color(0xFF34A853), filled = true)
+            Pill(Format.rate(it), tint = MaterialTheme.colorScheme.primary, filled = true)
         }
     }
 }
@@ -186,10 +178,10 @@ private fun MetricsCard(model: DashboardViewModel) {
             fraction = metrics.cpuUtilization,
             tint = MaterialTheme.colorScheme.secondary,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("Pressure", metrics.memoryPressure, Modifier.weight(1f))
-            Stat("Swap", Format.bytes(metrics.swapUsedBytes), Modifier.weight(1f))
-            Stat("Wired", Format.bytes(metrics.memoryWiredBytes), Modifier.weight(1f))
+        StatRow {
+            Stat("Pressure", metrics.memoryPressure)
+            Stat("Swap", Format.bytes(metrics.swapUsedBytes))
+            Stat("Wired", Format.bytes(metrics.memoryWiredBytes))
         }
     }
 }
@@ -203,15 +195,15 @@ private fun MachineCard(model: DashboardViewModel) {
             return@SectionCard
         }
         Text(profile.chip, style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("GPU cores", "${profile.gpuCores}", Modifier.weight(1f))
-            Stat("CPU", "${profile.performanceCores}P + ${profile.efficiencyCores}E", Modifier.weight(1f))
-            Stat("Neural", "${profile.neuralEngineCores}", Modifier.weight(1f))
+        StatRow {
+            Stat("GPU cores", "${profile.gpuCores}")
+            Stat("CPU", "${profile.performanceCores}P + ${profile.efficiencyCores}E")
+            Stat("Neural", "${profile.neuralEngineCores}")
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("Memory", Format.bytes(profile.totalMemoryBytes), Modifier.weight(1f))
-            Stat("Budget", Format.bytes(profile.modelBudgetBytes), Modifier.weight(1f))
-            Stat("Disk free", Format.bytes(profile.diskFreeBytes), Modifier.weight(1f))
+        StatRow {
+            Stat("Memory", Format.bytes(profile.totalMemoryBytes))
+            Stat("Budget", Format.bytes(profile.modelBudgetBytes))
+            Stat("Disk free", Format.bytes(profile.diskFreeBytes))
         }
         model.node?.let { node ->
             HorizontalDivider()

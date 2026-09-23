@@ -1,6 +1,10 @@
 package dev.siliconoptimizer.buddy.modelsui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -13,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -22,6 +27,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -30,13 +36,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.InstalledModel
 import dev.siliconoptimizer.buddy.ui.Format
+import dev.siliconoptimizer.buddy.ui.EmptyState
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.verdictTint
 
@@ -55,11 +61,19 @@ fun ModelsScreen(
             placeholder = { Text("Search models") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(18.dp),
+            // The border keeps Material's `outline`: the field is white on a near-white
+            // page, so the border is the only thing that says there is a field there, and
+            // `outlineVariant` is 1.3:1 against it — under the 3:1 a control's edge needs.
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                focusedContainerColor = MaterialTheme.colorScheme.surface,
+            ),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
         )
 
         SingleChoiceSegmentedButtonRow(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
         ) {
             ModelsViewModel.Section.entries.forEachIndexed { index, section ->
                 SegmentedButton(
@@ -96,7 +110,11 @@ fun ModelsScreen(
             }
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             when (model.section) {
                 ModelsViewModel.Section.Installed -> {
                     model.status?.loadedModelID?.let { loaded ->
@@ -130,6 +148,19 @@ fun ModelsScreen(
                         }
                     }
                     item { SectionHeader("${model.filteredInstalled.size} on disk") }
+                    if (model.filteredInstalled.isEmpty() && !model.isLoading) {
+                        item {
+                            EmptyState(
+                                if (model.search.isNotBlank()) "No matching models" else "Your model library",
+                                when {
+                                    model.search.isNotBlank() -> "Try another name or quantization."
+                                    !app.isPaired -> "Pair with your Mac to see its models and discover what it can run."
+                                    else -> "Explore the Catalog to find a model for your Mac."
+                                },
+                                Icons.Filled.Layers,
+                            )
+                        }
+                    }
                     items(model.filteredInstalled, key = { it.id }) { entry ->
                         InstalledRow(
                             entry = entry,
@@ -139,7 +170,6 @@ fun ModelsScreen(
                             download = events.download(modelID = entry.id),
                             onLoad = { model.load(entry.id, transport = app.transport) },
                         )
-                        HorizontalDivider()
                     }
                 }
 
@@ -149,7 +179,6 @@ fun ModelsScreen(
                         CatalogRow(entry, app.canControl) {
                             model.install(entry, transport = app.transport)
                         }
-                        HorizontalDivider()
                     }
                 }
 
@@ -172,7 +201,6 @@ fun ModelsScreen(
                             CatalogRow(entry, app.canControl) {
                                 model.install(entry, transport = app.transport)
                             }
-                            HorizontalDivider()
                         }
                     }
                 }
@@ -202,11 +230,14 @@ private fun InstalledRow(
     onLoad: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+            .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(entry.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+            Text(entry.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Pill(entry.quantization)
                 Text(
@@ -217,7 +248,7 @@ private fun InstalledRow(
                 if (entry.supportsVision) {
                     Pill("Vision", tint = MaterialTheme.colorScheme.primary, filled = true)
                 }
-                if (isLoaded) Pill("Loaded", tint = Color(0xFF34A853), filled = true)
+                if (isLoaded) Pill("Loaded", tint = MaterialTheme.colorScheme.primary, filled = true)
             }
         }
         when {
@@ -240,13 +271,19 @@ private fun InstalledRow(
 
 @Composable
 private fun CatalogRow(entry: CatalogModel, canControl: Boolean, onInstall: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+    Column(
+        modifier = Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 entry.name + if (entry.featured == true) " ★" else "",
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             entry.verdict?.let { Pill(it, tint = verdictTint(it), filled = true) }

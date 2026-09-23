@@ -21,6 +21,8 @@ public struct ModelsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.canvas)
         .navigationTitle("Models")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.search, placement: .navigationBarDrawer, prompt: "Search models")
@@ -34,7 +36,7 @@ public struct ModelsView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.vertical, 8)
-            .background(.bar)
+            .background(Theme.canvas)
         }
         .task { await model.refresh(using: app.transport) }
         .onChange(of: app.connectionGeneration) { _, _ in
@@ -326,7 +328,7 @@ struct CatalogDetailView: View {
                         Pill(capability, tint: .blue, filled: true)
                     }
                 }
-                HStack {
+                StatRow {
                     Stat("Parameters", entry.parameters)
                     if let active = entry.activeParameters { Stat("Active", active) }
                     Stat("Context", "\(entry.maxContext / 1024)K")
@@ -349,7 +351,7 @@ struct CatalogDetailView: View {
             if let recommendation = entry.recommendation {
                 Section("What this Mac would do") {
                     Text(recommendation.rationale).font(.callout)
-                    HStack {
+                    StatRow {
                         Stat("Verdict", recommendation.plan.verdict,
                              tint: recommendation.plan.verdict.verdictTint)
                         Stat("Download", Format.bytes(recommendation.downloadBytes))
@@ -387,6 +389,7 @@ struct CatalogDetailView: View {
                 if canControl {
                     Button("Install") { install(quantization) }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(Theme.onAccent)
                 }
             }
         }
