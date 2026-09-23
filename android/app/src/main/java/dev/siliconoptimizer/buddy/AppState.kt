@@ -63,6 +63,9 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
         get() = waiting.invite
         set(value) = waiting.offer(value)
 
+    /** "Not now" to [pendingInvite]. Its link coming back is asked about, but not saved. */
+    fun declinePendingInvite() = waiting.decline()
+
     val isPaired: Boolean get() = config != null
 
     /** Whether this device may change what the Mac is running. */
@@ -112,7 +115,7 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
             },
         )
         // Answered: a restart from here on does not ask about it again.
-        if (started && pendingInvite == invite) waiting.spending()
+        if (started) waiting.spending(invite)
         return started
     }
 

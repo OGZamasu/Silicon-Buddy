@@ -53,7 +53,7 @@ class PendingInviteTest {
         val waiting = PendingInvite(saved)
         waiting.offer(invite)
 
-        waiting.spending()
+        waiting.spending(invite)
         assertEquals("the dialog still shows it while the Mac answers", invite, waiting.invite)
         assertNull(
             "a code that may be spent is not offered after a restart",
@@ -66,10 +66,66 @@ class PendingInviteTest {
         val saved = SavedStateHandle()
         val waiting = PendingInvite(saved)
         waiting.offer(invite)
-        waiting.spending()
+        waiting.spending(invite)
         waiting.offer(null)
         assertNull(waiting.invite)
         assertTrue(saved.keys().isEmpty())
+    }
+
+    /**
+     * The critic's case: link W, Pair, and W delivered again — a second tap, or a messenger
+     * redelivering it — while its code is with the Mac. It was saved again, so when the Mac
+     * refused the code and the process later died, W came back with its refused code and
+     * without the refusal.
+     */
+    @Test
+    fun `the same link coming back while its code is spent, or after a refusal, is not saved again`() {
+        val saved = SavedStateHandle()
+        val waiting = PendingInvite(saved)
+        waiting.offer(invite)
+        waiting.spending(invite)
+
+        waiting.offer(invite)
+        assertEquals("somebody opened it, so it is asked about", invite, waiting.invite)
+        assertNull(PendingInvite(afterProcessDeath(saved)).invite)
+        // And after the Mac has refused it, the same again.
+        waiting.offer(null)
+        waiting.offer(invite)
+        assertNull(PendingInvite(afterProcessDeath(saved)).invite)
+    }
+
+    @Test
+    fun `a typed code being spent is not saved when a link for it arrives`() {
+        val saved = SavedStateHandle()
+        val waiting = PendingInvite(saved)
+        waiting.spending(invite)
+        waiting.offer(invite)
+        assertNull(PendingInvite(afterProcessDeath(saved)).invite)
+    }
+
+    @Test
+    fun `declined, its link is asked about again but not saved`() {
+        val saved = SavedStateHandle()
+        val waiting = PendingInvite(saved)
+        waiting.offer(invite)
+        waiting.decline()
+        assertNull(waiting.invite)
+        assertTrue(saved.keys().isEmpty())
+
+        waiting.offer(invite)
+        assertEquals(invite, waiting.invite)
+        assertNull(PendingInvite(afterProcessDeath(saved)).invite)
+    }
+
+    @Test
+    fun `another link arriving while one code is spent is still saved`() {
+        val saved = SavedStateHandle()
+        val waiting = PendingInvite(saved)
+        waiting.offer(invite)
+        waiting.spending(invite)
+        val other = PairingInvite("100.64.0.10", 8788, "135790")
+        waiting.offer(other)
+        assertEquals("nobody has answered it", other, PendingInvite(afterProcessDeath(saved)).invite)
     }
 
     @Test

@@ -901,7 +901,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         PairingConfirmation(
             app = app,
             invite = invite,
-            onDismiss = { app.pendingInvite = null; arriving.value = null },
+            onDismiss = { app.declinePendingInvite(); arriving.value = null },
             onMacTooOld = {
                 app.pendingInvite = null
                 pairingMacTooOld = true
