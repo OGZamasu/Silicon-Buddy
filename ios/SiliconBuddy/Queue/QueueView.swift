@@ -7,9 +7,12 @@ import SwiftUI
 /// clip only where the Mac marks it `canCancel` — its node said it can stop that one job —
 /// and asks first, because the GPU work so far is thrown away. Stop following stays what
 /// it was: this Mac lets go of the render, and the node may still finish it.
+///
+/// The model is the root's, not this screen's (see `QueueModel`), so coming back to the
+/// screen reads the queue again without forgetting what is on its way.
 public struct QueueView: View {
     @Environment(AppModel.self) private var app
-    @State private var model = QueueModel()
+    @Environment(QueueModel.self) private var model
     @State private var confirming: Confirmation?
 
     /// Something that throws work away, waiting to be meant.
@@ -56,6 +59,11 @@ public struct QueueView: View {
                 if let message = model.queue?.message {
                     Text(message).font(.footnote).foregroundStyle(.secondary)
                 }
+                if model.isStale {
+                    Text("Couldn't reach the Mac just now. This is the queue as it last sent it.")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
             }
             Section("Clips") {
                 ForEach(model.items) { item in
@@ -72,9 +80,9 @@ public struct QueueView: View {
         .navigationTitle("Render queue")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await model.refresh(using: app.transport) }
-        // A re-pair is a different Mac with a different queue.
+        // Read while on screen. A re-pair restarts this against the new Mac; the root has
+        // already emptied the model for it.
         .task(id: app.connectionGeneration) {
-            model.reset()
             while !Task.isCancelled {
                 await model.refresh(using: app.transport)
                 try? await Task.sleep(for: .seconds(5))
@@ -172,6 +180,15 @@ struct QueueRow: View {
             if !item.prompt.isEmpty {
                 Text(item.prompt).font(.subheadline).lineLimit(3)
             }
+            if item.phase.isRunning {
+                // How far along, from the `job` events the root already listens to; the
+                // queue itself does not carry it.
+                if let fraction = app.events.jobs[item.id]?.fraction {
+                    ProgressView(value: min(max(fraction, 0), 1))
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
             if let error = item.error {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else {
@@ -182,7 +199,7 @@ struct QueueRow: View {
                     .font(.caption)
                     .foregroundStyle(outcome.isWarning ? Color.red : Color.secondary)
                 if outcome != .sending, let detail = item.cancelDetail, !detail.isEmpty {
-                    Text("The node: \(detail)").font(.caption).foregroundStyle(.tertiary)
+                    Text("The node: \(detail)").font(.caption).foregroundStyle(.secondary)
                 }
             }
             controls
@@ -191,41 +208,43 @@ struct QueueRow: View {
     }
 
     @ViewBuilder private var controls: some View {
-        let following = model.isActive(item)
+        let controls = model.controls(for: item, canControl: canControl)
         HStack(spacing: 16) {
-            if following {
-                Button("Stop following") {
-                    Task { await model.stopFollowing(item.id, using: app.transport) }
-                }
-                .disabled(!canControl || model.sending)
-            }
-            if item.canRetry {
-                Button("Retry") {
-                    if item.uncertainSubmission {
-                        confirm(.retryUncertain(item.id))
-                    } else {
-                        Task { await model.retry(item.id, confirmNewRender: false, using: app.transport) }
-                    }
-                }
-                .disabled(!canControl || model.sending)
-            }
-            if item.canRemove {
-                Button("Remove") { confirm(.remove(item.id)) }
-                    .disabled(!canControl || model.sending)
-            }
-            // Not merely disabled for a chat-only pairing, as the others are: it is not a
-            // button that device has.
-            if item.offersCancelRender(canControl: canControl) {
-                Button("Cancel render", role: .destructive) { confirm(.cancel(item.id)) }
-                    .disabled(model.cancelling.contains(item.id))
+            ForEach(controls, id: \.verb) { control in
+                button(for: control.verb).disabled(!control.enabled)
             }
         }
         .buttonStyle(.borderless)
         .font(.subheadline)
-        if following {
-            Text("Stopping pauses the queue and lets go of this render. The node may still finish it — the Mac won't claim to have cancelled work on another machine.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        if controls.contains(where: { $0.verb == .stopFollowing }) {
+            Text(
+                controls.contains(where: { $0.verb == .cancelRender })
+                    ? "Stop following pauses the queue and lets go of this render, and the node may still finish it. Cancel render asks the node to stop it."
+                    : "Stopping pauses the queue and lets go of this render. The node may still finish it — the Mac won't claim to have cancelled work on another machine."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private func button(for verb: QueueModel.Control.Verb) -> some View {
+        switch verb {
+        case .stopFollowing:
+            Button("Stop following") {
+                Task { await model.stopFollowing(item.id, using: app.transport) }
+            }
+        case .retry:
+            Button("Retry") {
+                if item.uncertainSubmission {
+                    confirm(.retryUncertain(item.id))
+                } else {
+                    Task { await model.retry(item.id, confirmNewRender: false, using: app.transport) }
+                }
+            }
+        case .remove:
+            Button("Remove") { confirm(.remove(item.id)) }
+        case .cancelRender:
+            Button("Cancel render", role: .destructive) { confirm(.cancel(item.id)) }
         }
     }
 }

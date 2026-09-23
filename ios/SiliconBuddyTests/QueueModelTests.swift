@@ -201,4 +201,89 @@ final class QueueModelTests: XCTestCase {
         XCTAssertNil(model.queue)
         XCTAssertTrue(model.items.isEmpty)
     }
+
+    // MARK: - Leaving the screen, and a re-pair
+
+    /// The screen reads the queue again each time it comes back. That must not blank the
+    /// list or forget a cancel still waiting on the node — a forgotten one is a button
+    /// that sends it twice.
+    func testComingBackToTheScreenKeepsWhatIsOnItsWay() async throws {
+        let model = QueueModel()
+        let mac = mac(queue(item()))
+        await model.refresh(using: mac)
+        mac.controlResult = .success(queue(item(canCancel: false, cancelState: "requested")))
+        mac.controlDelay = .milliseconds(300)
+
+        let cancel = Task { await model.cancelRender(clip, using: mac) }
+        try await until("the cancel is on its way") { model.cancelling.contains(clip) }
+        // What the screen's task does when the tab reappears: read, and nothing else.
+        await model.refresh(using: mac)
+        XCTAssertNotNil(model.queue, "the list is not blanked")
+        XCTAssertTrue(model.cancelling.contains(clip), "the cancel on its way is not forgotten")
+        let row = try XCTUnwrap(model.item(clip))
+        XCTAssertEqual(
+            model.controls(for: row, canControl: true).first { $0.verb == .cancelRender }?.enabled,
+            false, "and its button stays held"
+        )
+        await model.cancelRender(clip, using: mac)
+        await cancel.value
+        XCTAssertEqual(mac.sentControls.count, 1, "one cancel, however often the screen came back")
+    }
+
+    /// An answer the last Mac sends after a re-pair is not the new Mac's queue.
+    func testAnAnswerFromBeforeARepairIsDropped() async throws {
+        let model = QueueModel()
+        let old = mac(queue(item()))
+        await model.refresh(using: old)
+        old.controlResult = .success(queue(item(status: "cancelled", canCancel: false, cancelState: "confirmed")))
+        old.controlDelay = .milliseconds(300)
+        let cancel = Task { await model.cancelRender(clip, using: old) }
+        try await until("the cancel is on its way") { model.cancelling.contains(clip) }
+
+        model.reset()
+        let other = mac(queue(item(canCancel: false, id: "4D00-0001")))
+        await model.refresh(using: other)
+        await cancel.value
+        XCTAssertEqual(model.items.map(\.id), ["4D00-0001"], "the new Mac's queue stands")
+        XCTAssertTrue(model.cancelling.isEmpty)
+        XCTAssertNil(model.error)
+    }
+
+    func testAFailedReadKeepsTheLastQueueAndSaysSo() async {
+        let model = QueueModel()
+        let mac = mac(queue(item()))
+        await model.refresh(using: mac)
+        XCTAssertFalse(model.isStale)
+        mac.videoQueueResult = .failure(TransportError.appNotRunning)
+        await model.refresh(using: mac)
+        XCTAssertEqual(model.items.map(\.id), [clip], "the last queue is still shown")
+        XCTAssertTrue(model.isStale, "and the screen says it is the last one")
+        XCTAssertNil(model.error)
+        mac.videoQueueResult = .success(queue(item()))
+        await model.refresh(using: mac)
+        XCTAssertFalse(model.isStale)
+    }
+
+    // MARK: - What each row offers
+
+    func testEachRowOffersTheMacsVerbsAndChatOnlyGetsNoCancel() async throws {
+        let model = QueueModel()
+        await model.refresh(using: mac(queue(
+            item(),                                                   // followed, cancellable
+            item(status: "failed", id: "9C2F-0006"),                  // stop-followed, cancellable
+            item(status: "rendering", canCancel: false, id: "9C2F-0007"),
+            item(status: "pending", canCancel: false, id: "9C2F-0008")
+        )))
+        func verbs(_ id: String, _ canControl: Bool) throws -> [QueueModel.Control] {
+            model.controls(for: try XCTUnwrap(model.item(id)), canControl: canControl)
+        }
+        XCTAssertEqual(try verbs(clip, true).map(\.verb), [.stopFollowing, .cancelRender])
+        XCTAssertEqual(try verbs("9C2F-0006", true).map(\.verb), [.retry, .cancelRender])
+        XCTAssertEqual(try verbs("9C2F-0007", true).map(\.verb), [], "not followed, not cancellable")
+        XCTAssertEqual(try verbs("9C2F-0008", true).map(\.verb), [.remove])
+        // Chat-only: the same rows, Cancel render gone, the rest shown and held.
+        XCTAssertEqual(try verbs(clip, false), [.init(verb: .stopFollowing, enabled: false)])
+        XCTAssertEqual(try verbs("9C2F-0006", false), [.init(verb: .retry, enabled: false)])
+        XCTAssertEqual(try verbs("9C2F-0008", false), [.init(verb: .remove, enabled: false)])
+    }
 }

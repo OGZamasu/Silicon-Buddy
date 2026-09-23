@@ -6,10 +6,12 @@ public struct RootView: View {
     @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
     let models: ModelsModel
+    let queue: QueueModel
 
-    public init(chat: ChatModel, models: ModelsModel) {
+    public init(chat: ChatModel, models: ModelsModel, queue: QueueModel) {
         self.chat = chat
         self.models = models
+        self.queue = queue
     }
 
     public var body: some View {
@@ -31,6 +33,8 @@ public struct RootView: View {
             // afresh from this one.
             models.reset()
             Task { await models.refresh(using: app.transport) }
+            // The last Mac's queue, and anything still on its way to it, is not this one's.
+            queue.reset()
         }
         // What the Mac pushes is what the list shows, and a load it started is followed by
         // it — `POST /load` may answer "still loading" and carry on — on whichever screen.
@@ -39,6 +43,7 @@ public struct RootView: View {
         }
         .onChange(of: app.events.isLive, initial: true) { _, live in models.eventsLive = live }
         .environment(models)
+        .environment(queue)
         // Answer checks arrive after the reply they are about, on the shared event
         // stream, so they are applied wherever the chat screen happens to be.
         .onChange(of: app.events.verdicts) { _, verdicts in
