@@ -24,7 +24,7 @@ public struct ChatView: View {
             transcript
             composer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Theme.canvas)
         .navigationTitle(model.current?.title ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -216,7 +216,8 @@ public struct ChatView: View {
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18))
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18))
+                    .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.border, lineWidth: 1) }
                     .focused($composerFocused)
                     .submitLabel(.send)
                     .accessibilityLabel("Message")
@@ -354,8 +355,8 @@ struct MessageBubble: View {
                 .background(
                     message.role == .user
                         ? AnyShapeStyle(Color.accentColor.opacity(0.18))
-                        : AnyShapeStyle(.background.secondary),
-                    in: RoundedRectangle(cornerRadius: 14)
+                        : AnyShapeStyle(Theme.surface),
+                    in: RoundedRectangle(cornerRadius: 20)
                 )
                 .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
                 .contextMenu {
@@ -550,12 +551,14 @@ public struct ConversationListView: View {
         .overlay {
             if model.conversations.isEmpty {
                 Placeholder(
-                    title: "No conversations",
-                    message: "Start one and it stays here.",
+                    title: "A space for your next idea",
+                    message: "Start a conversation with the compose button. Your chats will be here when you come back.",
                     systemImage: "bubble.left.and.bubble.right"
                 )
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Theme.canvas)
         .navigationTitle("Chat")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

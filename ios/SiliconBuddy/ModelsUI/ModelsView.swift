@@ -21,6 +21,8 @@ public struct ModelsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.canvas)
         .navigationTitle("Models")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.search, placement: .navigationBarDrawer, prompt: "Search models")
@@ -34,7 +36,7 @@ public struct ModelsView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.vertical, 8)
-            .background(.bar)
+            .background(Theme.canvas)
         }
         .task { await model.refresh(using: app.transport) }
         .onChange(of: app.connectionGeneration) { _, _ in
@@ -387,6 +389,7 @@ struct CatalogDetailView: View {
                 if canControl {
                     Button("Install") { install(quantization) }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(Theme.onAccent)
                 }
             }
         }

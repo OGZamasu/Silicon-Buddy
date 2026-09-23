@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
@@ -77,24 +79,27 @@ fun SectionCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     icon,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(10.dp))
+                        .padding(8.dp).size(18.dp),
                 )
                 Text(
                     title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 6.dp).weight(1f),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(start = 10.dp).weight(1f),
                 )
                 if (footnote != null) {
                     Text(
@@ -114,11 +119,14 @@ fun Stat(label: String, value: String, modifier: Modifier = Modifier, tint: Colo
     Column(
         modifier = modifier.clearAndSetSemantics { contentDescription = "$label: $value" },
     ) {
+        // Two lines, not one: three of these share a card's width, and at this size
+        // "137.44 GB" is wider than a third of a 384 dp phone. Wrapping keeps the number;
+        // an ellipsis would cut it.
         Text(
             value,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleLarge,
             color = tint ?: MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
@@ -141,7 +149,7 @@ fun MeterRow(
         modifier = modifier
             .fillMaxWidth()
             .clearAndSetSemantics { contentDescription = "$label: $detail" },
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -153,8 +161,9 @@ fun MeterRow(
         }
         LinearProgressIndicator(
             progress = { fraction.coerceIn(0.0, 1.0).toFloat() },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(6.dp),
             color = tint,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 }
@@ -169,13 +178,32 @@ fun Pill(text: String, modifier: Modifier = Modifier, tint: Color? = null, fille
                 else MaterialTheme.colorScheme.surfaceVariant,
                 RoundedCornerShape(50),
             )
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
         Text(
             text,
             style = MaterialTheme.typography.labelSmall,
             color = if (filled) color else MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/** Shared empty-state treatment. It stays in the screen's scroll container at large text sizes. */
+@Composable
+fun EmptyState(title: String, message: String, icon: ImageVector, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.fillMaxWidth().padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            icon, contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(18.dp))
+                .padding(16.dp).size(28.dp),
+        )
+        Text(title, style = MaterialTheme.typography.headlineSmall)
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
