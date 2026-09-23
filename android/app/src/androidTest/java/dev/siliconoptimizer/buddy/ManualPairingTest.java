@@ -267,6 +267,36 @@ public class ManualPairingTest {
         assertTrue("the second code was spent", mac.count("POST", "/buddy/pair") == 1);
     }
 
+    /**
+     * Leaving the app while the Mac thinks, and opening it again before it answers. The new
+     * activity's state had read the token store before the answer was in it, so the app said
+     * it was not paired — or paired to the Mac before — until its next restart, though the
+     * token was stored. Now the answer lands on whichever state is on screen.
+     */
+    @Test
+    public void anAnswerThatLandsAfterTheAppWasLeftAndOpenedAgainIsShown() throws Exception {
+        mac.macName = "Late Mac";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("135 792");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+
+        // A new task: the activity that asked is finished, and its view model with it.
+        Intent launch = context.getPackageManager().getLaunchIntentForPackage(PACKAGE);
+        assertNotNull(launch);
+        context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+        UiObject2 settings = device.wait(Until.findObject(By.desc("Settings")), WAIT);
+        if (settings == null) settings = device.wait(Until.findObject(By.text("Settings")), WAIT);
+        assertNotNull("no way to Settings", settings);
+        settings.click();
+        assertNotNull(device.wait(Until.findObject(By.text(Pattern.compile("Pair with (a|another) Mac"))), WAIT));
+        assertNull("answered already", device.findObject(By.text("Late Mac")));
+
+        mac.pairHeld.countDown();
+        assertNotNull("the reopened app never showed the Mac the code paired with",
+            device.wait(Until.findObject(By.text("Late Mac")), WAIT));
+        assertTrue("and does not talk to it", waitFor(() -> mac.saw("GET", "/status")));
+    }
+
     /** The code form, filled with {@code code} for this test's Mac, and its Pair tapped. */
     private void spendATypedCode(String code) {
         openCodeForm();

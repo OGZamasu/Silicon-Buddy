@@ -21,8 +21,17 @@ import kotlinx.coroutines.withContext
  * paired. Here the exchange runs to its end whatever becomes of the screen that started it,
  * or of the activity, and what it brings back is stored. A failure that no screen is left to
  * show stays in [state] until one has shown it.
+ *
+ * The app keeps one for the whole process (`AppState`'s companion), not one per view model:
+ * Back out of the app mid-exchange and open it again, and the new view model is the one
+ * that has to see the code still being spent, and take its answer — see [attach].
  */
 class PairingExchange(private val scope: CoroutineScope) {
+
+    /** Takes what the Mac answered for an invite: stores it, and shows it. */
+    fun interface Lander {
+        fun land(invite: PairingInvite, config: ServerConfig)
+    }
 
     sealed interface State {
         data object Idle : State
@@ -57,6 +66,24 @@ class PairingExchange(private val scope: CoroutineScope) {
     var state by mutableStateOf<State>(State.Idle)
         private set
 
+    /** The screen state an answer lands on: whichever is current when it lands. */
+    private var lander: Lander? = null
+
+    /**
+     * [lander] is the one on screen now, and takes whatever lands from here on — an answer
+     * to a code an earlier one started included. An app backed out of while the Mac thought,
+     * and opened again, has a new view model that read the token store before the answer
+     * was in it; it said "not paired" until the next restart, though the token was stored.
+     */
+    fun attach(lander: Lander) {
+        this.lander = lander
+    }
+
+    /** [lander] has gone. Its answers land on the next one to attach, or on the one that asked. */
+    fun detach(lander: Lander) {
+        if (this.lander === lander) this.lander = null
+    }
+
     val isWorking: Boolean get() = state is State.Working
 
     fun phaseOf(invite: PairingInvite): Phase = when (val now = state) {
@@ -68,13 +95,15 @@ class PairingExchange(private val scope: CoroutineScope) {
     }
 
     /**
-     * Spends [invite] with [exchange] and hands what the Mac answered to [store]. False, with
-     * nothing dialled, while another code is still being spent: one pairing at a time.
+     * Spends [invite] with [exchange] and hands what the Mac answered to the attached lander —
+     * to [store], the one that asked, when none is attached, which still writes the token
+     * where the next one to start will read it. False, with nothing dialled, while another
+     * code is still being spent: one pairing at a time.
      */
     fun start(
         invite: PairingInvite,
         exchange: suspend (PairingInvite) -> ServerConfig,
-        store: (ServerConfig) -> Unit,
+        store: Lander,
     ): Boolean {
         if (state is State.Working) return false
         state = State.Working(invite)
@@ -84,7 +113,8 @@ class PairingExchange(private val scope: CoroutineScope) {
             // answered as one cut off by a closing sheet, so it is not cut off.
             withContext(NonCancellable) {
                 state = try {
-                    store(exchange(invite))
+                    val answer = exchange(invite)
+                    (lander ?: store).land(invite, answer)
                     State.Idle
                 } catch (error: TransportError) {
                     State.Failed(

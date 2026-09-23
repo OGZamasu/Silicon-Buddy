@@ -49,7 +49,7 @@ class PairingExchangeTest {
         // The sheet: a coroutine scope of its own, which asks and is then closed.
         val sheet = Job()
         launch(sheet) {
-            exchange.start(invite, exchange = { answer.await() }, store = { stored = it })
+            exchange.start(invite, exchange = { answer.await() }, store = { _, config -> stored = config })
             awaitCancellation()
         }
         runCurrent()
@@ -114,7 +114,7 @@ class PairingExchangeTest {
                 exchange.start(
                     local,
                     exchange = { it.exchange("Pixel", "android") },
-                    store = { stored.complete(it) },
+                    store = { _, config -> stored.complete(config) },
                 ),
             )
             assertTrue("the request never reached the Mac", requestArrived.await(10, TimeUnit.SECONDS))
@@ -139,7 +139,7 @@ class PairingExchangeTest {
         exchange.start(
             invite,
             exchange = { throw TransportError.Forbidden("That code has expired.") },
-            store = { stored = it },
+            store = { _, config -> stored = config },
         )
         advanceUntilIdle()
         assertNull(stored)
@@ -160,7 +160,7 @@ class PairingExchangeTest {
         exchange.start(
             invite,
             exchange = { throw TransportError.RouteUnavailable("/buddy/pair") },
-            store = {},
+            store = { _, _ -> },
         )
         advanceUntilIdle()
         val failed = exchange.state as PairingExchange.State.Failed
@@ -174,10 +174,55 @@ class PairingExchangeTest {
         exchange.start(
             invite,
             exchange = { paired },
-            store = { throw TransportError.Forbidden("Not a tailnet address.") },
+            store = { _, _ -> throw TransportError.Forbidden("Not a tailnet address.") },
         )
         advanceUntilIdle()
         assertEquals("Not a tailnet address.", (exchange.state as PairingExchange.State.Failed).message)
+    }
+
+    /**
+     * Back out of the app while the Mac thinks, and open it again: the view model that asked
+     * is gone and a new one, which read the token store before the answer was in it, is on
+     * screen. The answer lands there — before, it landed on the old one, and the app said
+     * "not paired" until its next restart though the token had been stored.
+     */
+    @Test
+    fun `an answer lands on the screen state that is current when it lands`() = runTest {
+        val exchange = PairingExchange(this)
+        val answer = CompletableDeferred<ServerConfig>()
+        val landedOnAsker = mutableListOf<ServerConfig>()
+        val landedOnReopened = mutableListOf<Pair<PairingInvite, ServerConfig>>()
+        val asker = PairingExchange.Lander { _, config -> landedOnAsker += config }
+        exchange.attach(asker)
+        assertTrue(exchange.start(invite, exchange = { answer.await() }, store = asker))
+        runCurrent()
+
+        val reopened = PairingExchange.Lander { spent, config -> landedOnReopened += spent to config }
+        exchange.attach(reopened)
+        // The old one's onCleared can come after the new one is made; it takes nothing with it.
+        exchange.detach(asker)
+        assertEquals("the new one sees the code still being spent", PairingExchange.Phase.Spending, exchange.phaseOf(invite))
+
+        answer.complete(paired)
+        advanceUntilIdle()
+        assertEquals(listOf(invite to paired), landedOnReopened)
+        assertTrue(landedOnAsker.isEmpty())
+    }
+
+    @Test
+    fun `with nothing on screen, the one that asked still writes the answer down`() = runTest {
+        val exchange = PairingExchange(this)
+        val answer = CompletableDeferred<ServerConfig>()
+        var stored: ServerConfig? = null
+        val asker = PairingExchange.Lander { _, config -> stored = config }
+        exchange.attach(asker)
+        exchange.start(invite, exchange = { answer.await() }, store = asker)
+        runCurrent()
+        exchange.detach(asker)
+
+        answer.complete(paired)
+        advanceUntilIdle()
+        assertEquals(paired, stored)
     }
 
     /** The dialog for a second link: it waits, and saying no to it is still fine. */
@@ -187,7 +232,7 @@ class PairingExchangeTest {
         val answer = CompletableDeferred<ServerConfig>()
         val other = PairingInvite("100.64.0.10", 8788, "135790")
         assertEquals(PairingExchange.Phase.Ready, exchange.phaseOf(other))
-        exchange.start(invite, exchange = { answer.await() }, store = {})
+        exchange.start(invite, exchange = { answer.await() }, store = { _, _ -> })
         runCurrent()
         assertEquals(PairingExchange.Phase.Spending, exchange.phaseOf(invite))
         assertEquals(PairingExchange.Phase.Waiting(invite), exchange.phaseOf(other))
@@ -210,17 +255,17 @@ class PairingExchangeTest {
         val exchange = PairingExchange(this)
         val answer = CompletableDeferred<ServerConfig>()
         var dialled = 0
-        assertTrue(exchange.start(invite, exchange = { dialled++; answer.await() }, store = {}))
+        assertTrue(exchange.start(invite, exchange = { dialled++; answer.await() }, store = { _, _ -> }))
         runCurrent()
         val other = PairingInvite("100.64.0.10", 8788, "135790")
-        assertFalse(exchange.start(other, exchange = { dialled++; paired }, store = {}))
+        assertFalse(exchange.start(other, exchange = { dialled++; paired }, store = { _, _ -> }))
         runCurrent()
         assertEquals(1, dialled)
         assertEquals(PairingExchange.State.Working(invite), exchange.state)
         answer.complete(paired)
         advanceUntilIdle()
         // Done, the next may go.
-        assertTrue(exchange.start(other, exchange = { dialled++; paired }, store = {}))
+        assertTrue(exchange.start(other, exchange = { dialled++; paired }, store = { _, _ -> }))
         advanceUntilIdle()
         assertEquals(2, dialled)
     }
