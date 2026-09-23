@@ -25,6 +25,7 @@ import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.ui.Format
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
+import dev.siliconoptimizer.buddy.ui.SplitLine
 import dev.siliconoptimizer.buddy.ui.StatusDot
 
 /**
@@ -148,18 +149,16 @@ private fun MachineCard(
         if (machine.stats.isNotEmpty()) {
             HorizontalDivider()
             machine.stats.forEach { (label, value) ->
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        value,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                SplitLine(
+                    start = { Text(label, style = MaterialTheme.typography.bodySmall) },
+                    end = {
+                        Text(
+                            value,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                )
             }
         }
         if (machine.lanes.isNotEmpty()) {
