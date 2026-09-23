@@ -35,6 +35,7 @@ import dev.siliconoptimizer.buddy.ui.MeterRow
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
 import dev.siliconoptimizer.buddy.ui.Stat
+import dev.siliconoptimizer.buddy.ui.StatRow
 import dev.siliconoptimizer.buddy.ui.StatusDot
 import dev.siliconoptimizer.buddy.ui.WelcomeCard
 
@@ -177,10 +178,10 @@ private fun MetricsCard(model: DashboardViewModel) {
             fraction = metrics.cpuUtilization,
             tint = MaterialTheme.colorScheme.secondary,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("Pressure", metrics.memoryPressure, Modifier.weight(1f))
-            Stat("Swap", Format.bytes(metrics.swapUsedBytes), Modifier.weight(1f))
-            Stat("Wired", Format.bytes(metrics.memoryWiredBytes), Modifier.weight(1f))
+        StatRow {
+            Stat("Pressure", metrics.memoryPressure)
+            Stat("Swap", Format.bytes(metrics.swapUsedBytes))
+            Stat("Wired", Format.bytes(metrics.memoryWiredBytes))
         }
     }
 }
@@ -194,15 +195,15 @@ private fun MachineCard(model: DashboardViewModel) {
             return@SectionCard
         }
         Text(profile.chip, style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("GPU cores", "${profile.gpuCores}", Modifier.weight(1f))
-            Stat("CPU", "${profile.performanceCores}P + ${profile.efficiencyCores}E", Modifier.weight(1f))
-            Stat("Neural", "${profile.neuralEngineCores}", Modifier.weight(1f))
+        StatRow {
+            Stat("GPU cores", "${profile.gpuCores}")
+            Stat("CPU", "${profile.performanceCores}P + ${profile.efficiencyCores}E")
+            Stat("Neural", "${profile.neuralEngineCores}")
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Stat("Memory", Format.bytes(profile.totalMemoryBytes), Modifier.weight(1f))
-            Stat("Budget", Format.bytes(profile.modelBudgetBytes), Modifier.weight(1f))
-            Stat("Disk free", Format.bytes(profile.diskFreeBytes), Modifier.weight(1f))
+        StatRow {
+            Stat("Memory", Format.bytes(profile.totalMemoryBytes))
+            Stat("Budget", Format.bytes(profile.modelBudgetBytes))
+            Stat("Disk free", Format.bytes(profile.diskFreeBytes))
         }
         model.node?.let { node ->
             HorizontalDivider()

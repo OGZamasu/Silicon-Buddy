@@ -23,9 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 
@@ -119,21 +122,50 @@ fun Stat(label: String, value: String, modifier: Modifier = Modifier, tint: Colo
     Column(
         modifier = modifier.clearAndSetSemantics { contentDescription = "$label: $value" },
     ) {
-        // Two lines, not one: three of these share a card's width, and at this size
-        // "137.44 GB" is wider than a third of a 384 dp phone. Wrapping keeps the number;
-        // an ellipsis would cut it.
+        // No line limit: in a `StatRow` the column is at least as wide as the longest word,
+        // so the value can only wrap between words ("137.44 / GB"), never inside one.
         Text(
             value,
             style = MaterialTheme.typography.titleLarge,
             color = tint ?: MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
         )
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * [Stat]s side by side, as many to a row as fit whole: three on a phone at the usual text
+ * size, fewer as the text grows. No column is narrower than the longest word any of them
+ * holds, so a large font moves a stat to the next row rather than breaking "Normal" or
+ * "402.65" in two.
+ */
+@Composable
+fun StatRow(modifier: Modifier = Modifier, spacing: Dp = 12.dp, content: @Composable () -> Unit) {
+    Layout(content, modifier.fillMaxWidth()) { measurables, constraints ->
+        if (measurables.isEmpty()) return@Layout layout(0, 0) {}
+        val gap = spacing.roundToPx()
+        // A Text's minimum intrinsic width is its longest unbreakable run.
+        val widest = measurables.maxOf { it.minIntrinsicWidth(Constraints.Infinity) }
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth
+            else measurables.size * (widest + gap) - gap
+        val columns = ((width + gap) / (widest + gap)).coerceIn(1, measurables.size)
+        val cell = (width - gap * (columns - 1)) / columns
+        val rows = measurables
+            .map { it.measure(Constraints(minWidth = cell, maxWidth = cell)) }
+            .chunked(columns)
+        val heights = rows.map { row -> row.maxOf { it.height } }
+        val height = heights.sum() + gap * (rows.size - 1)
+        layout(width, constraints.constrainHeight(height)) {
+            var y = 0
+            rows.forEachIndexed { index, row ->
+                row.forEachIndexed { column, stat -> stat.placeRelative(column * (cell + gap), y) }
+                y += heights[index] + gap
+            }
+        }
     }
 }
 
