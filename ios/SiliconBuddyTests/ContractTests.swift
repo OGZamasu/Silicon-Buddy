@@ -98,7 +98,10 @@ final class ContractTests: XCTestCase {
     // MARK: - The routes this app calls today
 
     func testHealth() throws {
-        XCTAssertEqual(try roundTrip(ControlAPI.Health.self, "GET__health").status, "ok")
+        let health = try roundTrip(ControlAPI.Health.self, "GET__health")
+        XCTAssertEqual(health.status, "ok")
+        // The Mac's own version and build (OGZamasu/silicon-optimizer#81), as a device shows them.
+        XCTAssertEqual(health.appVersionLabel, "0.5.0 (157)")
     }
 
     func testStatus() throws {
