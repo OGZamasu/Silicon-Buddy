@@ -92,6 +92,70 @@ public struct Stat: View {
     }
 }
 
+/// `Stat`s side by side, as many to a row as fit whole: three on a phone at the usual text
+/// size, fewer as Dynamic Type grows. No column is narrower than the widest stat's value on
+/// one line, less the little a `Stat` may shrink it by, so a large size moves a stat to the
+/// next row rather than shrinking "402.65 GB" until its unit is cut off.
+public struct StatRow: Layout {
+    var spacing: CGFloat = 12
+
+    /// How far a value may be shrunk to keep a row together — "402.65 GB" in a third of an
+    /// iPhone at the default size is about 0.9 — before a stat moves down instead.
+    private static let shrink: CGFloat = 0.85
+
+    public init(spacing: CGFloat = 12) {
+        self.spacing = spacing
+    }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let width = available(proposal, subviews)
+        let grid = arrange(subviews, width: width)
+        let height = grid.heights.reduce(0, +) + spacing * CGFloat(grid.heights.count - 1)
+        return CGSize(width: width, height: height)
+    }
+
+    public func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        guard !subviews.isEmpty else { return }
+        let grid = arrange(subviews, width: bounds.width)
+        var y = bounds.minY
+        for (row, height) in grid.heights.enumerated() {
+            for column in 0..<grid.columns {
+                let index = row * grid.columns + column
+                guard index < subviews.count else { break }
+                subviews[index].place(
+                    at: CGPoint(x: bounds.minX + CGFloat(column) * (grid.cell + spacing), y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: grid.cell, height: height)
+                )
+            }
+            y += height + spacing
+        }
+    }
+
+    /// The width offered, or — asked for its ideal — one row of every stat at its own width.
+    private func available(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
+        if let width = proposal.width, width.isFinite { return width }
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified).width }
+        return ideal.reduce(0, +) + spacing * CGFloat(ideal.count - 1)
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (columns: Int, cell: CGFloat, heights: [CGFloat]) {
+        let widest = (subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0) * Self.shrink
+        let fit = Int(((width + spacing) / (widest + spacing)).rounded(.down))
+        let columns = min(max(fit, 1), subviews.count)
+        let cell = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let heights = stride(from: 0, to: subviews.count, by: columns).map { start in
+            subviews[start..<min(start + columns, subviews.count)]
+                .map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }
+                .max() ?? 0
+        }
+        return (columns, cell, heights)
+    }
+}
+
 /// A labelled proportion. Uses a Gauge's accessibility semantics rather than drawing a
 /// rectangle and hoping VoiceOver guesses.
 public struct MeterRow: View {

@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -83,6 +84,15 @@ public class OnDeviceModelTest {
     private Context context;
     private StandInMac mac;
 
+    /**
+     * Once, before anything here: with no stand-in running, every test would otherwise fail
+     * in setUp with the same message, fourteen times over. This is that message, once.
+     */
+    @BeforeClass
+    public static void theStandInIsRunning() {
+        new StandInMac().check();
+    }
+
     @Before
     public void setUp() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
@@ -99,7 +109,10 @@ public class OnDeviceModelTest {
 
     @After
     public void tearDown() throws Exception {
-        mac.unreachable(0);
+        // Only a stand-in that answered is put back. One that was never there has already
+        // failed setUp with how to start it, and that is the failure worth reading — not a
+        // second one about the same missing server.
+        if (mac != null && mac.answered) mac.unreachable(0);
         probe("unload", context);
     }
 
@@ -416,11 +429,12 @@ public class OnDeviceModelTest {
      * Qwen3.5 2B, the owner's default, answers with thinking off: its template closes an
      * empty thinking block before the answer, and opens one only when asked to think. Read
      * from the real file's vocabulary — the weights do not fit this emulator — when the
-     * stand-in serves it (`QWEN=1 standin.sh start`).
+     * stand-in serves it, which it does once `tools/standin/fetch-models.sh` has fetched it
+     * (without `--small`).
      */
     @Test
     public void qwenAnswersWithThinkingOff() throws Exception {
-        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only with QWEN=1", mac.offers(QWEN));
+        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only once tools/standin/fetch-models.sh has fetched it (without --small)", mac.offers(QWEN));
         try {
             install(QWEN);
             String off = (String) probe("renderPrompt", context, QWEN, "What is a tailnet?", "recommended");
@@ -709,7 +723,7 @@ public class OnDeviceModelTest {
      */
     @Test
     public void makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo() throws Exception {
-        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only with QWEN=1", mac.offers(QWEN));
+        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only once tools/standin/fetch-models.sh has fetched it (without --small)", mac.offers(QWEN));
         mac.ondevice("{\"state\":{\"" + QWEN + "\":\"ready\"}}");
         pair();
         bringToFront();

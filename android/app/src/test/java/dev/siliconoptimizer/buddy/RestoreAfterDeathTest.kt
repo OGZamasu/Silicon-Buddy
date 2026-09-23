@@ -80,7 +80,12 @@ class RestoreAfterDeathTest {
     }
 
     @After
-    fun tearDown() = Dispatchers.resetMain()
+    fun tearDown() {
+        // What `open` and `loadConversations` launched may still be reading the stores on
+        // Dispatchers.IO; see `stopForTest`.
+        model.stopForTest()
+        Dispatchers.resetMain()
+    }
 
     /**
      * The bug itself. A restored id, handed back before anything has been asked, must not

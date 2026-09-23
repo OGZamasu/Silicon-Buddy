@@ -4,10 +4,13 @@
 #
 #   scripts/ci-android.sh                 unit tests, minified release, keep rules, size budget
 #   scripts/ci-android.sh --connected     …and the instrumented tests on $ANDROID_SERIAL, which
-#                                         need the stand-in Mac (see docs/PLAN.md, M5)
+#                                         need the stand-in Mac running on this machine:
+#                                         tools/standin/fetch-models.sh, then
+#                                         tools/standin/standin.sh start (tools/standin/README.md)
 #   scripts/ci-android.sh --ios           …and the iOS suite (contract/ is shared)
 #
 # Environment: JAVA_HOME (defaults to Android Studio's), ANDROID_SERIAL for --connected,
+# BUDDY_STANDIN for where the emulator finds the stand-in (10.0.2.2:8916),
 # IOS_DERIVED_DATA and IOS_DESTINATION for --ios.
 set -euo pipefail
 
@@ -34,6 +37,62 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
     fail "third_party/llama.cpp is not at b11053 (1af554f8fc78ba029665a47b839484d9763e2a75)"
 [ -f "$android/local.properties" ] || [ -n "${ANDROID_HOME:-}" ] ||
     fail "no Android SDK: copy local.properties from the main checkout or set ANDROID_HOME"
+
+# --- The stand-in Mac, before anything is built ------------------------------------
+# The on-device tests pair with a stand-in Mac on this machine and fetch real model files
+# from it (tools/standin). Without it they fail in setUp, after the whole build — so it is
+# asked here, once, and a missing one is one line saying how to start it. The address is
+# the emulator's: 10.0.2.2 is its name for this machine's loopback.
+standin="${BUDDY_STANDIN:-10.0.2.2:8916}"
+if $connected; then
+    [ -n "${ANDROID_SERIAL:-}" ] || fail "--connected needs ANDROID_SERIAL"
+    python3 - "$standin" <<'PY'
+import json, sys, urllib.request
+
+standin = sys.argv[1]
+host, _, port = standin.rpartition(":")
+probe = "127.0.0.1" if host == "10.0.2.2" else host
+where = f"{probe}:{port}" + (f" (the emulator's {standin})" if probe != host else "")
+start = "tools/standin/standin.sh start" if port == "8916" else f"STANDIN_PORT={port} tools/standin/standin.sh start"
+# Where to start a stand-in of your own when this one is somebody else's.
+other = f"STANDIN_PORT={int(port) + 1} tools/standin/standin.sh start, with BUDDY_STANDIN={host}:{int(port) + 1}"
+
+def get(path, token=None):
+    request = urllib.request.Request(f"http://{probe}:{port}{path}")
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(request, timeout=5) as answer:
+        return json.load(answer)
+
+try:
+    get("/health")
+except Exception:
+    try:
+        # Its own switches answer even while a test has it playing a Mac that went away.
+        get("/demo/requests", "demo-token")
+    except Exception:
+        sys.exit(f"FAIL: the stand-in Mac is not answering at {where}. Start it, from the "
+                 f"repository: tools/standin/fetch-models.sh && {start}")
+    sys.exit(f"FAIL: the stand-in Mac at {where} is playing a Mac that went away — another "
+             f"test run is using it. Wait for that run, or start your own on another port: {other}")
+try:
+    served = {model["id"] for model in get("/ondevice/models", "demo-token")["models"]}
+except Exception as refusal:
+    sys.exit(f"FAIL: something answers at {where}, but not as tools/standin/demo_mac.py does "
+             f"({refusal}). Stop it, or start the stand-in on another port: {other}")
+missing = sorted({"stories260k-f32", "smollm2-135m-q8_0"} - served)
+if missing:
+    stop = start.replace(" start", " stop")
+    sys.exit(f"FAIL: the stand-in Mac at {where} does not serve {', '.join(missing)}. "
+             f"Fetch the models and restart it: tools/standin/fetch-models.sh && {stop} && {start} "
+             f"(if it was not started by tools/standin/standin.sh, stop it yourself)")
+print(f"stand-in: {where}, serving {', '.join(sorted(served))}")
+if "qwen3.5-2b-q4_0" not in served:
+    print("stand-in: without Qwen3.5 2B, so qwenAnswersWithThinkingOff and "
+          "makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo will be skipped "
+          "(tools/standin/fetch-models.sh without --small fetches it)")
+PY
+fi
 
 cd "$android"
 
@@ -169,33 +228,42 @@ fi
 
 # --- On a device ------------------------------------------------------------------
 if $connected; then
-    [ -n "${ANDROID_SERIAL:-}" ] || fail "--connected needs ANDROID_SERIAL"
     # Two passes. The main one, and then — on the fresh install every run begins with —
     # the one class that is about a phone where notifications were never granted, which
     # another class grants for the whole of the run above.
     notice=dev.siliconoptimizer.buddy.NotificationsOffTest
     ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
+        "-Pandroid.testInstrumentationRunnerArguments.standin=$standin" \
         "-Pandroid.testInstrumentationRunnerArguments.notClass=$notice"
     python3 - "$android/app/build/outputs/androidTest-results/connected/releaseProbe" <<'PY'
 import glob, re, sys
-tests = failures = 0
+tests = failures = skipped = 0
 for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
-    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', open(path).read())
+    text = open(path).read()
+    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', text)
     if head:
         tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
-print(f"instrumented tests: {tests}, failures: {failures}")
+        # A test whose assumption does not hold here (Qwen3.5 2B not served) is counted
+        # in tests but ran nothing; said, so a green run with holes in it is visible.
+        skip = re.search(r'<testsuite [^>]*skipped="(\d+)"', text)
+        skipped += int(skip.group(1)) if skip else 0
+print(f"instrumented tests: {tests}, failures: {failures}, skipped: {skipped}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
     ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
+        "-Pandroid.testInstrumentationRunnerArguments.standin=$standin" \
         "-Pandroid.testInstrumentationRunnerArguments.class=$notice"
     python3 - "$android/app/build/outputs/androidTest-results/connected/releaseProbe" <<'PY'
 import glob, re, sys
-tests = failures = 0
+tests = failures = skipped = 0
 for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
-    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', open(path).read())
+    text = open(path).read()
+    head = re.search(r'<testsuite [^>]*tests="(\d+)"[^>]*failures="(\d+)"[^>]*errors="(\d+)"', text)
     if head:
         tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
-print(f"instrumented tests (fresh install, notifications never granted): {tests}, failures: {failures}")
+        skip = re.search(r'<testsuite [^>]*skipped="(\d+)"', text)
+        skipped += int(skip.group(1)) if skip else 0
+print(f"instrumented tests (fresh install, notifications never granted): {tests}, failures: {failures}, skipped: {skipped}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 fi
