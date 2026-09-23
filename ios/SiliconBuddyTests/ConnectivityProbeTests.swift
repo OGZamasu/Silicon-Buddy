@@ -53,7 +53,8 @@ final class ConnectivityProbeTests: XCTestCase {
         transport.healthResult = .failure(TransportError.routeUnavailable("/health"))
         transport.statusResult = .success(ControlAPI.Status(state: "Not loaded"))
         let result = await ConnectivityProbe(transport: transport).check()
-        XCTAssertEqual(result, .ready(version: "unknown", loadedModel: "Not loaded"))
+        XCTAssertEqual(result, .ready(version: nil, loadedModel: "Not loaded"))
+        XCTAssertEqual(result.detail, "Silicon Optimizer — Not loaded")
     }
 
     func testEveryStateSaysSomethingToThePerson() {

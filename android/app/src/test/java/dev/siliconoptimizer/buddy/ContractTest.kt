@@ -183,7 +183,12 @@ class ContractTest {
 
     // MARK: - The routes this app calls today
 
-    @Test fun health() { assertEquals("ok", roundTrip<Health>("GET__health").status) }
+    @Test fun health() {
+        val health = roundTrip<Health>("GET__health")
+        assertEquals("ok", health.status)
+        // The Mac's own version and build (OGZamasu/silicon-optimizer#81), as a phone shows them.
+        assertEquals("0.5.0 (157)", health.appVersionLabel)
+    }
 
     @Test fun status() { assertTrue(roundTrip<Status>("GET__status").hasLoadedModel) }
 

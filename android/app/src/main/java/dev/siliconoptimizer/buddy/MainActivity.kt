@@ -93,8 +93,10 @@ import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsSection
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsViewModel
 import dev.siliconoptimizer.buddy.transport.Reachability
+import dev.siliconoptimizer.buddy.pairing.MAC_TOO_OLD_FOR_CODES
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
+import dev.siliconoptimizer.buddy.pairing.PairingMode
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
 import dev.siliconoptimizer.buddy.reach.BuddyLink
 import dev.siliconoptimizer.buddy.reach.QuickPrompt
@@ -123,7 +125,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        arriving.value = read(intent)
+        if (arrivesFresh(restored = savedInstanceState != null, intent?.flags ?: 0)) {
+            arriving.value = read(intent)
+        }
         setContent {
             SiliconBuddyTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -228,6 +232,18 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /**
+         * Whether the intent `onCreate` is handed is arriving now, rather than being handed
+         * back. An activity recreated for a new font size or display density, or after its
+         * process died, gets the intent it was first opened with again, and so does one
+         * reopened from Recents. Read a second time, a pairing link asks to pair with a
+         * code already spent — and when it pairs, to replace the Mac it just paired with.
+         * What was read the first time lives on where it went: an invite still waiting is
+         * in `AppState`, which outlives the activity.
+         */
+        fun arrivesFresh(restored: Boolean, flags: Int): Boolean =
+            !restored && (flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
+
         /** Which screen a notification wants open. */
         const val EXTRA_OPEN = "dev.siliconoptimizer.buddy.OPEN"
         const val OPEN_QUEUE = "queue"
@@ -306,6 +322,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         mutableStateOf(Destination.Dashboard)
     }
     var pairing by remember { mutableStateOf(false) }
+    // Set when a code met a Mac without `/buddy/pair`: the sheet opens where that Mac can
+    // still be reached from an emulator, saying why.
+    var pairingMacTooOld by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
     // A new conversation on a Mac that keeps them is made *there*, which is a round trip:
@@ -829,8 +848,16 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     }
 
     if (pairing) {
-        ModalBottomSheet(onDismissRequest = { pairing = false }, sheetState = sheetState) {
-            PairingScreen(app = app, onDone = { pairing = false })
+        ModalBottomSheet(
+            onDismissRequest = { pairing = false; pairingMacTooOld = false },
+            sheetState = sheetState,
+        ) {
+            PairingScreen(
+                app = app,
+                onDone = { pairing = false; pairingMacTooOld = false },
+                startOn = if (pairingMacTooOld) PairingMode.Developer else PairingMode.Scan,
+                notice = if (pairingMacTooOld) MAC_TOO_OLD_FOR_CODES else null,
+            )
         }
     }
 
@@ -852,8 +879,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             app = app,
             invite = invite,
             onDismiss = { app.pendingInvite = null; arriving.value = null },
-            onNeedsAdvanced = {
+            onMacTooOld = {
                 app.pendingInvite = null
+                pairingMacTooOld = true
                 pairing = true
             },
         )

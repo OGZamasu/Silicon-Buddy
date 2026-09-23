@@ -282,7 +282,7 @@ is a 404. Full scope only, and the swarm secret is refused with its own sentence
 | `POST` | `/conversations` | device | Start a conversation. It appears in the Mac's own sidebar at once. |
 | `GET` | `/conversations/{id}` | device | One transcript. Images are omitted. |
 | `POST` | `/conversations/{id}/messages` | device | Send a message and stream the answer. Both are saved on the Mac. _(SSE)_ |
-| `GET` | `/health` | none | Unauthenticated, so a client can tell a dead app from a bad token. |
+| `GET` | `/health` | none | Unauthenticated, so a client can tell a dead app from a bad token. Says which build of the app is answering: `appVersion` and `appBuild` are its CFBundleShortVersionString and CFBundleVersion, and `version` repeats `appVersion` for clients written before those existed. |
 | `GET` | `/profile` | device | What this Mac is, and how much of it a model may have. |
 | `GET` | `/metrics` | device | Memory, swap, GPU and CPU right now. |
 | `GET` | `/status` | device | What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap. |

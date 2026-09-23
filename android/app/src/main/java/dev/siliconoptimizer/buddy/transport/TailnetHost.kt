@@ -43,6 +43,16 @@ object TailnetHost {
         return false
     }
 
+    /**
+     * [host] as it goes into a URL or an address line: an IPv6 literal in brackets, which
+     * `http://fd7a:115c:a1e0::9:8788/` without them is not a URL at all; anything else as
+     * it is. Brackets already there are not doubled.
+     */
+    fun forUrl(host: String): String {
+        val bare = host.trim().removePrefix("[").removeSuffix("]")
+        return if (bare.contains(':')) "[$bare]" else bare
+    }
+
     /** Four octets, or null when this is not a dotted-quad IPv4 literal. */
     fun ipv4Bytes(text: String): IntArray? {
         val parts = text.split(".")

@@ -80,30 +80,19 @@ class AppState(application: Application) : AndroidViewModel(application) {
     // MARK: - Pairing
 
     /**
-     * Trades a scanned invite for a per-device token. Throws
-     * `TransportError.RouteUnavailable` on a Mac that has not shipped `/buddy/pair`, so
-     * the caller can offer the advanced form instead.
+     * Trades an invite — scanned, followed as a link, or typed in — for a per-device
+     * token. Throws `TransportError.RouteUnavailable` on a Mac that has not shipped
+     * `/buddy/pair`, so the caller can say that Mac needs updating.
      */
     suspend fun pair(invite: PairingInvite) {
-        if (!TailnetHost.isAllowed(invite.host)) {
-            throw TransportError.Forbidden(TailnetHost.EXPLANATION)
-        }
-        val probe = ControlClient(ServerConfig(invite.host, invite.port, token = ""))
-        val paired = probe.pair(invite.code, deviceName, platform)
-        connect(
-            ServerConfig(
-                host = invite.host,
-                port = paired.port,
-                token = paired.token,
-                macName = paired.macName,
-                deviceID = paired.deviceID,
-                scope = DeviceScope.from(paired.scope),
-            ),
-        )
+        connect(invite.exchange(deviceName, platform))
         refreshReachability()
     }
 
-    /** The advanced form: host, port and the token from the Mac's control.json. */
+    /**
+     * Stores a Mac this device can already talk to: the end of [pair], and the Developer
+     * form's host, port and control.json token, which only the emulator can use.
+     */
     fun connect(newConfig: ServerConfig) {
         if (!TailnetHost.isAllowed(newConfig.host)) {
             throw TransportError.Forbidden(TailnetHost.EXPLANATION)

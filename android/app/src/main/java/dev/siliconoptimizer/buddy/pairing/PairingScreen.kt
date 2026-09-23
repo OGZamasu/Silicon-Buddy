@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,29 +46,52 @@ import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.launch
 
+/** The ways in, in the order most people need them. */
+enum class PairingMode(val label: String) {
+    Scan("Scan"),
+    Code("Enter code"),
+    /** The Mac's own control token, which the Mac takes only from itself. */
+    Developer("Developer"),
+}
+
+/** What a Mac without `POST /buddy/pair` gets told, from either way of spending a code. */
+const val MAC_TOO_OLD_FOR_CODES =
+    "That Mac is too old for pairing codes. Update Silicon Optimizer on it, then pair again."
+
 /**
- * Two ways to reach a Mac: scan the code it shows, or type the address in.
+ * Three ways to reach a Mac: scan the code it shows, type that same code in, or — from
+ * the emulator on the Mac itself — use the Mac's own control token.
  *
- * The advanced form is not a debugging leftover — it is the path that works today,
- * before the Mac has `POST /buddy/pair`, and it stays afterwards for anyone whose Mac
- * is on a screen they cannot point a camera at.
+ * Scan and Enter code both end at `POST /buddy/pair`, and they are how a phone gets in.
+ * The token in the Mac's control.json is accepted on the Mac's loopback listener and
+ * nowhere else, so over the tailnet it is refused whatever a phone does with it.
+ * Developer stays for the emulator, which reaches that listener as 10.0.2.2, and says so.
  */
 @Composable
 fun PairingScreen(
     app: AppState,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    startOn: PairingMode = PairingMode.Scan,
+    notice: String? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var scanning by remember { mutableStateOf(true) }
+    var mode by remember { mutableStateOf(startOn) }
     var host by remember { mutableStateOf(app.config?.host ?: "") }
-    var port by remember { mutableStateOf((app.config?.port ?: 8788).toString()) }
+    var code by remember { mutableStateOf("") }
+    var codePort by remember { mutableStateOf(PairingInvite.DEFAULT_PORT.toString()) }
+    // The Developer form's own. Loopback takes a fresh port every launch, so there is no
+    // default worth offering.
+    var developerHost by remember { mutableStateOf("") }
+    var developerPort by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
-    var message by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf(notice) }
     var working by remember { mutableStateOf(false) }
-    var confirmingReplacement by remember { mutableStateOf(false) }
+    // What "Replace" goes on to do once it is agreed to — pair with a code, or connect —
+    // and the address it would replace the paired Mac with.
+    var replacing by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     var cameraGranted by remember {
         mutableStateOf(
@@ -79,28 +104,30 @@ fun PairingScreen(
     ) { granted ->
         cameraGranted = granted
         if (!granted) {
-            scanning = false
-            message = "Camera denied. Enter the address by hand instead."
+            mode = PairingMode.Code
+            message = "Camera denied. Type the code your Mac shows instead."
         }
     }
 
-    LaunchedEffect(scanning) {
-        if (scanning && !cameraGranted) cameraPermission.launch(Manifest.permission.CAMERA)
+    LaunchedEffect(mode) {
+        if (mode == PairingMode.Scan && !cameraGranted) {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
     }
 
     fun connect() {
-        val portNumber = port.toIntOrNull()
+        val portNumber = developerPort.toIntOrNull()
         if (portNumber == null || portNumber !in 1..65535) {
             message = "That port isn't a number between 1 and 65535."
             return
         }
-        if (!TailnetHost.isAllowed(host.trim())) {
+        if (!TailnetHost.isAllowed(developerHost.trim())) {
             message = TailnetHost.EXPLANATION
             return
         }
         working = true
         scope.launch {
-            val candidate = ServerConfig(host.trim(), portNumber, token.trim())
+            val candidate = ServerConfig(developerHost.trim(), portNumber, token.trim())
             // Prove it works before storing it: a saved address that does not answer is
             // worse than no address at all.
             when (val result = ConnectivityProbe(ControlClient(candidate)).check()) {
@@ -122,8 +149,10 @@ fun PairingScreen(
 
     /**
      * A scanned code is a claim about which machine to trust, made by whoever printed
-     * the QR. It goes to the confirmation dialog, which names the host and — when a Mac
-     * is already paired — asks a second time before replacing it.
+     * the QR — and a pasted link is the same claim, made by whoever sent it. Both go to
+     * the confirmation dialog, which names the host, says to pair only with a code on
+     * your own Mac's screen, and — when a Mac is already paired — asks a second time
+     * before replacing it.
      */
     fun usePairingCode(text: String) {
         val invite = runCatching { PairingInvite.parse(text) }.getOrElse {
@@ -131,14 +160,44 @@ fun PairingScreen(
             return
         }
         host = invite.host
-        port = invite.port.toString()
+        codePort = invite.port.toString()
         app.pendingInvite = invite
         onDone()
     }
 
-    if (confirmingReplacement) {
+    /**
+     * A typed code goes where a scanned one does — [AppState.pair], and from there
+     * `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
+     * which is there because whoever printed a QR chose its host; here the person
+     * holding the phone typed it. Replacing a paired Mac still asks first. A link left
+     * in the address field is the exception, and goes to that confirmation instead.
+     */
+    fun pairTyped() {
+        if (PairingInvite.isLink(host)) {
+            usePairingCode(host)
+            return
+        }
+        val invite = runCatching { PairingInvite.typed(host, code, codePort) }.getOrElse {
+            message = it.message
+            return
+        }
+        message = null
+        working = true
+        scope.launch {
+            try {
+                app.pair(invite)
+                working = false
+                onDone()
+            } catch (error: TransportError) {
+                working = false
+                message = if (error.isMissingRoute) MAC_TOO_OLD_FOR_CODES else error.message
+            }
+        }
+    }
+
+    replacing?.let { (address, proceed) ->
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { confirmingReplacement = false },
+            onDismissRequest = { replacing = null },
             title = { Text("Replace ${app.macDisplayName}?") },
             text = {
                 Text(
@@ -147,12 +206,12 @@ fun PairingScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { confirmingReplacement = false; connect() }) {
-                    Text("Replace with $host")
+                TextButton(onClick = { replacing = null; proceed() }) {
+                    Text("Replace with $address")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmingReplacement = false }) {
+                TextButton(onClick = { replacing = null }) {
                     Text("Keep ${app.macDisplayName}")
                 }
             },
@@ -161,20 +220,25 @@ fun PairingScreen(
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = scanning,
-                onClick = { scanning = true },
-                shape = SegmentedButtonDefaults.itemShape(0, 2),
-            ) { Text("Scan") }
-            SegmentedButton(
-                selected = !scanning,
-                onClick = { scanning = false },
-                shape = SegmentedButtonDefaults.itemShape(1, 2),
-            ) { Text("Advanced") }
+            PairingMode.entries.forEachIndexed { index, each ->
+                SegmentedButton(
+                    selected = mode == each,
+                    onClick = { mode = each },
+                    shape = SegmentedButtonDefaults.itemShape(index, PairingMode.entries.size),
+                    // Three labels share a phone's width, and the selected one's tick
+                    // would cut "Enter code" short. So the choice is marked by a fill
+                    // strong enough to see — the default one is a near-white tint.
+                    icon = {},
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = MaterialTheme.colorScheme.primary,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                ) { Text(each.label) }
+            }
         }
 
-        if (scanning) {
-            if (cameraGranted) {
+        when (mode) {
+            PairingMode.Scan -> if (cameraGranted) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 16.dp)) {
                     QrScanner(onCode = { usePairingCode(it) }, modifier = Modifier.fillMaxSize())
                     Text(
@@ -191,33 +255,118 @@ fun PairingScreen(
                 ) {
                     Text("The camera is off", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Allow the camera, or use Advanced to type the address in.",
+                        "Allow the camera, or type the code your Mac shows under the QR.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(
-                        onClick = { scanning = false },
+                        onClick = { mode = PairingMode.Code },
                         modifier = Modifier.padding(top = 12.dp),
-                    ) { Text("Enter it by hand") }
+                    ) { Text("Enter the code by hand") }
                 }
             }
-        } else {
-            Column(
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 16.dp),
+
+            PairingMode.Code -> Column(
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .verticalScroll(rememberScrollState()).padding(top = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Text(
+                    "In Silicon Optimizer, open Settings, Silicon Buddy, and choose Pair a " +
+                        "device. Type the six-digit code it shows and the address beside it. " +
+                        "A pairing link pasted into the address field is shown to you to " +
+                        "confirm, as a scanned code is.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { typed ->
+                        code = PairingInvite.asciiDigits(typed, keepSpaces = true)
+                    },
+                    label = { Text("Pairing code") },
+                    placeholder = { Text("123 456") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 OutlinedTextField(
                     value = host,
-                    onValueChange = { host = it },
+                    onValueChange = { typed ->
+                        host = typed
+                        // A pasted link is not something the person typed: whoever made
+                        // it chose its host. It never reaches this form's Pair.
+                        if (PairingInvite.isLink(typed)) usePairingCode(typed)
+                    },
+                    label = { Text("Mac's address") },
+                    placeholder = { Text("100.x.y.z") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = codePort,
+                    onValueChange = { codePort = PairingInvite.asciiDigits(it) },
+                    label = { Text("Port") },
+                    supportingText = {
+                        Text("${PairingInvite.DEFAULT_PORT} unless your Mac says otherwise")
+                    },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Actions(
+                    app = app,
+                    label = if (app.isPaired) "Replace this Mac…" else "Pair",
+                    enabled = host.isNotBlank() && code.isNotBlank() && !working,
+                    working = working,
+                    onClick = {
+                        if (app.isPaired && !PairingInvite.isLink(host)) {
+                            replacing = host.trim() to ::pairTyped
+                        } else {
+                            pairTyped()
+                        }
+                    },
+                )
+            }
+
+            PairingMode.Developer -> Column(
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .verticalScroll(rememberScrollState()).padding(top = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "Local emulator and development only",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    "This is the Mac's own control token, from ~/Library/Application Support/" +
+                        "SiliconOptimizer/control.json. The Mac accepts it only on its local " +
+                        "listener, so it works from the Android emulator on that Mac (host " +
+                        "10.0.2.2, the port in control.json) and never from a phone over " +
+                        "Tailscale. To pair a phone, use Scan or Enter code.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = developerHost,
+                    onValueChange = { developerHost = it },
                     label = { Text("Host") },
-                    placeholder = { Text("100.x.y.z or 10.0.2.2") },
+                    placeholder = { Text("10.0.2.2") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
-                    value = port,
-                    onValueChange = { port = it.filter(Char::isDigit) },
+                    value = developerPort,
+                    onValueChange = { developerPort = PairingInvite.asciiDigits(it) },
                     label = { Text("Port") },
+                    placeholder = { Text("From control.json") },
                     singleLine = true,
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         keyboardType = KeyboardType.Number,
@@ -227,32 +376,24 @@ fun PairingScreen(
                 OutlinedTextField(
                     value = token,
                     onValueChange = { token = it },
-                    label = { Text("Token") },
+                    label = { Text("Control token") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(
-                    "The Mac writes these to ~/Library/Application Support/SiliconOptimizer/" +
-                        "control.json when it starts. From the Android emulator the Mac is " +
-                        "10.0.2.2; on a phone it is the Mac's tailnet address (100.x.y.z). " +
-                        "Nothing else is accepted.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Actions(
+                    app = app,
+                    label = if (app.isPaired) "Replace this Mac…" else "Connect",
+                    enabled = developerHost.isNotBlank() && token.isNotBlank() && !working,
+                    working = working,
+                    onClick = {
+                        if (app.isPaired) {
+                            replacing = developerHost.trim() to ::connect
+                        } else {
+                            connect()
+                        }
+                    },
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Button(
-                        onClick = { if (app.isPaired) confirmingReplacement = true else connect() },
-                        enabled = host.isNotBlank() && token.isNotBlank() && !working,
-                    ) { Text(if (app.isPaired) "Replace this Mac…" else "Connect") }
-                    if (working) CircularProgressIndicator(modifier = Modifier.padding(4.dp))
-                    if (app.isPaired) {
-                        OutlinedButton(onClick = { app.forget() }) { Text("Forget this Mac") }
-                    }
-                }
             }
         }
 
@@ -265,5 +406,26 @@ fun PairingScreen(
             )
         }
         TextButton(onClick = onDone, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+    }
+}
+
+/** The form's own button, its spinner, and — when there is a Mac to lose — forgetting it. */
+@Composable
+private fun Actions(
+    app: AppState,
+    label: String,
+    enabled: Boolean,
+    working: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Button(onClick = onClick, enabled = enabled) { Text(label) }
+        if (working) CircularProgressIndicator(modifier = Modifier.padding(4.dp))
+        if (app.isPaired) {
+            OutlinedButton(onClick = { app.forget() }) { Text("Forget this Mac") }
+        }
     }
 }
