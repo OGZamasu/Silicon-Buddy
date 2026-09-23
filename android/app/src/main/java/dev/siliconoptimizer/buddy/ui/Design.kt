@@ -119,11 +119,14 @@ fun Stat(label: String, value: String, modifier: Modifier = Modifier, tint: Colo
     Column(
         modifier = modifier.clearAndSetSemantics { contentDescription = "$label: $value" },
     ) {
+        // Two lines, not one: three of these share a card's width, and at this size
+        // "137.44 GB" is wider than a third of a 384 dp phone. Wrapping keeps the number;
+        // an ellipsis would cut it.
         Text(
             value,
             style = MaterialTheme.typography.titleLarge,
             color = tint ?: MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(

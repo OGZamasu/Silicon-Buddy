@@ -437,10 +437,10 @@ fun ChatScreen(
                 modifier = Modifier.weight(1f),
                 maxLines = 6,
                 shape = RoundedCornerShape(20.dp),
+                // Material's `outline` border, as on the Models search: see there.
                 colors = OutlinedTextFieldDefaults.colors(
                     unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                     focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
                 ),
             )
             PushToTalkButton(voice, hasMicrophone) {

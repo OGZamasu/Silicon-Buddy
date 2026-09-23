@@ -35,7 +35,9 @@ struct WelcomeView: View {
                 HStack {
                     Text("Pair with a Mac")
                     Spacer()
+                    // Decoration: without this VoiceOver reads the arrow out after the title.
                     Image(systemName: "arrow.right")
+                        .accessibilityHidden(true)
                 }
                 .font(.headline)
                 .padding(.vertical, 10)
