@@ -1,6 +1,8 @@
 package dev.siliconoptimizer.buddy
 
+import dev.siliconoptimizer.buddy.media.CancelState
 import dev.siliconoptimizer.buddy.media.JobState
+import dev.siliconoptimizer.buddy.media.cancelNeedsTheQueue
 import dev.siliconoptimizer.buddy.media.QueueState
 import dev.siliconoptimizer.buddy.transport.JobProgress
 import dev.siliconoptimizer.buddy.transport.VideoQueueItem
@@ -400,5 +402,130 @@ class QueueReducerTest {
             view(item(status = "pending").copy(negativePrompt = "blurry, watermark")),
         )
         assertTrue(state.job("9C2F-0001")!!.detail!!.contains("without: blurry, watermark"))
+    }
+
+    // MARK: - Cancel render, where the Mac offers it
+
+    private fun cancellable(status: String = "rendering", cancelState: String? = null, detail: String? = null) =
+        item(status = status).copy(canCancel = true, cancelState = cancelState, cancelDetail = detail)
+
+    @Test
+    fun `Cancel render is offered only where the Mac marks the clip and never to a chat-only phone`() {
+        val state = QueueState.empty.applying(
+            view(cancellable(), item(id = "9C2F-0002", status = "rendering"), active = "9C2F-0001"),
+        )
+        assertTrue(state.job("9C2F-0001")!!.offersCancelRender(canControl = true))
+        assertFalse("a chat-only pairing is not shown it", state.job("9C2F-0001")!!.offersCancelRender(canControl = false))
+        assertFalse("no canCancel, no button", state.job("9C2F-0002")!!.offersCancelRender(canControl = true))
+        // Stop following is still there, beside it.
+        assertTrue(state.job("9C2F-0001")!!.canStopFollowing)
+    }
+
+    @Test
+    fun `the Mac's cancel words all mean something, and a new one promises nothing`() {
+        assertNull(CancelState.of(null))
+        assertEquals(CancelState.Sending, CancelState.of("sending"))
+        assertEquals(CancelState.Requested, CancelState.of("requested"))
+        assertEquals(CancelState.Confirmed, CancelState.of("confirmed"))
+        assertEquals(CancelState.Completed, CancelState.of("completed"))
+        assertEquals(CancelState.Failed, CancelState.of("failed"))
+        assertEquals(CancelState.Unsupported, CancelState.of("unsupported"))
+        assertEquals(CancelState.Unknown, CancelState.of("unknown"))
+        assertEquals(CancelState.Unknown, CancelState.of("reticulating"))
+        assertTrue(CancelState.Requested.isPending)
+        assertFalse(CancelState.Confirmed.isPending)
+    }
+
+    @Test
+    fun `each outcome of a cancel is said on the clip, with the node's own words`() {
+        val requested = QueueState.empty.applying(view(cancellable(cancelState = "requested")))
+            .job("9C2F-0001")!!
+        assertEquals(CancelState.Requested, requested.cancel)
+        assertTrue(requested.cancel!!.note.startsWith("Cancel requested"))
+
+        val unsupported = QueueState.empty.applying(
+            view(item(status = "rendering").copy(cancelState = "unsupported", cancelDetail = "Phosphene is rendering it.")),
+        ).job("9C2F-0001")!!
+        assertEquals(CancelState.Unsupported, unsupported.cancel)
+        assertTrue(unsupported.cancel!!.note.contains("keeps rendering"))
+        assertEquals("Phosphene is rendering it.", unsupported.cancelDetail)
+        assertFalse("the Mac said no more cancelling", unsupported.canCancelRender)
+
+        val confirmed = QueueState.empty.applying(
+            view(item(status = "cancelled").copy(cancelState = "confirmed", cancelDetail = "Cancelled; the renderer was stopped.")),
+        ).job("9C2F-0001")!!
+        assertEquals(JobState.Stopped, confirmed.state)
+        assertTrue(confirmed.cancel!!.note.startsWith("Cancelled on the node"))
+    }
+
+    @Test
+    fun `an event that ends the clip takes Cancel render away before the queue is read`() {
+        val rendering = QueueState.empty.applying(view(cancellable(), active = "9C2F-0001"))
+        assertFalse(rendering.applying(job(status = "completed")).job("9C2F-0001")!!.canCancelRender)
+        assertFalse(rendering.applying(job(status = "pending")).job("9C2F-0001")!!.canCancelRender)
+        val cancelled = rendering.applying(job(status = "cancelled")).job("9C2F-0001")!!
+        assertFalse(cancelled.canCancelRender)
+        assertEquals("a cancelled status is a confirmed cancel", CancelState.Confirmed, cancelled.cancel)
+        // A failure is not one of those: a clip the Mac stopped following still has its
+        // node's receipt, and only the Mac knows whether it can still be stopped.
+        assertTrue(rendering.applying(job(status = "failed")).job("9C2F-0001")!!.canCancelRender)
+    }
+
+    @Test
+    fun `a queue read older than the stream cannot bring Cancel render back to a finished clip`() {
+        var state = QueueState.empty.applying(view(cancellable(), active = "9C2F-0001"))
+        state = state.applying(job(status = "completed"))
+        state = state.applying(view(cancellable(), active = "9C2F-0001"))
+        assertEquals(JobState.Done, state.job("9C2F-0001")!!.state)
+        assertFalse(state.job("9C2F-0001")!!.canCancelRender)
+    }
+
+    @Test
+    fun `the Mac's answer about a clip may take it out of an ending, and a plain read may not`() {
+        val failed = QueueState.empty.applying(view(cancellable(status = "failed")))
+        val following = view(item(status = "rendering").copy(cancelState = "requested"), active = "9C2F-0001")
+        assertEquals(
+            "a read of the queue cannot walk a failure back",
+            JobState.Failed, failed.applying(following).job("9C2F-0001")!!.state,
+        )
+        val answered = failed.applying(following, answering = "9C2F-0001").job("9C2F-0001")!!
+        assertEquals("the answer to this phone's own cancel can", JobState.Rendering, answered.state)
+        assertEquals(CancelState.Requested, answered.cancel)
+        assertEquals(
+            "and only for the clip it answers",
+            JobState.Failed,
+            failed.applying(following, answering = "9C2F-0002").job("9C2F-0001")!!.state,
+        )
+    }
+
+    @Test
+    fun `the queue is read again when a clip's cancel answer may have changed`() {
+        val queued = QueueState.empty.applying(view(item(status = "submitting"), active = "9C2F-0001"))
+        val started = queued.applying(job(status = "rendering", fraction = 0.1))
+        assertTrue(
+            "the node just took it, and may offer to stop it",
+            cancelNeedsTheQueue(queued.job("9C2F-0001"), started.job("9C2F-0001")),
+        )
+        val further = started.applying(job(status = "rendering", fraction = 0.2))
+        assertFalse(
+            "progress within one render changes nothing about cancelling",
+            cancelNeedsTheQueue(started.job("9C2F-0001"), further.job("9C2F-0001")),
+        )
+        val failed = further.applying(job(status = "failed"))
+        assertTrue(cancelNeedsTheQueue(further.job("9C2F-0001"), failed.job("9C2F-0001")))
+
+        val asked = QueueState.empty.applying(view(item(status = "rendering").copy(cancelState = "requested"), active = "9C2F-0001"))
+        val finished = asked.applying(job(status = "completed"))
+        assertTrue(
+            "a cancel in flight met the end of the render: the Mac has recorded which won",
+            cancelNeedsTheQueue(asked.job("9C2F-0001"), finished.job("9C2F-0001")),
+        )
+        val plain = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        assertFalse(cancelNeedsTheQueue(plain.job("9C2F-0001"), plain.applying(job(status = "completed")).job("9C2F-0001")))
+
+        // An image is not the video queue's, and nothing there can be cancelled.
+        val image = QueueState.empty.applying(job(id = "image", kind = "image", status = "pending"))
+        val drawing = image.applying(job(id = "image", kind = "image", status = "running"))
+        assertFalse(cancelNeedsTheQueue(image.job("image"), drawing.job("image")))
     }
 }

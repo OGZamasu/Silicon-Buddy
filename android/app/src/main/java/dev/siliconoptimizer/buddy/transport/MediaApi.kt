@@ -48,10 +48,11 @@ data class VideoQueueRequest(
 /**
  * `POST /video/queue/control`.
  *
- * The Mac's vocabulary, which is narrower than "cancel": `pause`, `resume`, `retry`,
- * `remove`, `stop_following`, `clear_finished`. There is no cancel, and
- * `stop_following` is why — a clip already handed to a node keeps rendering there, and
- * the Mac will not claim otherwise. Three of these need an item id.
+ * The Mac's vocabulary: `pause`, `resume`, `retry`, `remove`, `stop_following`, `cancel`,
+ * `clear_finished`. `stop_following` lets go of a clip while its node may keep rendering
+ * it; `cancel` asks that node to stop the one render, and applies only where the queue
+ * item's `canCancel` says so — the node advertises it for the lane. A Mac older than the
+ * `cancel` verb answers it with a 400. Four of these need an item id.
  */
 @Serializable
 data class VideoQueueControlRequest(
@@ -66,10 +67,11 @@ data class VideoQueueControlRequest(
         const val RETRY = "retry"
         const val REMOVE = "remove"
         const val STOP_FOLLOWING = "stop_following"
+        const val CANCEL = "cancel"
         const val CLEAR_FINISHED = "clear_finished"
 
         /** The actions that mean nothing without an item. */
-        val NEEDS_ID = setOf(RETRY, REMOVE, STOP_FOLLOWING)
+        val NEEDS_ID = setOf(RETRY, REMOVE, STOP_FOLLOWING, CANCEL)
     }
 }
 

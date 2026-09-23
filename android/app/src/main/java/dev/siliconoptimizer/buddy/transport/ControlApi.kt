@@ -127,6 +127,11 @@ data class Plan(
     val weightsBytes: Long,
     val expertsBytes: Long,
     val kvCacheBytes: Long,
+    /**
+     * A hybrid model's fixed linear-attention state, already counted in [residentBytes].
+     * Absent for a model whose every block keeps a KV cache, and on an older Mac.
+     */
+    val recurrentStateBytes: Long? = null,
     val computeBytes: Long,
     val streamedFromDiskBytes: Long,
     val suggestions: List<Suggestion>,
@@ -329,6 +334,20 @@ data class VideoQueueItem(
     val mediaURL: String? = null,
     /** Its poster frame, which a chat-scope device may fetch too. */
     val thumbnailMediaID: String? = null,
+    /**
+     * Set once somebody asked the clip's node to cancel its render: `sending`,
+     * `requested`, `confirmed`, `completed` (it finished first), `failed`, `unsupported`
+     * or `unknown`. Absent on an older Mac, and on every clip nobody tried to cancel.
+     */
+    val cancelState: String? = null,
+    /** The node's own words about that cancel, when it gave any. */
+    val cancelDetail: String? = null,
+    /**
+     * Whether `cancel` applies to this clip now — the Mac's answer, per item, and the only
+     * one this app goes by: its node advertises job cancellation for the lane, and the
+     * render may still be running. Absent on a Mac that has no `cancel` verb at all.
+     */
+    val canCancel: Boolean? = null,
 )
 
 @Serializable

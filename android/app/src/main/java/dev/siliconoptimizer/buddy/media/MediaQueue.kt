@@ -50,6 +50,46 @@ enum class JobState {
     }
 }
 
+/**
+ * What became of asking a clip's node to stop its render, as the Mac records it on the
+ * clip. Its vocabulary again, and it may grow: a word this build has not heard is read as
+ * [Unknown], the one that promises nothing.
+ */
+enum class CancelState {
+    Sending, Requested, Confirmed, Completed, Failed, Unsupported, Unknown;
+
+    /** Asked for and not settled: the node may still be stopping it. */
+    val isPending: Boolean get() = this == Sending || this == Requested
+
+    /** One line under the clip, in this app's words; the node's own follow when it gave any. */
+    val note: String
+        get() = when (this) {
+            Sending -> "Asking the node to cancel this render…"
+            Requested -> "Cancel requested. The node is stopping this render, and the Mac " +
+                "follows it until the node says it has."
+            Confirmed -> "Cancelled on the node. Nothing will be published for it."
+            Completed -> "Too late to cancel: the render finished first, and the clip is kept."
+            Failed -> "Nothing to cancel: the render had already failed."
+            Unsupported -> "The node can't stop this render without risking other work, so " +
+                "it keeps rendering."
+            Unknown -> "The node didn't confirm the cancel, so the render may still be " +
+                "running. Nothing was sent again."
+        }
+
+    companion object {
+        fun of(wire: String?): CancelState? = when (wire?.lowercase()) {
+            null -> null
+            "sending" -> Sending
+            "requested" -> Requested
+            "confirmed" -> Confirmed
+            "completed" -> Completed
+            "failed" -> Failed
+            "unsupported" -> Unsupported
+            else -> Unknown
+        }
+    }
+}
+
 /** One row of the Queue screen. A clip, an image or a mesh — whatever the Mac is doing. */
 data class MediaJob(
     val id: String,
@@ -80,6 +120,16 @@ data class MediaJob(
     val isQueued: Boolean = true,
     /** The Mac is not sure the node took it; retrying may render it twice. */
     val uncertainSubmission: Boolean = false,
+    /**
+     * The Mac says `cancel` applies to this clip now: its node advertises cancelling a job
+     * for the lane, and the render may still be running. Never inferred here — a node that
+     * does not say so gets Stop following and nothing more.
+     */
+    val canCancel: Boolean = false,
+    /** What became of a cancel somebody asked for, when anybody did. */
+    val cancel: CancelState? = null,
+    /** The node's own words about that cancel. */
+    val cancelDetail: String? = null,
 ) {
     val canRetry: Boolean get() = isQueued && (state == JobState.Failed || state == JobState.Stopped)
 
@@ -92,6 +142,15 @@ data class MediaJob(
         get() = isQueued && (state == JobState.Queued || state.isTerminal)
 
     val canStopFollowing: Boolean get() = isQueued && isActive && state.isRunning
+
+    /** Offered only where the Mac said so, on a row the video queue holds. */
+    val canCancelRender: Boolean get() = isQueued && canCancel
+
+    /**
+     * Whether this phone shows "Cancel render" at all. A chat-only pairing does not: the
+     * Mac refuses it every queue verb, and this one is not even offered disabled.
+     */
+    fun offersCancelRender(canControl: Boolean): Boolean = canControl && canCancelRender
 
     /**
      * One line under the title: why it failed, or what it is doing, or how it is made.
@@ -129,9 +188,43 @@ data class MediaJob(
                 isActive = item.id == activeID,
                 isQueued = true,
                 uncertainSubmission = item.uncertainSubmission,
+                canCancel = item.canCancel == true,
+                cancel = CancelState.of(item.cancelState),
+                cancelDetail = item.cancelDetail?.takeIf { it.isNotBlank() },
             )
         }
     }
+}
+
+/**
+ * States in which a clip can have nothing left to cancel, whatever an older answer said:
+ * waiting (the node has no job yet), finished, or stopped. A failed clip is not one of
+ * them — one the Mac stopped following still has its node's receipt, and the Mac may
+ * well offer to cancel it.
+ */
+private val JobState.rulesOutCancel: Boolean
+    get() = this == JobState.Queued || this == JobState.Done || this == JobState.Stopped
+
+/** `cancelled` is the Mac's word for a cancel the node confirmed, and for nothing else. */
+private fun isCancelledWord(status: String): Boolean =
+    status.lowercase().let { it == "cancelled" || it == "canceled" }
+
+/**
+ * Whether a `job` event leaves this phone not knowing what the Mac would now say about
+ * cancelling the clip — which only `GET /video/queue` carries, as `canCancel` and
+ * `cancelState`. So the queue is read once more at the moments that answer can change: a
+ * clip starting to render (its node has just taken the job, and may offer to stop it), a
+ * clip failing (one the Mac stopped following may still be stoppable, one the node
+ * failed is not), and a clip with a cancel in flight coming to an end (the Mac has
+ * recorded how the cancel went).
+ */
+internal fun cancelNeedsTheQueue(before: MediaJob?, after: MediaJob?): Boolean {
+    if (before == null || after == null || !after.isQueued || before.state == after.state) {
+        return false
+    }
+    return after.state == JobState.Rendering ||
+        after.state == JobState.Failed ||
+        (before.cancel?.isPending == true && after.state.isTerminal)
 }
 
 /**
@@ -168,8 +261,14 @@ data class QueueState(
      * across. Rows the queue does not list are dropped — unless they never came from it:
      * an image or a mesh is a `job` event and nothing else, and a poll of the video
      * queue must not make one disappear.
+     *
+     * [answering] is the clip this queue is the Mac's answer about — the one this phone
+     * just asked it to act on. That answer comes after the Mac acted, so it is
+     * not a snapshot the stream can be ahead of, and it may take a clip out of an ending:
+     * a retry that goes back to the node's job, or a cancel the node is still carrying
+     * out on a clip the Mac had stopped following, puts it back to rendering.
      */
-    fun applying(view: VideoQueueView): QueueState {
+    fun applying(view: VideoQueueView, answering: String? = null): QueueState {
         val known = jobs.associateBy { it.id }
         val fromQueue = view.items.map { item ->
             val existing = known[item.id]
@@ -179,11 +278,12 @@ data class QueueState(
                 existing == null -> fresh
                 // A snapshot older than what the stream already said. Its prompt, its
                 // settings and its reason are still worth having; its state is not.
-                !mayMove(existing.state, incoming) -> fresh.copy(
+                item.id != answering && !mayMove(existing.state, incoming) -> fresh.copy(
                     state = existing.state,
                     statusWord = existing.statusWord,
                     fraction = existing.fraction,
                     isActive = false,
+                    canCancel = fresh.canCancel && !existing.state.rulesOutCancel,
                 )
                 incoming == JobState.Queued -> fresh.copy(fraction = null)
                 else -> fresh
@@ -235,6 +335,11 @@ data class QueueState(
                     else -> event.reason ?: existing.error
                 },
                 mediaID = event.mediaID ?: existing.mediaID,
+                // The event says nothing about cancelling; the queue said it last. Only
+                // an ending that leaves nothing to cancel takes the button away before
+                // the queue is read again.
+                canCancel = existing.canCancel && !state.rulesOutCancel,
+                cancel = if (isCancelledWord(event.status)) CancelState.Confirmed else existing.cancel,
             )
             else -> MediaJob(
                 id = event.id,

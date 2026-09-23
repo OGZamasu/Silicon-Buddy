@@ -1,6 +1,8 @@
 package dev.siliconoptimizer.buddy.media
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,8 +37,10 @@ import dev.siliconoptimizer.buddy.ui.SectionCard
  *
  * Driven by `GET /video/queue` and the `job` events together: the queue knows what the
  * work is and why it failed, the events know how far along it is. The buttons are the
- * Mac's own vocabulary and no more — there is no "cancel" on a clip a node is already
- * rendering, and calling one of these that does not exist would be a button that lied.
+ * Mac's own vocabulary and no more. "Cancel render" is there only on a clip the Mac
+ * marks `canCancel` — its node said it can stop that one job — and everywhere else Stop
+ * following is all there is: a button that claimed to stop a render a node will finish
+ * anyway would be a button that lied.
  */
 /** Something destructive, waiting to be meant. */
 private data class Pending(val jobID: String?, val action: String)
@@ -138,6 +142,7 @@ fun QueueList(
             JobCard(
                 job = job,
                 canControl = app.canControl,
+                cancelling = job.id in model.cancelling,
                 saving = model.saving,
                 onSave = { id ->
                     model.save(context, app.transport, id, job.kind, job.title, job.file)
@@ -158,6 +163,8 @@ fun QueueList(
                         // again, never because the app filled it in for them.
                         VideoQueueControlRequest.RETRY ->
                             model.retry(job.id, warned, app.transport, notifier)
+                        VideoQueueControlRequest.CANCEL ->
+                            model.cancelRender(job.id, app.transport, notifier)
                         else -> model.control(action, job.id, app.transport, notifier)
                     }
                 },
@@ -166,10 +173,13 @@ fun QueueList(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun JobCard(
     job: MediaJob,
     canControl: Boolean,
+    /** A cancel for this clip is on its way to the Mac. */
+    cancelling: Boolean,
     saving: String?,
     onSave: (String) -> Unit,
     /** The action this card is currently asking about, if any. */
@@ -227,6 +237,24 @@ private fun JobCard(
                 },
             )
         }
+        // How a cancel went, from the Mac's record on the clip — or that one is on its way.
+        (if (cancelling) CancelState.Sending else job.cancel)?.let { cancel ->
+            Text(
+                cancel.note,
+                style = MaterialTheme.typography.labelSmall,
+                color = when (cancel) {
+                    CancelState.Unsupported, CancelState.Unknown -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            job.cancelDetail?.takeIf { !cancelling }?.let {
+                Text(
+                    "The node: $it",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+        }
         (job.file ?: job.outputDirectory.takeIf { job.state == JobState.Done })?.let {
             Text(it, style = MaterialTheme.typography.labelSmall)
         }
@@ -265,7 +293,7 @@ private fun JobCard(
             return@SectionCard
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             if (job.canStopFollowing) {
                 TextButton(
                     onClick = { onAction(VideoQueueControlRequest.STOP_FOLLOWING, false) },
@@ -292,6 +320,14 @@ private fun JobCard(
                     enabled = canControl,
                 ) { Text("Remove") }
             }
+            // Not merely disabled for a chat-only device, as the others are: it is not a
+            // button that device has.
+            if (job.offersCancelRender(canControl)) {
+                TextButton(
+                    onClick = { onAsk(VideoQueueControlRequest.CANCEL) },
+                    enabled = !cancelling,
+                ) { Text("Cancel render") }
+            }
         }
         if (job.canStopFollowing) {
             Text(
@@ -316,6 +352,25 @@ private fun JobCard(
                     }
                     TextButton(onClick = { onAsk(VideoQueueControlRequest.RETRY) }) {
                         Text("Leave it")
+                    }
+                }
+            }
+            // Only while the Mac still offers it: a clip that finished while this was
+            // being read has nothing left to cancel.
+            VideoQueueControlRequest.CANCEL -> if (job.offersCancelRender(canControl)) {
+                Text(
+                    "This asks the node to stop the render. The GPU work it has done is " +
+                        "thrown away and nothing is published for this take; rendering it " +
+                        "again starts from the beginning.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onAction(VideoQueueControlRequest.CANCEL, true) }) {
+                        Text("Cancel it")
+                    }
+                    TextButton(onClick = { onAsk(VideoQueueControlRequest.CANCEL) }) {
+                        Text("Keep rendering")
                     }
                 }
             }

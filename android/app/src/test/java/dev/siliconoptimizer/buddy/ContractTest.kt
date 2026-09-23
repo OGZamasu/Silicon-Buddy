@@ -1,6 +1,9 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.chat.SendLimits
+import dev.siliconoptimizer.buddy.media.CancelState
+import dev.siliconoptimizer.buddy.media.JobState
+import dev.siliconoptimizer.buddy.media.MediaJob
 import dev.siliconoptimizer.buddy.transport.AgentApprovalDecision
 import dev.siliconoptimizer.buddy.transport.AgentApprovalResult
 import dev.siliconoptimizer.buddy.transport.AgentEvent
@@ -244,7 +247,24 @@ class ContractTest {
 
     @Test fun plan() {
         roundTrip<PlanRequest>("POST__plan", "request")
-        roundTrip<Plan>("POST__plan")
+        assertNull("an ordinary model has no recurrent state", roundTrip<Plan>("POST__plan").recurrentStateBytes)
+    }
+
+    /**
+     * A hybrid model's plan (OGZamasu/silicon-optimizer#26) carries its fixed
+     * linear-attention state. The exported example is not a hybrid, so the field is added
+     * to it here — and it has to survive the round trip, which it would not if it were
+     * not mirrored.
+     */
+    @Test fun `a hybrid model's plan carries its recurrent state`() {
+        val plan = part("POST__plan", "response") as JsonObject
+        val hybrid = JsonObject(plan + ("recurrentStateBytes" to JsonPrimitive(301_989_888L)))
+        val decoded = json.decodeFromString<Plan>(hybrid.toString())
+        assertEquals(301_989_888L, decoded.recurrentStateBytes)
+        assertEquals(
+            emptyList<String>(),
+            difference(strip(hybrid), strip(Json.parseToJsonElement(json.encodeToString(decoded)))),
+        )
     }
 
     // MARK: - The M0 routes
@@ -391,14 +411,24 @@ class ContractTest {
         roundTrip<VideoQueueView>("POST__video_queue")
     }
 
-    /** Six verbs, each with a fixture of its own now, and no seventh. */
+    /** Seven verbs, each with a fixture of its own, and no eighth. */
     @Test
     fun `controlling the queue`() {
         val fixture = fixture("POST__video_queue_control")
         val requests = fixture.getValue("requests") as JsonObject
         assertEquals(
-            setOf("pause", "resume", "retry", "remove", "stop_following", "clear_finished"),
+            setOf("pause", "resume", "retry", "remove", "stop_following", "cancel", "clear_finished"),
             requests.keys,
+        )
+        assertEquals(
+            "the Mac's own list of verbs is this app's",
+            requests.keys,
+            setOf(
+                VideoQueueControlRequest.PAUSE, VideoQueueControlRequest.RESUME,
+                VideoQueueControlRequest.RETRY, VideoQueueControlRequest.REMOVE,
+                VideoQueueControlRequest.STOP_FOLLOWING, VideoQueueControlRequest.CANCEL,
+                VideoQueueControlRequest.CLEAR_FINISHED,
+            ),
         )
         for (action in requests.keys) {
             val sent = roundTrip<VideoQueueControlRequest>(
@@ -418,6 +448,59 @@ class ContractTest {
             ).confirmNewRender == true,
         )
         roundTrip<VideoQueueView>("POST__video_queue_control")
+        // The swarm's secret is refused every verb, in a sentence of its own.
+        val swarm = json.decodeFromString<ErrorResponse>(
+            part("POST__video_queue_control", "errorVariants.403.swarm").toString(),
+        )
+        assertTrue(swarm.error.contains("swarm"))
+    }
+
+    /**
+     * `cancel` names the one clip it is about — the one the Mac marked `canCancel` — and
+     * whether it applies is the Mac's answer per item, never this app's guess.
+     */
+    @Test
+    fun `cancelling a render names the clip the Mac says can be cancelled`() {
+        val sent = roundTrip<VideoQueueControlRequest>("POST__video_queue_control", "requests.cancel")
+        assertEquals(VideoQueueControlRequest.CANCEL, sent.action)
+        assertNull("cancel is never a new render to confirm", sent.confirmNewRender)
+        val queue = roundTrip<VideoQueueView>("POST__video_queue_control")
+        val target = queue.items.single { it.id == sent.id }
+        assertEquals(true, target.canCancel)
+        assertTrue("it has a node job to cancel", target.nodeJobID != null)
+        // A confirmed cancel: its own status, the record, and the node's words.
+        val cancelled = queue.items.single { it.status == "cancelled" }
+        assertEquals("confirmed", cancelled.cancelState)
+        assertTrue(cancelled.cancelDetail!!.isNotBlank())
+        assertEquals("nothing left to cancel on a confirmed one", false, cancelled.canCancel)
+    }
+
+    @Test
+    fun `the queue says per clip whether it can be cancelled and how a cancel went`() {
+        for (name in listOf("GET__video_queue", "POST__video_queue", "POST__video_queue_control")) {
+            val items = roundTrip<VideoQueueView>(name).items.map { MediaJob.of(it, null) }
+            val offered = items.filter { it.canCancelRender }.map { it.id }
+            assertEquals("$name offers Cancel render on exactly the clip it marks", listOf("9C2F-0005"), offered)
+            assertTrue("never to a chat-only pairing", items.none { it.offersCancelRender(canControl = false) })
+            assertEquals(CancelState.Confirmed, items.single { it.id == "9C2F-0004" }.cancel)
+            assertEquals(JobState.Stopped, items.single { it.id == "9C2F-0004" }.state)
+        }
+    }
+
+    /** A Mac from before `cancel` sends none of its fields, and the queue still reads. */
+    @Test
+    fun `an older Mac's queue item still decodes, with nothing to cancel`() {
+        val queue = part("GET__video_queue", "response") as JsonObject
+        val older = JsonObject(
+            queue + ("items" to JsonArray(
+                (queue.getValue("items") as JsonArray).map { item ->
+                    JsonObject((item as JsonObject) - setOf("canCancel", "cancelState", "cancelDetail"))
+                },
+            )),
+        )
+        val view = json.decodeFromString<VideoQueueView>(older.toString())
+        assertTrue(view.items.all { it.canCancel == null && it.cancelState == null })
+        assertTrue(view.items.map { MediaJob.of(it, null) }.none { it.canCancelRender || it.cancel != null })
     }
 
     @Test
@@ -720,6 +803,8 @@ class ContractTest {
             "GET__ondevice_models 403 swarm",
             "GET__ondevice_models__id__file 403 swarm",
             "POST__ondevice_models__id__prepare 403 swarm",
+            // The queue's controls are the owner's: the swarm secret is refused every verb.
+            "POST__video_queue_control 403 swarm",
         )
 
         /**

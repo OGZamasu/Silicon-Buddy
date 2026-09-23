@@ -28,8 +28,9 @@ import java.util.concurrent.TimeUnit;
  * the event stream with `agent` frames, the two sessions, and answering the approvals Codex
  * is holding — one, or two when a test needs to tell them apart. And the little the Models
  * tab needs: one model on disk, loading and unloading it, and `status` frames — each of
- * which a test can make fail, or make slow. Everything else is the Mac's 404, which the app
- * already treats as a route this Mac does not have.
+ * which a test can make fail, or make slow. And the little the Create tab's queue needs: a
+ * `GET /video/queue` a test writes, and a `cancel` answered the way a test says. Everything
+ * else is the Mac's 404, which the app already treats as a route this Mac does not have.
  */
 final class FakeMac implements Closeable {
 
@@ -71,6 +72,18 @@ final class FakeMac implements Closeable {
     volatile boolean loadIsSlow;
     /** What `GET /status` says; null for the Agents tests' plain "Ready". */
     volatile String status;
+
+    // MARK: - The Create tab's queue
+
+    /** What `GET /video/queue` answers; null for the 404 of a Mac without the route. */
+    volatile String videoQueue;
+    /** The queue after a `cancel`, which becomes the queue from then on. */
+    volatile String cancelAnswer;
+    /** What `POST /buddy/pair` grants: `full`, or `chat` for a phone lent to somebody. */
+    volatile String scope = "full";
+
+    static final String CHAT_ONLY = "This device is paired for chat only. Pair it again with full "
+        + "control from Settings \u2192 Silicon Buddy on the Mac.";
 
     FakeMac() throws IOException {
         this(false);
@@ -261,7 +274,7 @@ final class FakeMac implements Closeable {
             }
             if (method.equals("POST") && path.equals("/buddy/pair")) {
                 reply(output, 200, "{\"deviceID\":\"D-TEST\",\"token\":\"" + TOKEN + "\",\"macName\":\"Test Mac\",\"port\":"
-                    + port() + ",\"scope\":\"full\"}");
+                    + port() + ",\"scope\":\"" + scope + "\"}");
                 return;
             }
             if (!authorization.equals("Bearer " + TOKEN)) {
@@ -290,6 +303,17 @@ final class FakeMac implements Closeable {
             } else if (method.equals("POST") && path.equals("/unload")) {
                 status = IDLE;
                 reply(output, 200, "{\"status\":\"unloaded\"}");
+            } else if (method.equals("GET") && path.equals("/video/queue") && videoQueue != null) {
+                reply(output, 200, videoQueue);
+            } else if (method.equals("POST") && path.equals("/video/queue/control") && videoQueue != null) {
+                if (!"full".equals(scope)) {
+                    reply(output, 403, "{\"error\":\"" + CHAT_ONLY + "\"}");
+                } else if (text.contains("\"cancel\"") && cancelAnswer != null) {
+                    videoQueue = cancelAnswer;
+                    reply(output, 200, cancelAnswer);
+                } else {
+                    reply(output, 200, videoQueue);
+                }
             } else if (path.equals("/events")) {
                 stream(output);
             } else if (path.equals("/agent/sessions")) {

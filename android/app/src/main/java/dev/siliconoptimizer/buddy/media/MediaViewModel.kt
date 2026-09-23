@@ -311,23 +311,33 @@ class MediaViewModel : ViewModel() {
         transport: ControlTransport? = null,
     ) {
         MediaJobCenter.note(event.kind, event.fraction)
-        val unknown = event.kind == "video" && queue.job(event.id)?.isQueued != true
+        val before = queue.job(event.id)
+        val unknown = event.kind == "video" && before?.isQueued != true
         update(queue.applying(event), notifier)
         // A clip queued from somewhere else — the Mac's own window, another phone —
         // is first heard of here, and an event carries no prompt and no settings. So
         // the queue is read once, for that clip's details; this is not the old poll
         // coming back, which asked every six seconds whether anything had happened.
-        if (unknown) readQueueOnce(transport, notifier)
+        // The same goes for whether the clip can be cancelled, which an event never says.
+        if (unknown || cancelNeedsTheQueue(before, queue.job(event.id))) {
+            readQueueOnce(transport, notifier)
+        }
     }
 
     private var lastRead = 0L
+    private var nextRead: Job? = null
 
+    /**
+     * One read of the queue, at most every three seconds. A reason to read that arrives
+     * sooner waits for the end of those three seconds rather than being dropped: it is a
+     * different clip's, or a later moment of the same one.
+     */
     private fun readQueueOnce(transport: ControlTransport?, notifier: MediaNotifier?) {
-        if (transport == null) return
-        val now = System.currentTimeMillis()
-        if (now - lastRead < 3_000) return
-        lastRead = now
-        viewModelScope.launch {
+        if (transport == null || nextRead?.isActive == true) return
+        val wait = lastRead + 3_000 - System.currentTimeMillis()
+        nextRead = viewModelScope.launch {
+            if (wait > 0) delay(wait)
+            lastRead = System.currentTimeMillis()
             runCatching { transport.videoQueue() }.getOrNull()?.let {
                 if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it)
             }
@@ -371,14 +381,66 @@ class MediaViewModel : ViewModel() {
         if (transport == null) return
         viewModelScope.launch {
             try {
-                update(
-                    queue.applying(
-                        transport.controlVideoQueue(VideoQueueControlRequest(action, id)),
-                    ),
-                    notifier,
+                answered(
+                    transport.controlVideoQueue(VideoQueueControlRequest(action, id)),
+                    id, transport, notifier,
                 )
             } catch (failure: TransportError) {
                 error = failure.message
+            }
+        }
+    }
+
+    /**
+     * The Mac's answer to something this phone asked of one clip, which is newer than
+     * anything the stream said before it. An event can still have overtaken it on the way
+     * — the node confirming a cancel the moment it was asked — so an answer that takes a
+     * clip out of an ending is checked against the queue once more, a moment later.
+     */
+    private fun answered(
+        view: VideoQueueView,
+        id: String?,
+        transport: ControlTransport,
+        notifier: MediaNotifier?,
+    ) {
+        val before = id?.let { queue.job(it) }
+        update(queue.applying(view, answering = id), notifier)
+        val after = id?.let { queue.job(it) }
+        if (before != null && after != null && before.state.isTerminal && !after.state.isTerminal) {
+            readQueueOnce(transport, notifier)
+        }
+    }
+
+    /** Clips with a cancel on its way to the Mac, which waits for the node's answer. */
+    var cancelling by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /**
+     * `cancel`: asks the clip's node to stop this one render.
+     *
+     * The screen offers it only where the Mac said `canCancel`, and only once the person
+     * has confirmed it, because the GPU work so far is thrown away. The Mac answers after
+     * the node does — up to a minute — with the queue, and the clip in it says how the
+     * cancel went: requested, confirmed, too late, or not something that node can do.
+     */
+    fun cancelRender(id: String, transport: ControlTransport?, notifier: MediaNotifier? = null) {
+        if (transport == null || id in cancelling) return
+        cancelling = cancelling + id
+        viewModelScope.launch {
+            try {
+                answered(
+                    transport.controlVideoQueue(
+                        VideoQueueControlRequest(VideoQueueControlRequest.CANCEL, id),
+                    ),
+                    id, transport, notifier,
+                )
+            } catch (failure: TransportError) {
+                error = failure.message
+                // The Mac may have asked the node before the answer went missing, and
+                // it keeps what the node said on the clip.
+                readQueueOnce(transport, notifier)
+            } finally {
+                cancelling = cancelling - id
             }
         }
     }
@@ -393,15 +455,13 @@ class MediaViewModel : ViewModel() {
         if (transport == null) return
         viewModelScope.launch {
             try {
-                update(
-                    queue.applying(
-                        transport.controlVideoQueue(
-                            VideoQueueControlRequest(
-                                VideoQueueControlRequest.RETRY, id, confirmNewRender,
-                            ),
+                answered(
+                    transport.controlVideoQueue(
+                        VideoQueueControlRequest(
+                            VideoQueueControlRequest.RETRY, id, confirmNewRender,
                         ),
                     ),
-                    notifier,
+                    id, transport, notifier,
                 )
             } catch (failure: TransportError) {
                 error = failure.message
@@ -580,6 +640,9 @@ class MediaViewModel : ViewModel() {
         imageModels = emptyList()
         meshModels = emptyList()
         queue = QueueState.empty
+        cancelling = emptySet()
+        nextRead?.cancel()
+        nextRead = null
         announcer.forget()
         routesMedia = false
         autoNote = null

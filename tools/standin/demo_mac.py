@@ -295,6 +295,13 @@ QUEUE = {
     ],
 }
 PROGRESS = {}
+# Clips this stand-in stopped following while their node kept the job: a node that offers
+# to cancel can still be asked to, as with the real Mac.
+RECEIPTS = set()
+# The lanes whose node here advertises cancelling one job. H3 goes through Phosphene, which
+# has no job-specific stop for a running render, so — as on the real bundled node — it
+# offers Stop following and nothing more.
+CANCELLABLE_LANES = {"ltx-2", "wan-2-2"}
 BATCH = {"n": 0x9C2F}
 # What this stand-in was sent and what it has rendered, by the ids it handed out.
 MEDIA = {}
@@ -331,13 +338,23 @@ STEP = float(os.environ.get("SILICON_DEMO_STEP", "0.07"))
 SYNC_SECONDS = float(os.environ.get("SILICON_DEMO_SYNC_SECONDS", "6"))
 
 
+def can_cancel(item):
+    """The Mac's `canCancel`: the clip's node offers it for the lane, and the render may
+    still be running there. Called with QUEUE_LOCK held."""
+    if item["modelID"] not in CANCELLABLE_LANES or not item.get("nodeJobID"):
+        return False
+    if item.get("cancelState") in ("sending", "requested", "confirmed", "completed", "failed"):
+        return False
+    return item["status"] == "rendering" or (item["status"] == "failed" and item["id"] in RECEIPTS)
+
+
 def queue_view():
     with QUEUE_LOCK:
         return {
             "paused": QUEUE["paused"],
             "activeID": QUEUE["activeID"],
             "message": QUEUE["message"],
-            "items": [dict(item) for item in QUEUE["items"]],
+            "items": [dict(item, canCancel=can_cancel(item)) for item in QUEUE["items"]],
         }
 
 
@@ -1697,6 +1714,9 @@ class Handler(BaseHTTPRequestHandler):
                     if item is None:
                         return self.send_json({"error": "An item ID is required."}, 400)
                     item.update(status="pending", error=None, file=None)
+                    for key in ("cancelState", "cancelDetail"):
+                        item.pop(key, None)
+                    RECEIPTS.discard(identifier)
                 elif action == "remove":
                     if item is None:
                         return self.send_json({"error": "An item ID is required."}, 400)
@@ -1709,13 +1729,36 @@ class Handler(BaseHTTPRequestHandler):
                     QUEUE["paused"] = True
                     item.update(status="failed", error="Stopped following. The node may still finish it.")
                     QUEUE["activeID"] = None
+                    RECEIPTS.add(identifier)
+                elif action == "cancel":
+                    if item is None:
+                        return self.send_json({"error": "An item ID is required."}, 400)
+                    if item.get("cancelState") == "confirmed":
+                        return self.send_json({"error": "This clip's render is already cancelled."}, 400)
+                    if not can_cancel(item):
+                        return self.send_json({"error": (
+                            "This clip's node does not offer to cancel its render. Use "
+                            "stop_following: the app stops waiting and keeps the receipt, but "
+                            "the node may still finish the render."
+                        )}, 400)
+                    # This node stops a render at once, so the answer is always a confirmed
+                    # cancel; the real Mac may also answer requested, unsupported or unknown.
+                    item.update(status="cancelled", error=None, cancelState="confirmed",
+                                cancelDetail="Cancelled; the renderer was stopped.")
+                    RECEIPTS.discard(identifier)
+                    PROGRESS.pop(identifier, None)
+                    if QUEUE["activeID"] == identifier:
+                        QUEUE["activeID"] = None
+                    QUEUE["message"] = "The node stopped this render. Nothing will be published for it."
+                    publish_job(item)
                 elif action == "clear_finished":
                     QUEUE["items"] = [
-                        i for i in QUEUE["items"] if i["status"] not in ("completed", "failed")
+                        i for i in QUEUE["items"]
+                        if i["status"] not in ("completed", "failed", "cancelled")
                     ]
                 else:
                     return self.send_json(
-                        {"error": "Use pause, resume, retry, remove, stop_following, or clear_finished."},
+                        {"error": "Use pause, resume, retry, remove, stop_following, cancel, or clear_finished."},
                         400,
                     )
             return self.send_json(queue_view())
