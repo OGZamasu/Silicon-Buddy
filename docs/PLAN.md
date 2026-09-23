@@ -616,8 +616,9 @@ the "+" button each open a composer with the offer on it while the Mac is gone. 
 every run begins with: `NotificationsOffTest` alone, because another class grants
 notifications for the whole of the first pass, checking the owner's own case — nothing
 granted, and the Agents tab and the Create queue each say so, with Allow. The stand-in
-(`demo_mac.py` with the `/ondevice` routes and switches for dropping, corrupting, refusing
-and going away) runs on the host: `standin.sh start` in the M5 stand-in folder.
+(`tools/standin/demo_mac.py` with the `/ondevice` routes and switches for dropping,
+corrupting, refusing and going away) runs on the host: `tools/standin/fetch-models.sh` once
+for the pinned models, then `tools/standin/standin.sh start` (`tools/standin/README.md`).
 
 Not done, and why:
 
