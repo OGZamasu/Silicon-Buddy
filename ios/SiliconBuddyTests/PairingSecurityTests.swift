@@ -76,14 +76,13 @@ final class PairingSecurityTests: XCTestCase {
     func testPairingRefusesAHostThatIsNotOnTheTailnet() async {
         let app = makeAppModel()
         let invite = PairingInvite(host: "evil.example.com", port: 8788, code: "123456")
-        do {
-            try await app.pair(with: invite)
-            XCTFail("Pairing should have refused that host")
-        } catch let error as TransportError {
-            XCTAssertTrue(error.isForbidden)
-        } catch {
-            XCTFail("Expected a forbidden error, got \(error)")
-        }
+        XCTAssertTrue(app.startPairing(invite))
+        await app.pairing.settled()
+        XCTAssertEqual(
+            app.pairing.state,
+            .failed(invite, message: TailnetHost.explanation, macTooOld: false),
+            "Pairing should have refused that host"
+        )
         XCTAssertFalse(app.isPaired)
     }
 

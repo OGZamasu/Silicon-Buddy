@@ -42,6 +42,21 @@ public struct RootView: View {
             if let pushed { models.statusChanged(pushed) }
         }
         .onChange(of: app.events.isLive, initial: true) { _, live in models.eventsLive = live }
+        // A code spent from a sheet that was closed before the Mac answered. Paired, it
+        // shows as the Mac on the dashboard; refused, it is said here, since nothing else
+        // is left to.
+        .alert(
+            "Pairing didn't finish",
+            isPresented: Binding(
+                get: { app.unseenPairingFailure != nil },
+                set: { shown in if !shown { app.pairing.acknowledge() } }
+            ),
+            presenting: app.unseenPairingFailure
+        ) { _ in
+            Button("OK") { app.pairing.acknowledge() }
+        } message: { failure in
+            Text("\(PairingConfirmationView.address(of: failure.invite)): \(failure.message)")
+        }
         .environment(models)
         .environment(queue)
         // Answer checks arrive after the reply they are about, on the shared event

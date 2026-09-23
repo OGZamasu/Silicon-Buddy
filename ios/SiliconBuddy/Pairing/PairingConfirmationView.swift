@@ -14,9 +14,6 @@ public struct PairingConfirmationView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var confirmingReplacement = false
-    @State private var working = false
-    @State private var failure: String?
-    @State private var paired = false
 
     public init(invite: PairingInvite) {
         self.invite = invite
@@ -52,11 +49,34 @@ public struct PairingConfirmationView: View {
                     }
                 }
 
-                if let failure {
+                // The exchange is the app's, so this sheet only shows how it is going — and
+                // closing it, once it may, never cuts off a code the Mac may have spent.
+                switch phase {
+                case .failed(let message, _):
                     Section {
-                        Label(failure, systemImage: "xmark.octagon")
+                        Label(message, systemImage: "xmark.octagon")
                             .foregroundStyle(.red)
                     }
+                case .otherFailed(let other, let message):
+                    Section {
+                        Label(
+                            "The other pairing (\(Self.address(of: other))) didn't finish: \(message)",
+                            systemImage: "xmark.octagon"
+                        )
+                        .foregroundStyle(.red)
+                    }
+                case .waiting(let other):
+                    // Not a spinner: nothing is happening to *this* code yet, and saying no
+                    // to it is still fine.
+                    Section {
+                        Label(
+                            "Waiting for the other pairing (\(Self.address(of: other))) to finish…",
+                            systemImage: "hourglass"
+                        )
+                        .foregroundStyle(.secondary)
+                    }
+                case .ready, .spending:
+                    EmptyView()
                 }
 
                 Section {
@@ -70,21 +90,19 @@ public struct PairingConfirmationView: View {
                         HStack {
                             Text(app.isPaired ? "Replace this Mac…" : "Pair")
                             Spacer()
-                            if working { ProgressView().controlSize(.small) }
-                            if paired {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
+                            if phase == .spending { ProgressView().controlSize(.small) }
                         }
                     }
-                    .disabled(working || paired)
+                    .disabled(app.pairing.isWorking)
                 }
             }
             .navigationTitle("Pairing code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Not now") { dismiss() }
+                    // Not while this code is being spent: it cannot be taken back, and
+                    // "Not now" would say it had been.
+                    Button("Not now") { dismiss() }.disabled(phase == .spending)
                 }
             }
             .confirmationDialog(
@@ -101,7 +119,23 @@ public struct PairingConfirmationView: View {
                 )
             }
         }
-        .interactiveDismissDisabled(working)
+        .interactiveDismissDisabled(phase == .spending)
+        .onDisappear {
+            // Swiped away or closed: a refusal it was showing has been seen. Not one still
+            // on its way, which the app says when it lands.
+            switch phase {
+            case .failed, .otherFailed: app.pairing.acknowledge()
+            case .ready, .spending, .waiting: break
+            }
+        }
+    }
+
+    private var phase: PairingExchange.Phase {
+        app.pairing.phase(of: invite)
+    }
+
+    static func address(of invite: PairingInvite) -> String {
+        "\(TailnetHost.forURL(invite.host)):\(invite.port)"
     }
 
     /// Spaced the way the Mac shows it, so the two can be compared at a glance.
@@ -110,24 +144,8 @@ public struct PairingConfirmationView: View {
         return "\(invite.code.prefix(3)) \(invite.code.suffix(3))"
     }
 
+    /// Paired, the invite is gone from `AppModel`, and this sheet with it.
     private func pair() {
-        working = true
-        failure = nil
-        Task {
-            do {
-                try await app.pair(with: invite)
-                working = false
-                paired = true
-                try? await Task.sleep(for: .milliseconds(600))
-                app.pendingInvite = nil
-                dismiss()
-            } catch let error as TransportError where error.isMissingRoute {
-                working = false
-                failure = PairingView.macTooOldForCodes
-            } catch {
-                working = false
-                failure = error.localizedDescription
-            }
-        }
+        app.startPairing(invite)
     }
 }

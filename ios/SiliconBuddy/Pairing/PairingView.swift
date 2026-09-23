@@ -21,6 +21,9 @@ public struct PairingView: View {
     @State private var token = ""
     @State private var status: Status = .idle
     @State private var confirmingReplacement = false
+    /// The code this form handed to `AppModel` to spend, so another one being spent — from a
+    /// confirmation closed while its Mac thought — is not shown as this form's.
+    @State private var spentHere: PairingInvite?
 
     enum Mode: String, CaseIterable, Identifiable {
         case scan = "Scan"
@@ -36,10 +39,6 @@ public struct PairingView: View {
         case failed(String)
         case paired(String)
     }
-
-    /// What a Mac without `POST /buddy/pair` gets told, however its code was spent.
-    static let macTooOldForCodes =
-        "That Mac is too old for pairing codes. Update Silicon Optimizer on it, then pair again."
 
     public init() {}
 
@@ -68,6 +67,20 @@ public struct PairingView: View {
             .overlay(alignment: .bottom) { statusBar }
             .onAppear {
                 if host.isEmpty, let current = app.config { host = current.host }
+                app.pairingScreenOpened()
+            }
+            // Closing never cuts off a code being spent: `AppModel` owns that. A failure this
+            // sheet was showing has been seen; one that lands later the app says itself.
+            .onDisappear { app.pairingScreenClosed() }
+            // Paired while this sheet is up — by its own form, or by a code spent before it
+            // opened — and it has done its job. The Developer form says so itself.
+            .onChange(of: app.connectionGeneration) { _, _ in
+                guard app.isPaired, status != .working else { return }
+                status = .paired(app.macDisplayName)
+                Task {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    dismiss()
+                }
             }
             .confirmationDialog(
                 "Replace \(app.macDisplayName)?",
@@ -205,13 +218,13 @@ public struct PairingView: View {
                     HStack {
                         Text(app.isPaired ? "Replace this Mac…" : "Pair")
                         Spacer()
-                        if status == .working { ProgressView().controlSize(.small) }
+                        if spendingHere { ProgressView().controlSize(.small) }
                     }
                 }
                 .disabled(
                     host.trimmingCharacters(in: .whitespaces).isEmpty
                         || code.trimmingCharacters(in: .whitespaces).isEmpty
-                        || status == .working
+                        || working
                 )
             }
 
@@ -231,12 +244,14 @@ public struct PairingView: View {
         }
     }
 
-    /// A typed code goes where a scanned one does — `AppModel.pair(with:)`, and from there
+    /// A typed code goes where a scanned one does — `AppModel.startPairing`, and from there
     /// `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
     /// which is there because whoever printed a QR chose its host; here the person holding
     /// the device typed it. Replacing a paired Mac still asks first. A link left in the
     /// address field is the exception, and goes to that confirmation instead.
     private func pairTyped() {
+        // Trying again: whatever failed before has been read.
+        app.pairing.acknowledge()
         if PairingInvite.isLink(host) {
             offer(pastedLink: host)
             return
@@ -248,19 +263,21 @@ public struct PairingView: View {
             status = .failed(error.localizedDescription)
             return
         }
-        status = .working
-        Task {
-            do {
-                try await app.pair(with: invite)
-                status = .paired(app.macDisplayName)
-                try? await Task.sleep(for: .milliseconds(500))
-                dismiss()
-            } catch let error as TransportError where error.isMissingRoute {
-                status = .failed(Self.macTooOldForCodes)
-            } catch {
-                status = .failed(error.localizedDescription)
-            }
-        }
+        // How it goes is `app.pairing`'s: this sheet may be closed long before the Mac
+        // answers, and the answer is kept either way.
+        status = .idle
+        if app.startPairing(invite) { spentHere = invite }
+    }
+
+    /// This form's own code is being spent.
+    private var spendingHere: Bool {
+        spentHere != nil && app.pairing.spending == spentHere
+    }
+
+    /// Anything is in flight — this form's probe, or any code — so nothing else may start:
+    /// a second one would land over the first without asking.
+    private var working: Bool {
+        status == .working || app.pairing.isWorking
     }
 
     // MARK: - Developer
@@ -318,7 +335,7 @@ public struct PairingView: View {
                 }
                 .disabled(
                     developerHost.isEmpty || token.isEmpty || Int(developerPort) == nil
-                        || status == .working
+                        || working
                 )
             }
 
@@ -339,6 +356,7 @@ public struct PairingView: View {
     }
 
     private func connect() {
+        app.pairing.acknowledge()
         guard let portNumber = Int(developerPort), (1...65535).contains(portNumber) else {
             status = .failed("That port isn't a number between 1 and 65535.")
             return
@@ -381,25 +399,38 @@ public struct PairingView: View {
 
     // MARK: - Status
 
+    /// The line along the bottom. A code that failed comes first: it may be one spent before
+    /// this sheet opened, and then nothing else is left to say so.
     @ViewBuilder
     private var statusBar: some View {
-        switch status {
-        case .idle, .working:
-            EmptyView()
-        case .failed(let message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .font(.footnote)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.thinMaterial)
-                .transition(.move(edge: .bottom))
-        case .paired(let name):
-            Label("Paired with \(name)", systemImage: "checkmark.circle.fill")
-                .font(.footnote)
-                .foregroundStyle(.green)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.thinMaterial)
+        if let failure = app.pairing.failure {
+            note(failure.message, systemImage: "exclamationmark.triangle")
+        } else {
+            switch status {
+            case .idle, .working:
+                if let other = app.pairing.spending, !spendingHere {
+                    // Not this form's code: one spent before it opened, still with its Mac.
+                    note(
+                        "Waiting for the other pairing "
+                            + "(\(PairingConfirmationView.address(of: other))) to finish…",
+                        systemImage: "hourglass"
+                    )
+                }
+            case .failed(let message):
+                note(message, systemImage: "exclamationmark.triangle")
+                    .transition(.move(edge: .bottom))
+            case .paired(let name):
+                note("Paired with \(name)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
         }
+    }
+
+    private func note(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.footnote)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial)
     }
 }
