@@ -26,6 +26,9 @@ import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.Reachability
 import dev.siliconoptimizer.buddy.transport.ServerConfig
 import dev.siliconoptimizer.buddy.transport.Status
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -63,6 +66,9 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
         get() = waiting.invite
         set(value) = waiting.offer(value)
 
+    /** "Not now" to [pendingInvite]. Its link coming back is asked about, but not saved. */
+    fun declinePendingInvite() = waiting.decline()
+
     val isPaired: Boolean get() = config != null
 
     /** Whether this device may change what the Mac is running. */
@@ -90,9 +96,22 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
     /**
      * The code being spent, and how the last one ended when no screen has said so yet. Here
      * rather than in the sheet or the dialog, so that closing either never cuts off a request
-     * the Mac may already have answered.
+     * the Mac may already have answered — and the process's, not this view model's, so that
+     * leaving the app does not either, and the app opened again sees it (see [processPairing]).
      */
-    val pairing = PairingExchange(viewModelScope)
+    val pairing: PairingExchange = processPairing
+
+    /** Where a pairing lands while this is the app's state: here, even if another asked. */
+    private val lander = PairingExchange.Lander { invite, newConfig -> land(invite, newConfig) }
+
+    init {
+        pairing.attach(lander)
+    }
+
+    override fun onCleared() {
+        pairing.detach(lander)
+        super.onCleared()
+    }
 
     /**
      * Trades an invite — scanned, followed as a link, or typed in — for a per-device token,
@@ -104,16 +123,19 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
         val started = pairing.start(
             invite,
             exchange = { it.exchange(deviceName, platform) },
-            store = { newConfig ->
-                connect(newConfig)
-                // The invite it spent, not one that arrived while it was being spent.
-                if (pendingInvite == invite) pendingInvite = null
-                refreshReachability()
-            },
+            // Only when no AppState is left: then this one still writes the token down.
+            store = lander,
         )
         // Answered: a restart from here on does not ask about it again.
-        if (started && pendingInvite == invite) waiting.spending()
+        if (started) waiting.spending(invite)
         return started
+    }
+
+    private fun land(invite: PairingInvite, newConfig: ServerConfig) {
+        connect(newConfig)
+        // The invite it spent, not one that arrived while it was being spent.
+        if (pendingInvite == invite) pendingInvite = null
+        refreshReachability()
     }
 
     /**
@@ -184,6 +206,16 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
     }
 
     companion object {
+        /**
+         * The process's one pairing exchange. A view model's scope ends with its activity —
+         * Back out of the app — and the view model the app is opened with next is a new one,
+         * which has to know a code is still being spent: to wait for it rather than start a
+         * second, and to be the one its answer lands on.
+         */
+        private val processPairing by lazy {
+            PairingExchange(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+        }
+
         /** What this device calls itself when it asks the Mac to pair. */
         val deviceName: String
             get() = listOfNotNull(Build.MANUFACTURER?.replaceFirstChar { it.uppercase() }, Build.MODEL)

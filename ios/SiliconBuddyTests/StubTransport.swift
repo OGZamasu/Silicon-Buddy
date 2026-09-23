@@ -19,6 +19,10 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     var loadResult: Result<ControlAPI.Status, Error> = .failure(TransportError.appNotRunning)
     var pairResult: Result<BuddyAPI.PairResponse, Error> = .failure(TransportError.routeUnavailable("/buddy/pair"))
     var conversationsResult: Result<[BuddyAPI.ConversationSummary], Error> = .failure(TransportError.routeUnavailable("/conversations"))
+    /// Every code `POST /buddy/pair` was sent, in order.
+    private(set) var pairedCodes: [String] = []
+    /// Awaited after a code arrives and before it is answered: a Mac still thinking.
+    var pairHold: (@Sendable () async -> Void)?
 
     /// What `/chat/stream` sends. Nil means the route 404s.
     var streamEvents: [BuddyAPI.ChatStreamEvent]?
@@ -128,7 +132,9 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     }
 
     func pair(code: String, deviceName: String, platform: String) async throws -> BuddyAPI.PairResponse {
-        try pairResult.get()
+        pairedCodes.append(code)
+        await pairHold?()
+        return try pairResult.get()
     }
 
     func chatStream(_ request: ControlAPI.ChatRequest) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {

@@ -480,6 +480,90 @@ final class ModelsModelTests: XCTestCase {
         XCTAssertNotNil(model.problem?.retry)
     }
 
+    /// The round-3 nit. A load of this model was stopped earlier, so the Mac still lists that;
+    /// then this one is refused with the older 409, because another load is running. That
+    /// refusal comes before the Mac's load begins — which is what clears the entry — so the
+    /// entry was still there, and the refusal read as this load being stopped: "wasn't
+    /// loaded", with no Retry, though nothing had been tried.
+    func testA409BecauseAnotherLoadIsRunningStaysRetryableWithAnEarlierInterruptionListed() async throws {
+        let busy = "This Mac is already loading bonsai-2-27b (started 12s ago), and this route runs one load "
+            + "at a time. Nothing was changed. Follow it with GET /status, or POST /unload to stop it and "
+            + "then load again."
+        let model = quickModel()
+        let mac = mac(answering: stopped("cancelled", state: "Loading Bonsai 2 27B…"))
+        await model.refresh(using: mac)
+        mac.loadResult = .failure(TransportError.conflict(busy))
+        await model.load(modelID: id, using: mac)
+        XCTAssertEqual(model.problem?.title, "Couldn't load Test Model")
+        XCTAssertEqual(model.problem?.message, busy)
+        XCTAssertNotNil(model.problem?.retry)
+    }
+
+    /// Words this app does not know: the list decides, and only an entry it had not seen.
+    func testA409InOtherWordsCountsAnInterruptionOnlyWhenItIsNew() async throws {
+        let words = "Test Model could not be loaded just now."
+        let known = stopped("cancelled")
+        let fresh = ControlAPI.Status(
+            state: "Not loaded",
+            interruptedLoads: [
+                .init(modelID: id, reason: "replaced", replacedBy: "qwen3-coder-30b", at: "2026-09-19T11:09:02Z")
+            ]
+        )
+        for (after, stoppedHere) in [(known, false), (fresh, true)] {
+            let model = quickModel()
+            let mac = mac(answering: known)
+            await model.refresh(using: mac)
+            mac.loadResult = .failure(TransportError.conflict(words))
+            mac.statusResult = .success(after)
+            await model.load(modelID: id, using: mac)
+            if stoppedHere {
+                XCTAssertEqual(model.problem?.title, "Test Model wasn't loaded")
+                XCTAssertNil(model.problem?.retry)
+            } else {
+                XCTAssertEqual(model.problem?.title, "Couldn't load Test Model", "the entry from before is not this load's")
+                XCTAssertNotNil(model.problem?.retry)
+            }
+        }
+    }
+
+    /// The same rule while a load is followed: an entry the phone already knew of before it
+    /// asked belongs to an earlier load. A current Mac clears it when the load starts; one
+    /// that was still listed is not this load's ending.
+    func testAnInterruptionListedBeforeTheLoadWasAskedForDoesNotEndIt() async throws {
+        let leftover = ControlAPI.Status(
+            state: "Loading Test Model…",
+            interruptedLoads: [
+                .init(modelID: id, reason: "replaced", replacedBy: "qwen3-coder-30b", at: "2026-09-19T11:04:38Z")
+            ]
+        )
+        let model = quickModel()
+        let mac = mac(answering: leftover)
+        await model.refresh(using: mac)
+        mac.statusReadings = [leftover, leftover, loaded]
+        await model.load(modelID: id, using: mac)
+        XCTAssertNil(model.job)
+        XCTAssertNil(model.problem)
+        XCTAssertTrue(model.isLoaded(id))
+    }
+
+    func testTheTwo409sAreToldApartByTheMacsOwnSentences() {
+        // Word for word from the Mac: LoadDispatcher's refusal, and InterruptedLoad.sentence.
+        let busy = "This Mac is already loading qwen3-coder-30b@Q4_K_M (started 3s ago), and this route runs "
+            + "one load at a time. Nothing was changed. Follow it with GET /status, or POST /unload to stop it "
+            + "and then load again."
+        let unloaded = "Test Model was not loaded: an unload stopped it before it finished loading."
+        let replaced = "Test Model was not loaded: another load (Qwen3-Coder 30B A3B) replaced it before it finished."
+        let reloaded = "Test Model is being loaded again, by a newer load with its own settings."
+        XCTAssertTrue(ControlAPI.LoadConflict.isAlreadyLoading(busy))
+        XCTAssertFalse(ControlAPI.LoadConflict.wasStopped(busy))
+        for sentence in [unloaded, replaced] {
+            XCTAssertTrue(ControlAPI.LoadConflict.wasStopped(sentence), sentence)
+            XCTAssertFalse(ControlAPI.LoadConflict.isAlreadyLoading(sentence), sentence)
+        }
+        // Never a 409: the Mac answers a reload 200, with the status to follow.
+        XCTAssertFalse(ControlAPI.LoadConflict.wasStopped(reloaded))
+    }
+
     func testAnOutcomeIsReadFromOneStatus() {
         XCTAssertEqual(ModelsModel.LoadOutcome.of(loading, modelID: id), .pending)
         XCTAssertEqual(ModelsModel.LoadOutcome.of(loaded, modelID: id), .loaded)

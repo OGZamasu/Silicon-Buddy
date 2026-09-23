@@ -64,15 +64,42 @@ data class Status(
 ) {
     val hasLoadedModel: Boolean get() = loadedModelID != null
 
-    /** How the Mac stopped a load of [modelID], when it did. */
-    fun interruption(modelID: String): LoadInterruption? =
-        interruptedLoads?.firstOrNull { sameModel(it.modelID, modelID) }
+    /**
+     * How the Mac stopped a load of [modelID], when it did — unless that is [earlier], the
+     * entry this phone already knew of before it asked for the load it is following. The Mac
+     * clears a model's entry when a load of it starts, but a load refused before it starts
+     * ("already loading … Nothing was changed") leaves the last one where it was.
+     */
+    fun interruption(modelID: String, earlier: LoadInterruption? = null): LoadInterruption? =
+        interruptedLoads?.firstOrNull { sameModel(it.modelID, modelID) }?.takeIf { it != earlier }
 
     companion object {
         /** An installed id carries its quantization ("model@Q4_K_M"); a status may use either. */
         fun sameModel(a: String, b: String): Boolean =
             a == b || a.startsWith("$b@") || b.startsWith("$a@")
     }
+}
+
+/**
+ * `POST /load` answers 409 for two different things, told apart only by the Mac's sentence:
+ * the load was refused before it started, because another is running — nothing changed,
+ * and trying again later is right — or it started and was stopped on the Mac, by an unload
+ * or another load — somebody's choice, which trying again would undo.
+ */
+object LoadConflict {
+    /**
+     * `LoadDispatcher`'s refusal: "This Mac is already loading <id> (started <n>s ago), and
+     * this route runs one load at a time. Nothing was changed. …"
+     */
+    fun isAlreadyLoading(sentence: String): Boolean =
+        sentence.startsWith("This Mac is already loading ") || "Nothing was changed." in sentence
+
+    /**
+     * `InterruptedLoad.sentence`: "<name> was not loaded: an unload stopped it before it
+     * finished loading." and "<name> was not loaded: another load (<name>) replaced it
+     * before it finished."
+     */
+    fun wasStopped(sentence: String): Boolean = " was not loaded: " in sentence
 }
 
 /** A load the Mac stopped before it finished. Not a fault: somebody changed their mind. */

@@ -4,6 +4,7 @@ import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
 import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel.LoadOutcome
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.LoadConflict
 import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.transport.LoadInterruption
 import dev.siliconoptimizer.buddy.transport.LoadRequest
@@ -642,6 +643,130 @@ class ModelLoadFollowTest {
         } finally {
             model.reset()
         }
+    }
+
+    /**
+     * The round-3 nit. A load of this model was stopped earlier, so the Mac still lists that;
+     * then this one is refused with the older 409, because another load is running. That
+     * refusal comes before the Mac's load begins — which is what clears the entry — so the
+     * entry was still there, and the refusal read as this load being stopped: "wasn't
+     * loaded", with no Retry, though nothing had been tried.
+     */
+    @Test
+    fun `a 409 because another load is running stays retryable with an earlier interruption still listed`() =
+        runTest(dispatcher) {
+            val busy = "This Mac is already loading bonsai-2-27b (started 12s ago), and this route runs one load " +
+                "at a time. Nothing was changed. Follow it with GET /status, or POST /unload to stop it and then " +
+                "load again."
+            val model = ModelsViewModel()
+            val mac = object : HangingTransport() {
+                override suspend fun load(request: LoadRequest): Status = throw TransportError.Conflict(busy)
+                override suspend fun status(): Status = stopped("cancelled", state = "Loading Bonsai 2 27B…")
+                override suspend fun installed(): List<InstalledModel> = listOf(onDisk)
+                override suspend fun catalog(category: String?, onlyRunnable: Boolean): List<CatalogModel> =
+                    emptyList()
+            }
+            try {
+                model.refresh(mac)
+                runCurrent()
+                model.load(id, transport = mac)
+                runCurrent()
+                assertEquals("Couldn't load Test Model", model.problem?.title)
+                assertEquals(busy, model.problem?.message)
+                assertNotNull(model.problem?.retry)
+            } finally {
+                model.reset()
+            }
+        }
+
+    /** Words this app does not know: the list decides, and only an entry it had not seen. */
+    @Test
+    fun `a 409 in other words counts an interruption only when it is new`() = runTest(dispatcher) {
+        val words = "Test Model could not be loaded just now."
+        val known = stopped("cancelled")
+        val fresh = Status(
+            "Not loaded",
+            interruptedLoads = listOf(LoadInterruption(id, "replaced", "qwen3-coder-30b", "2026-09-19T11:09:02Z")),
+        )
+        for ((after, stoppedHere) in listOf(known to false, fresh to true)) {
+            val model = ModelsViewModel()
+            var reading = known
+            val mac = object : HangingTransport() {
+                override suspend fun load(request: LoadRequest): Status {
+                    reading = after
+                    throw TransportError.Conflict(words)
+                }
+                override suspend fun status(): Status = reading
+                override suspend fun installed(): List<InstalledModel> = listOf(onDisk)
+                override suspend fun catalog(category: String?, onlyRunnable: Boolean): List<CatalogModel> =
+                    emptyList()
+            }
+            try {
+                model.refresh(mac)
+                runCurrent()
+                model.load(id, transport = mac)
+                runCurrent()
+                if (stoppedHere) {
+                    assertEquals("Test Model wasn't loaded", model.problem?.title)
+                    assertNull(model.problem?.retry)
+                } else {
+                    assertEquals("the entry from before is not this load's", "Couldn't load Test Model", model.problem?.title)
+                    assertNotNull(model.problem?.retry)
+                }
+            } finally {
+                model.reset()
+            }
+        }
+    }
+
+    /**
+     * The same rule while a load is followed: an entry the phone already knew of before it
+     * asked belongs to an earlier load. A current Mac clears it when the load starts; one
+     * that was still listed is not this load's ending.
+     */
+    @Test
+    fun `an interruption listed before the load was asked for does not end it`() = runTest(dispatcher) {
+        val leftover = Status(
+            "Loading Test Model…",
+            interruptedLoads = listOf(LoadInterruption(id, "replaced", "qwen3-coder-30b", "2026-09-19T11:04:38Z")),
+        )
+        val model = ModelsViewModel()
+        val mac = SlowMac(leftover, leftover, leftover, loaded)
+        try {
+            model.refresh(mac)
+            runCurrent()
+            model.load(id, transport = mac)
+            runCurrent()
+            assertEquals("still being followed", "load", model.job?.kind)
+            assertNull(model.problem)
+
+            advanceTimeBy(ModelsViewModel.POLL_WITHOUT_EVENTS_MS * 3)
+            runCurrent()
+            assertNull(model.job)
+            assertNull(model.problem)
+            assertTrue(model.isLoaded(id))
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `the two 409s are told apart by the Mac's own sentences`() {
+        // Word for word from the Mac: LoadDispatcher's refusal, and InterruptedLoad.sentence.
+        val busy = "This Mac is already loading qwen3-coder-30b@Q4_K_M (started 3s ago), and this route runs " +
+            "one load at a time. Nothing was changed. Follow it with GET /status, or POST /unload to stop it " +
+            "and then load again."
+        val unloaded = "Test Model was not loaded: an unload stopped it before it finished loading."
+        val replaced = "Test Model was not loaded: another load (Qwen3-Coder 30B A3B) replaced it before it finished."
+        val reloaded = "Test Model is being loaded again, by a newer load with its own settings."
+        assertTrue(LoadConflict.isAlreadyLoading(busy))
+        assertFalse(LoadConflict.wasStopped(busy))
+        for (sentence in listOf(unloaded, replaced)) {
+            assertTrue(sentence, LoadConflict.wasStopped(sentence))
+            assertFalse(sentence, LoadConflict.isAlreadyLoading(sentence))
+        }
+        // Never a 409: the Mac answers a reload 200, with the status to follow.
+        assertFalse(LoadConflict.wasStopped(reloaded))
     }
 
     @Test

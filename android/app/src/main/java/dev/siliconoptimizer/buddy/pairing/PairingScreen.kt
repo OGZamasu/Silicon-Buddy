@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,8 +91,16 @@ fun PairingScreen(
     // The Developer form's own probe. A code is spent by AppState, so that closing this
     // sheet mid-request never cuts off one the Mac may already have answered.
     var connecting by remember { mutableStateOf(false) }
+    // The code this form handed to AppState, as its link, so another being spent — from a
+    // confirmation closed while its Mac thought — is not shown as this form's. Saved, so a
+    // sheet recreated with the activity still knows its own.
+    var spentHere by rememberSaveable { mutableStateOf<String?>(null) }
     val attempt = app.pairing.state
+    // Anything in flight, so nothing else may start: it would land over the first unasked.
     val working = connecting || attempt is PairingExchange.State.Working
+    val spending = (attempt as? PairingExchange.State.Working)?.invite
+    val spinning = connecting || (spending != null && spending.toUriString() == spentHere)
+    val waitingFor = spending?.takeIf { it.toUriString() != spentHere }
     val failure = (attempt as? PairingExchange.State.Failed)?.message
 
     // Paired while this sheet is up — by its own form, or by a link confirmed over it — and
@@ -193,7 +202,7 @@ fun PairingScreen(
             return
         }
         message = null
-        app.startPairing(invite)
+        if (app.startPairing(invite)) spentHere = invite.toUriString()
     }
 
     replacing?.let { (address, proceed) ->
@@ -326,7 +335,7 @@ fun PairingScreen(
                     app = app,
                     label = if (app.isPaired) "Replace this Mac…" else "Pair",
                     enabled = host.isNotBlank() && code.isNotBlank() && !working,
-                    working = working,
+                    working = spinning,
                     onClick = {
                         if (app.isPaired && !PairingInvite.isLink(host)) {
                             replacing = host.trim() to ::pairTyped
@@ -386,7 +395,7 @@ fun PairingScreen(
                     app = app,
                     label = if (app.isPaired) "Replace this Mac…" else "Connect",
                     enabled = developerHost.isNotBlank() && token.isNotBlank() && !working,
-                    working = working,
+                    working = spinning,
                     onClick = {
                         if (app.isPaired) {
                             replacing = developerHost.trim() to ::connect
@@ -403,6 +412,13 @@ fun PairingScreen(
                 it,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+        } ?: waitingFor?.let {
+            Text(
+                "Waiting for the other pairing (${it.displayAddress}) to finish…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
         }

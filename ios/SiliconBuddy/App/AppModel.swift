@@ -44,13 +44,21 @@ public final class AppModel {
 
     private let defaults: UserDefaults
     private let tokens: TokenStore
+    /// What a code is spent against. The Mac itself, except in a test.
+    private let pairingClient: @Sendable (ServerConfig) -> any ControlTransport
 
     /// The shared container by default, not this process's own: a widget, a share
     /// sheet and a Shortcuts action all have to find the same Mac, and they cannot read
     /// the app's private preferences. Tests pass their own suite.
-    public init(defaults: UserDefaults = BuddyShared.defaults, tokens: TokenStore = TokenStore()) {
+    public init(
+        defaults: UserDefaults = BuddyShared.defaults, tokens: TokenStore = TokenStore(),
+        pairingClient: @escaping @Sendable (ServerConfig) -> any ControlTransport = {
+            ControlClient(config: $0)
+        }
+    ) {
         self.defaults = defaults
         self.tokens = tokens
+        self.pairingClient = pairingClient
         // Before anything is read out of it: what the shared container holds is the
         // address of somebody's Mac and the last thing it said, and none of that
         // belongs in a backup. Android's equivalent is data_extraction_rules.xml.
@@ -85,16 +93,59 @@ public final class AppModel {
 
     // MARK: - Pairing
 
-    /// Trades an invite the person has agreed to for a per-device token.
+    /// The code being spent, and how the last one ended when no screen has said so yet.
+    /// Here rather than in a sheet, so that closing one never cuts off a request the Mac may
+    /// already have answered, and so that there is only ever one.
+    public let pairing = PairingExchange()
+
+    /// How many pairing screens are up. A failure one of them can show is said there;
+    /// with none up, the app says it — see `unseenPairingFailure`.
+    public private(set) var pairingScreens = 0
+
+    /// Trades an invite the person has agreed to for a per-device token, and stores it.
+    /// False while another code is still being spent. How it goes is in `pairing`.
     ///
     /// Only ever called from something the person tapped: the confirmation a scanned
     /// code or a followed link gets (they set `pendingInvite`), or Pair under a code they
     /// typed themselves.
-    public func pair(with invite: PairingInvite) async throws {
-        try connect(
-            try await invite.exchange(deviceName: Self.deviceName, platform: Self.platform)
+    @discardableResult
+    public func startPairing(_ invite: PairingInvite) -> Bool {
+        let deviceName = Self.deviceName
+        let platform = Self.platform
+        let client = pairingClient
+        return pairing.start(
+            invite,
+            exchange: { invite in
+                try await invite.exchange(deviceName: deviceName, platform: platform, client: client)
+            },
+            store: { [self] newConfig in
+                try connect(newConfig)
+                // The invite it spent, not one that arrived while it was being spent: that
+                // one is still waiting for its own answer.
+                if pendingInvite == invite { pendingInvite = nil }
+                Task { await refreshReachability() }
+            }
         )
-        await refreshReachability()
+    }
+
+    /// A pairing screen came up. It shows the exchange's failure itself.
+    public func pairingScreenOpened() {
+        pairingScreens += 1
+    }
+
+    /// A pairing screen went away. A failure it was showing has been seen; one that comes
+    /// later is said by the app instead.
+    public func pairingScreenClosed() {
+        pairingScreens = max(0, pairingScreens - 1)
+        pairing.acknowledge()
+    }
+
+    /// A code that failed after the screen that spent it had gone, for the app to say:
+    /// nothing else is left to. Held back while a pairing screen or a confirmation is up,
+    /// which say it themselves.
+    public var unseenPairingFailure: PairingExchange.Failure? {
+        guard pairingScreens == 0, pendingInvite == nil else { return nil }
+        return pairing.failure
     }
 
     /// A link pasted into the code form, held for the confirmation a tapped link gets —
@@ -107,7 +158,7 @@ public final class AppModel {
         return true
     }
 
-    /// Stores a Mac this device can already talk to: the end of `pair(with:)`, and the
+    /// Stores a Mac this device can already talk to: the end of `startPairing`, and the
     /// Developer form's host, port and control.json token, which only the Simulator can use.
     public func connect(_ newConfig: ServerConfig) throws {
         guard TailnetHost.isAllowed(newConfig.host) else {

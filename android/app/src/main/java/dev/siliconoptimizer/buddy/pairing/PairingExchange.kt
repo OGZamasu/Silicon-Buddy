@@ -21,8 +21,17 @@ import kotlinx.coroutines.withContext
  * paired. Here the exchange runs to its end whatever becomes of the screen that started it,
  * or of the activity, and what it brings back is stored. A failure that no screen is left to
  * show stays in [state] until one has shown it.
+ *
+ * The app keeps one for the whole process (`AppState`'s companion), not one per view model:
+ * Back out of the app mid-exchange and open it again, and the new view model is the one
+ * that has to see the code still being spent, and take its answer — see [attach].
  */
 class PairingExchange(private val scope: CoroutineScope) {
+
+    /** Takes what the Mac answered for an invite: stores it, and shows it. */
+    fun interface Lander {
+        fun land(invite: PairingInvite, config: ServerConfig)
+    }
 
     sealed interface State {
         data object Idle : State
@@ -36,29 +45,76 @@ class PairingExchange(private val scope: CoroutineScope) {
         ) : State
     }
 
+    /** What a dialog asking about one invite shows of the exchange. */
+    sealed interface Phase {
+        /** Nothing is being spent: this invite may go. */
+        data object Ready : Phase
+
+        /** This invite is being spent. */
+        data object Spending : Phase
+
+        /** Another code is being spent, and this one waits for it. Declining is still fine. */
+        data class Waiting(val other: PairingInvite) : Phase
+
+        /** This invite was refused, and may be tried again. */
+        data class Failed(val message: String, val macTooOld: Boolean) : Phase
+
+        /** Another code was refused, and nothing has said so yet. This one may go. */
+        data class OtherFailed(val other: PairingInvite, val message: String) : Phase
+    }
+
     var state by mutableStateOf<State>(State.Idle)
         private set
 
-    val isWorking: Boolean get() = state is State.Working
+    /** The screen state an answer lands on: whichever is current when it lands. */
+    private var lander: Lander? = null
 
     /**
-     * Spends [invite] with [exchange] and hands what the Mac answered to [store]. False, with
-     * nothing dialled, while another code is still being spent: one pairing at a time.
+     * [lander] is the one on screen now, and takes whatever lands from here on — an answer
+     * to a code an earlier one started included. An app backed out of while the Mac thought,
+     * and opened again, has a new view model that read the token store before the answer
+     * was in it; it said "not paired" until the next restart, though the token was stored.
+     */
+    fun attach(lander: Lander) {
+        this.lander = lander
+    }
+
+    /** [lander] has gone. Its answers land on the next one to attach, or on the one that asked. */
+    fun detach(lander: Lander) {
+        if (this.lander === lander) this.lander = null
+    }
+
+    val isWorking: Boolean get() = state is State.Working
+
+    fun phaseOf(invite: PairingInvite): Phase = when (val now = state) {
+        State.Idle -> Phase.Ready
+        is State.Working -> if (now.invite == invite) Phase.Spending else Phase.Waiting(now.invite)
+        is State.Failed ->
+            if (now.invite == invite) Phase.Failed(now.message, now.macTooOld)
+            else Phase.OtherFailed(now.invite, now.message)
+    }
+
+    /**
+     * Spends [invite] with [exchange] and hands what the Mac answered to the attached lander —
+     * to [store], the one that asked, when none is attached, which still writes the token
+     * where the next one to start will read it. False, with nothing dialled, while another
+     * code is still being spent: one pairing at a time.
      */
     fun start(
         invite: PairingInvite,
         exchange: suspend (PairingInvite) -> ServerConfig,
-        store: (ServerConfig) -> Unit,
+        store: Lander,
     ): Boolean {
         if (state is State.Working) return false
         state = State.Working(invite)
         scope.launch {
-            // The scope is AppState's, and it ends when the activity finishes — Back out of
-            // the app while the Mac thinks. A request cut off there is as likely to have been
+            // The app's scope is the process's, but whoever owns the scope, ending it must
+            // not end this: a request cut off after it was sent is as likely to have been
             // answered as one cut off by a closing sheet, so it is not cut off.
             withContext(NonCancellable) {
                 state = try {
-                    store(exchange(invite))
+                    val answer = exchange(invite)
+                    (lander ?: store).land(invite, answer)
                     State.Idle
                 } catch (error: TransportError) {
                     State.Failed(
