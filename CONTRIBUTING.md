@@ -23,6 +23,12 @@ cd android
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug
 ```
 
+That is Android Studio's JDK on a Mac; anywhere else, point `JAVA_HOME` at its `jbr` folder
+or at a JDK 17. Gradle also has to find the SDK, and a fresh clone does not say where it is:
+set `ANDROID_HOME`, or open `android/` in Android Studio once, which writes
+`android/local.properties`. The first native build fetches KleidiAI, so it needs the network
+(the README's Building section has the offline route).
+
 **iOS** — Xcode 26 and xcodegen 2.46. `ios/SiliconBuddy.xcodeproj` is generated and not
 committed; `ios/project.yml` is the source, so run xcodegen after changing targets or files.
 
@@ -44,19 +50,24 @@ red cross on your PR right now says nothing about your change. Until that is fix
 
 Two suites could never run there, and are run locally before a merge either way:
 
-- the **instrumented** tests, which need a device or emulator and a Mac to talk to
+- the **instrumented** tests, which need an arm64 device or emulator. The on-device model
+  ones also need a stand-in Mac on the host, reached at `10.0.2.2:8916`, which is not in
+  this repository yet (#15): from a fresh clone those fail in setup, not on your change.
 - the **iOS** suite, which needs Xcode
 
 `scripts/ci-android.sh` runs the same checks the workflow does, and takes `--connected`
-(instrumented tests on `$ANDROID_SERIAL`) and `--ios`. It exits non-zero on the first
-failure, so it chains onto a merge with `&&`.
+(instrumented tests on `$ANDROID_SERIAL`) and `--ios` (which also wants `IOS_DERIVED_DATA`,
+a folder with a few gigabytes free for the build, and runs on `IOS_DESTINATION`, the iPad
+mini above unless you say otherwise). It exits non-zero on the first failure, so it chains
+onto a merge with `&&`.
 
 ## The contract is generated
 
 `contract/` holds the Mac app's control API as JSON fixtures, exported by that app's own
 `ContractExportTests`. Both apps round-trip every type against them, which is how a change
 on the Mac fails a build here rather than failing a user. Do not hand-edit those files:
-change the Mac side, then re-export with `./contract/refresh.sh`.
+change the Mac side, then re-export with `./contract/refresh.sh <your silicon-optimizer
+clone>` — without the argument the script looks for the maintainer's own checkout.
 
 ## Sending a change
 
