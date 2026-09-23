@@ -93,8 +93,10 @@ import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsSection
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsViewModel
 import dev.siliconoptimizer.buddy.transport.Reachability
+import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.pairing.MAC_TOO_OLD_FOR_CODES
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
+import dev.siliconoptimizer.buddy.pairing.PairingExchange
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.PairingMode
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
@@ -351,7 +353,11 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     // tailnet, explaining why not.
     LaunchedEffect(arriving.value) {
         when (val arrival = arriving.value) {
-            is LinkArrival.Invite -> app.pendingInvite = arrival.invite
+            is LinkArrival.Invite -> {
+                // AppState holds it from here, until it is answered.
+                app.pendingInvite = arrival.invite
+                arriving.value = null
+            }
             is LinkArrival.Refused -> refusedLink = arrival.reason
             is LinkArrival.Compose -> {
                 destination = Destination.Chat
@@ -848,13 +854,15 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     }
 
     if (pairing) {
+        // Closing the sheet leaves a code being spent to finish; a failure it was showing
+        // has been seen, and one that comes later is said below instead.
         ModalBottomSheet(
-            onDismissRequest = { pairing = false; pairingMacTooOld = false },
+            onDismissRequest = { pairing = false; pairingMacTooOld = false; app.pairing.acknowledge() },
             sheetState = sheetState,
         ) {
             PairingScreen(
                 app = app,
-                onDone = { pairing = false; pairingMacTooOld = false },
+                onDone = { pairing = false; pairingMacTooOld = false; app.pairing.acknowledge() },
                 startOn = if (pairingMacTooOld) PairingMode.Developer else PairingMode.Scan,
                 notice = if (pairingMacTooOld) MAC_TOO_OLD_FOR_CODES else null,
             )
@@ -870,6 +878,21 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
                 TextButton(onClick = { refusedLink = null; arriving.value = null }) { Text("OK") }
             },
         )
+    }
+
+    // A code spent from a sheet that was closed before the Mac answered. Paired, it shows as
+    // the Mac on the dashboard; refused, it is said here, since nothing else is left to.
+    (app.pairing.state as? PairingExchange.State.Failed)?.let { failed ->
+        if (!pairing && app.pendingInvite == null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { app.pairing.acknowledge() },
+                title = { Text("Pairing didn't finish") },
+                text = { Text("${TailnetHost.forUrl(failed.invite.host)}:${failed.invite.port}: ${failed.message}") },
+                confirmButton = {
+                    TextButton(onClick = { app.pairing.acknowledge() }) { Text("OK") }
+                },
+            )
+        }
     }
 
     // A code that arrived from a QR or a link: named, and agreed to, before anything

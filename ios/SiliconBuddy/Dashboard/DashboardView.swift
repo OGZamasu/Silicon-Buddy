@@ -185,19 +185,21 @@ public struct DashboardView: View {
                     }
                     if let node = model.node {
                         Divider()
-                        HStack(spacing: Theme.tight) {
-                            Text(node.name).font(.subheadline.weight(.medium))
-                            Pill(
-                                node.metrics.queueDepth == 0
-                                    ? "Idle" : "\(node.metrics.queueDepth) queued",
-                                tint: node.metrics.queueDepth == 0 ? .green : .orange,
-                                filled: true
-                            )
-                            Spacer()
-                            Text("\(Format.gigabytes(node.metrics.headroomGB)) free")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
+                        // The node's name whole, and its queue and headroom beside it or under it.
+                        SplitLine {
+                            MachineName(node.name)
+                            HStack(spacing: Theme.tight) {
+                                Pill(
+                                    node.metrics.queueDepth == 0
+                                        ? "Idle" : "\(node.metrics.queueDepth) queued",
+                                    tint: node.metrics.queueDepth == 0 ? .green : .orange,
+                                    filled: true
+                                )
+                                Text("\(Format.gigabytes(node.metrics.headroomGB)) free")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
                         }
                         capabilityGrid(node.capabilities.map {
                             CapabilityChip(id: $0.id, ready: $0.ready)
@@ -219,13 +221,14 @@ public struct DashboardView: View {
                 VStack(alignment: .leading, spacing: Theme.gap) {
                     ForEach(peers) { peer in
                         VStack(alignment: .leading, spacing: Theme.tight) {
-                            HStack(spacing: Theme.tight) {
-                                Circle()
-                                    .fill(peer.reachable ? Color.green : Color.red)
-                                    .frame(width: 8, height: 8)
-                                    .accessibilityHidden(true)
-                                Text(peer.name).font(.subheadline.weight(.medium))
-                                Spacer()
+                            SplitLine {
+                                HStack(spacing: Theme.tight) {
+                                    Circle()
+                                        .fill(peer.reachable ? Color.green : Color.red)
+                                        .frame(width: 8, height: 8)
+                                        .accessibilityHidden(true)
+                                    MachineName(peer.name)
+                                }
                                 Text(peer.baseURL)
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
@@ -376,5 +379,21 @@ public struct ConnectionCard: View {
         case .unauthorized, .failed: .orange
         case .appNotRunning, .unreachable: .red
         }
+    }
+}
+
+/// A machine's name, on one line: "render-node" is one word to the person reading it, so it
+/// is never broken at its hyphen, and a name longer than the whole line is cut short.
+private struct MachineName: View {
+    let name: String
+
+    init(_ name: String) {
+        self.name = name
+    }
+
+    var body: some View {
+        Text(name)
+            .font(.subheadline.weight(.medium))
+            .lineLimit(1)
     }
 }

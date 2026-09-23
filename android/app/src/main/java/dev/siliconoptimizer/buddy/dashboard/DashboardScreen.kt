@@ -34,6 +34,7 @@ import dev.siliconoptimizer.buddy.ui.Format
 import dev.siliconoptimizer.buddy.ui.MeterRow
 import dev.siliconoptimizer.buddy.ui.Pill
 import dev.siliconoptimizer.buddy.ui.SectionCard
+import dev.siliconoptimizer.buddy.ui.SplitLine
 import dev.siliconoptimizer.buddy.ui.Stat
 import dev.siliconoptimizer.buddy.ui.StatRow
 import dev.siliconoptimizer.buddy.ui.StatusDot
@@ -207,25 +208,24 @@ private fun MachineCard(model: DashboardViewModel) {
         }
         model.node?.let { node ->
             HorizontalDivider()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    node.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Pill(
-                    if (node.metrics.queueDepth == 0) "Idle" else "${node.metrics.queueDepth} queued",
-                    tint = if (node.metrics.queueDepth == 0) Color(0xFF34A853) else Color(0xFFE8A33D),
-                    filled = true,
-                )
-                Text(
-                    "  ${Format.gigabytes(node.metrics.headroomGB)} free",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // The node's name whole, and its queue and headroom beside it or under it.
+            SplitLine(
+                start = { Name(node.name) },
+                end = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Pill(
+                            if (node.metrics.queueDepth == 0) "Idle" else "${node.metrics.queueDepth} queued",
+                            tint = if (node.metrics.queueDepth == 0) Color(0xFF34A853) else Color(0xFFE8A33D),
+                            filled = true,
+                        )
+                        Text(
+                            "  ${Format.gigabytes(node.metrics.headroomGB)} free",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+            )
             Capabilities(node.capabilities.map { it.id to it.ready })
         }
     }
@@ -248,27 +248,45 @@ private fun SwarmCard(model: DashboardViewModel) {
             return@SectionCard
         }
         peers.forEach { peer ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(ok = peer.reachable)
-                Text(
-                    peer.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f).padding(start = 8.dp),
-                )
-                Text(
-                    peer.baseURL,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            SplitLine(
+                start = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusDot(ok = peer.reachable)
+                        Name(peer.name, modifier = Modifier.padding(start = 8.dp))
+                    }
+                },
+                end = {
+                    Text(
+                        peer.baseURL,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
             peer.error?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             Capabilities(peer.capabilities.map { it.id to it.ready })
         }
     }
+}
+
+/**
+ * A machine's name, on one line: "render-node" is one word to the person reading it, so it
+ * is never broken at its hyphen, and a name longer than the whole line is cut short.
+ */
+@Composable
+private fun Name(name: String, modifier: Modifier = Modifier) {
+    Text(
+        name,
+        style = MaterialTheme.typography.titleSmall,
+        modifier = modifier,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

@@ -4,19 +4,25 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Instrumentation;
+import android.app.UiAutomation;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.uiautomator.By;
+import androidx.test.uiautomator.BySelector;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.regex.Pattern;
 
 import org.junit.After;
@@ -54,6 +60,11 @@ public class ManualPairingTest {
         // A camera nobody has allowed. Revoking stops the app if it is running, so this
         // comes before anything opens it.
         instrumentation.getUiAutomation().revokeRuntimePermission(PACKAGE, "android.permission.CAMERA");
+        // Nor refused before: once refused twice, Android stops asking and answers "denied"
+        // at once, so whether a prompt came at all would depend on the tests before this
+        // one. Cleared, the camera is always asked for, in its first form.
+        device.executeShellCommand("pm clear-permission-flags " + PACKAGE
+            + " android.permission.CAMERA user-set user-fixed");
         mac = new FakeMac();
         device.wakeUp();
         device.pressHome();
@@ -63,8 +74,10 @@ public class ManualPairingTest {
     public void tearDown() throws Exception {
         mac.close();
         // A prompt a failed test never answered would stand over every test after it.
-        UiObject2 prompt = device.findObject(By.pkg(Pattern.compile(".*permissioncontroller")));
-        if (prompt != null) refuseTheCamera();
+        if (device.findObject(PROMPT) != null) {
+            clickDeny();
+            device.wait(Until.gone(PROMPT), WAIT);
+        }
         device.pressHome();
     }
 
@@ -172,6 +185,79 @@ public class ManualPairingTest {
         assertTrue(body, body.contains("\"code\":\"246810\""));
     }
 
+    /**
+     * Closing the sheet while the Mac is answering. The code was spent in the sheet's own
+     * coroutine scope, so closing it cancelled the request — after the Mac had the code, had
+     * made this phone a device, and was sending back its token. Now the request is the app's,
+     * and the answer that comes after the sheet has gone is kept.
+     */
+    @Test
+    public void closingTheSheetMidPairingStillKeepsTheMacsAnswer() throws Exception {
+        mac.macName = "Slow Mac";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("135 790");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+
+        closeTheSheet();
+        mac.pairHeld.countDown();
+
+        assertNotNull("the Mac's answer, which came after the sheet closed, was dropped",
+            device.wait(Until.findObject(By.text("Slow Mac")), WAIT));
+        assertTrue("and the phone talks to it with the token it was given",
+            waitFor(() -> mac.saw("GET", "/status")));
+    }
+
+    /**
+     * The same, when the Mac says no. The sheet that would have said so is gone, so the app
+     * says it, and names the Mac that refused.
+     */
+    @Test
+    public void aRefusalThatComesAfterTheSheetClosedIsStillSaid() throws Exception {
+        mac.pairRefusal = "That pairing code has expired.";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("246 813");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+
+        closeTheSheet();
+        mac.pairHeld.countDown();
+
+        assertNotNull("a refusal nobody was left to show was never said",
+            device.wait(Until.findObject(By.text("Pairing didn't finish")), WAIT));
+        assertNotNull(device.findObject(By.textContains("That pairing code has expired.")));
+        assertNotNull(device.findObject(By.textContains("127.0.0.1:" + mac.port())));
+        device.findObject(By.text("OK")).click();
+        assertTrue(device.wait(Until.gone(By.text("Pairing didn't finish")), WAIT));
+    }
+
+    /** The code form, filled with {@code code} for this test's Mac, and its Pair tapped. */
+    private void spendATypedCode(String code) {
+        openCodeForm();
+        List<UiObject2> fields = device.wait(Until.findObjects(By.clazz("android.widget.EditText")), WAIT);
+        assertNotNull(fields);
+        assertTrue("expected the code, the address and the port, got " + fields.size(), fields.size() >= 3);
+        fields.get(0).setText(code);
+        fields.get(1).setText("127.0.0.1");
+        fields.get(2).setText(String.valueOf(mac.port()));
+        hideKeyboard();
+        UiObject2 pair = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
+        assertNotNull("no Pair button", pair);
+        boolean replacing = pair.getText().startsWith("Replace");
+        pair.click();
+        if (replacing) {
+            UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
+            assertNotNull(replace);
+            replace.click();
+        }
+    }
+
+    /** The sheet's own Close, while the Mac is still thinking. */
+    private void closeTheSheet() {
+        UiObject2 close = device.wait(Until.findObject(By.text("Close")), WAIT);
+        assertNotNull("the sheet has no Close", close);
+        close.click();
+        assertTrue("the sheet stayed up", device.wait(Until.gone(By.text("Pairing code")), WAIT));
+    }
+
     /** Settings, pairing, and the camera refused: which lands on the code form. */
     private void openCodeForm() {
         Intent launch = context.getPackageManager().getLaunchIntentForPackage(PACKAGE);
@@ -188,18 +274,67 @@ public class ManualPairingTest {
         assertNotNull("the code form", device.wait(Until.findObject(By.text("Pairing code")), WAIT));
     }
 
+    /** The system's permission prompt: Google's package on a Play image, AOSP's elsewhere. */
+    private static final BySelector PROMPT = By.pkg(Pattern.compile(".*permissioncontroller"));
+
     /**
-     * Answers the camera prompt with no, when there is one. The first time Android asks,
-     * the button is "Don't allow"; asked again after a no, it is the don't-ask-again one,
-     * with another id; and once refused twice Android stops asking and answers "denied" at
-     * once, so there may be no prompt at all. Left unanswered, the prompt stays over the
-     * app for every test after this one. Its package is Google's on a Play image and
-     * AOSP's elsewhere.
+     * Its two deny buttons: "Don't allow" the first time Android asks, and the
+     * don't-ask-again one, which has another id, when it asks again after a no. Matched by
+     * pattern, whichever of the two packages the id carries.
+     */
+    private static final Pattern DENY = Pattern.compile(
+        ".*permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button");
+
+    /**
+     * Answers the camera prompt with no. setUp has made sure Android asks, so the prompt is
+     * waited for, not hoped for, and a run where it never comes fails here and says so.
+     *
+     * The answer is an accessibility click on the button itself, not a tap at its
+     * coordinates. The prompt's buttons are in the accessibility tree before its window has
+     * drawn and takes input: a tap in that gap went to the app underneath, where Android
+     * dropped it as obscured, and the prompt stood unanswered until tearDown. A click on the
+     * node goes to the button whether or not its window takes touches yet. It is repeated
+     * until the prompt is gone, in case the first one lands before the dialog is listening.
      */
     private void refuseTheCamera() {
-        UiObject2 deny = device.wait(Until.findObject(By.res(Pattern.compile(
-            ".*permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button"))), 5_000);
-        if (deny != null) deny.click();
+        assertNotNull("the camera prompt never appeared", device.wait(Until.findObject(By.res(DENY)), WAIT));
+        long deadline = System.currentTimeMillis() + WAIT;
+        boolean gone = false;
+        while (!gone && System.currentTimeMillis() < deadline) {
+            clickDeny();
+            gone = device.wait(Until.gone(PROMPT), 2_000);
+        }
+        assertTrue("the camera prompt was not answered", gone);
+    }
+
+    /** Clicks whichever deny button the prompt is showing, through its accessibility node. */
+    private void clickDeny() {
+        UiAutomation automation = instrumentation.getUiAutomation();
+        AccessibilityServiceInfo info = automation.getServiceInfo();
+        if ((info.flags & AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS) == 0) {
+            info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+            automation.setServiceInfo(info);
+        }
+        for (AccessibilityWindowInfo window : automation.getWindows()) {
+            AccessibilityNodeInfo root = window.getRoot();
+            if (root == null || root.getPackageName() == null
+                || !root.getPackageName().toString().endsWith("permissioncontroller")) continue;
+            AccessibilityNodeInfo button = find(root, DENY);
+            if (button != null && button.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return;
+        }
+    }
+
+    /** The first node under {@code node} whose resource id matches {@code id}. */
+    private static AccessibilityNodeInfo find(AccessibilityNodeInfo node, Pattern id) {
+        String name = node.getViewIdResourceName();
+        if (name != null && id.matcher(name).matches()) return node;
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) continue;
+            AccessibilityNodeInfo found = find(child, id);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     /**

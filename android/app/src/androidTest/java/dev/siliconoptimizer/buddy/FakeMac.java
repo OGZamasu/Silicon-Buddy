@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -72,6 +73,18 @@ final class FakeMac implements Closeable {
     volatile boolean loadIsSlow;
     /** What `GET /status` says; null for the Agents tests' plain "Ready". */
     volatile String status;
+
+    // MARK: - Pairing
+
+    /** What `POST /buddy/pair` calls this Mac. */
+    volatile String macName = "Test Mac";
+    /**
+     * While set, `POST /buddy/pair` has the code — it is recorded as received — and waits for
+     * this before it answers: a Mac that is slow to.
+     */
+    volatile CountDownLatch pairHeld;
+    /** When set, `POST /buddy/pair` refuses with the Mac's 403 and this sentence. */
+    volatile String pairRefusal;
 
     // MARK: - The Create tab's queue
 
@@ -273,8 +286,21 @@ final class FakeMac implements Closeable {
                 return;
             }
             if (method.equals("POST") && path.equals("/buddy/pair")) {
-                reply(output, 200, "{\"deviceID\":\"D-TEST\",\"token\":\"" + TOKEN + "\",\"macName\":\"Test Mac\",\"port\":"
-                    + port() + ",\"scope\":\"" + scope + "\"}");
+                CountDownLatch held = pairHeld;
+                if (held != null) {
+                    try {
+                        held.await(60, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                String refusal = pairRefusal;
+                if (refusal != null) {
+                    reply(output, 403, "{\"error\":\"" + refusal + "\"}");
+                    return;
+                }
+                reply(output, 200, "{\"deviceID\":\"D-TEST\",\"token\":\"" + TOKEN + "\",\"macName\":\"" + macName
+                    + "\",\"port\":" + port() + ",\"scope\":\"" + scope + "\"}");
                 return;
             }
             if (!authorization.equals("Bearer " + TOKEN)) {

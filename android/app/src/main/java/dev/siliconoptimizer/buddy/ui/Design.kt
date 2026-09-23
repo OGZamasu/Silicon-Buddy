@@ -98,19 +98,26 @@ fun SectionCard(
                         .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(10.dp))
                         .padding(8.dp).size(18.dp),
                 )
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+                // A machine's name is a card's title on the Machines tab, beside its address.
+                SplitLine(
                     modifier = Modifier.padding(start = 10.dp).weight(1f),
+                    start = {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    },
+                    end = {
+                        if (footnote != null) {
+                            Text(
+                                footnote,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline,
+                            )
+                        }
+                    },
                 )
-                if (footnote != null) {
-                    Text(
-                        footnote,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
             }
             content()
         }
@@ -169,6 +176,67 @@ fun StatRow(modifier: Modifier = Modifier, spacing: Dp = 12.dp, content: @Compos
     }
 }
 
+/**
+ * Two things that belong on one line — a name at the start, what it reads at the end — side
+ * by side when both fit whole, and otherwise the end under the start. A Row with a weighted
+ * start gives the end all it asks for and the start whatever is left, so at 200% font
+ * "38.65 GB of 137.44 GB" left "Memory" a sliver and it broke as "Memor / y"; a swarm peer's
+ * URL did the same to "render-node". Each slot is one element.
+ */
+@Composable
+fun SplitLine(
+    modifier: Modifier = Modifier,
+    spacing: Dp = 12.dp,
+    start: @Composable () -> Unit,
+    end: @Composable () -> Unit,
+) {
+    Layout(listOf(start, end), modifier.fillMaxWidth()) { (starts, ends), constraints ->
+        val first = starts.firstOrNull()
+        val second = ends.firstOrNull()
+        if (first == null || second == null) {
+            // One of them had nothing to show — a card with no footnote.
+            val only = (first ?: second)?.measure(constraints.copy(minWidth = 0))
+            val width = if (constraints.hasBoundedWidth) constraints.maxWidth else only?.width ?: 0
+            return@Layout layout(width, only?.height ?: 0) { only?.placeRelative(0, 0) }
+        }
+        val gap = spacing.roundToPx()
+        val startWhole = first.maxIntrinsicWidth(Constraints.Infinity)
+        val endWhole = second.maxIntrinsicWidth(Constraints.Infinity)
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth
+            else startWhole + gap + endWhole
+        val startWidth = sideBySide(width, gap, startWhole, endWhole)
+        if (startWidth != null) {
+            val a = first.measure(Constraints(maxWidth = startWidth))
+            val b = second.measure(Constraints(maxWidth = endWhole))
+            val height = maxOf(a.height, b.height)
+            layout(width, constraints.constrainHeight(height)) {
+                a.placeRelative(0, (height - a.height) / 2)
+                b.placeRelative(width - b.width, (height - b.height) / 2)
+            }
+        } else {
+            // Stacked, each has the whole width: a label wraps between its words, and a name
+            // or an address that is longer than the line ellipsizes rather than breaking.
+            val a = first.measure(Constraints(maxWidth = width))
+            val b = second.measure(Constraints(maxWidth = width))
+            val under = 2.dp.roundToPx()
+            layout(width, constraints.constrainHeight(a.height + under + b.height)) {
+                a.placeRelative(0, 0)
+                b.placeRelative(0, a.height + under)
+            }
+        }
+    }
+}
+
+/**
+ * The start's width when both fit on one line of [width] as they are, [gap] apart, or null
+ * when the end has to go under the start. The start gets what the end leaves, which is never
+ * less than all of it — so neither is ever broken to make them share.
+ */
+internal fun sideBySide(width: Int, gap: Int, startWhole: Int, endWhole: Int): Int? {
+    val left = width - gap - endWhole
+    return if (left >= startWhole) left else null
+}
+
 @Composable
 fun MeterRow(
     label: String,
@@ -183,14 +251,16 @@ fun MeterRow(
             .clearAndSetSemantics { contentDescription = "$label: $detail" },
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        SplitLine(
+            start = { Text(label, style = MaterialTheme.typography.bodyMedium) },
+            end = {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+        )
         LinearProgressIndicator(
             progress = { fraction.coerceIn(0.0, 1.0).toFloat() },
             modifier = Modifier.fillMaxWidth().height(6.dp),

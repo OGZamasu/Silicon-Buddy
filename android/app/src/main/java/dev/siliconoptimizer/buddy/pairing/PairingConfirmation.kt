@@ -8,17 +8,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.transport.TailnetHost
-import dev.siliconoptimizer.buddy.transport.TransportError
-import kotlinx.coroutines.launch
 
 /**
  * The dialog between scanning a code and holding a token.
@@ -36,28 +34,29 @@ fun PairingConfirmation(
     onDismiss: () -> Unit,
     onMacTooOld: () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    var working by remember { mutableStateOf(false) }
     var confirmingReplacement by remember { mutableStateOf(false) }
-    var failure by remember { mutableStateOf<String?>(null) }
+    // The exchange is AppState's, so a dialog recreated with the activity, mid-request,
+    // picks up where it was. This only shows how it is going.
+    val attempt = app.pairing.state
+    val working = attempt is PairingExchange.State.Working
+    val failed = (attempt as? PairingExchange.State.Failed)?.takeIf { it.invite == invite }
+    val failure = failed?.message
 
-    fun pair() {
-        working = true
-        failure = null
-        scope.launch {
-            try {
-                app.pair(invite)
-                working = false
-                onDismiss()
-            } catch (error: TransportError) {
-                working = false
-                if (error.isMissingRoute) {
-                    onMacTooOld()
-                } else {
-                    failure = error.message
-                }
-            }
+    LaunchedEffect(failed) {
+        if (failed?.macTooOld == true) {
+            app.pairing.acknowledge()
+            onMacTooOld()
         }
+    }
+
+    // Paired, the invite is gone from AppState and this dialog with it.
+    fun pair() {
+        app.startPairing(invite)
+    }
+
+    fun dismiss() {
+        if (failed != null) app.pairing.acknowledge()
+        onDismiss()
     }
 
     val displayCode = if (invite.code.length == 6) {
@@ -91,7 +90,7 @@ fun PairingConfirmation(
     }
 
     AlertDialog(
-        onDismissRequest = { if (!working) onDismiss() },
+        onDismissRequest = { if (!working) dismiss() },
         title = { Text("Pair with this Mac?") },
         text = {
             Column {
@@ -139,7 +138,7 @@ fun PairingConfirmation(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !working) { Text("Not now") }
+            TextButton(onClick = ::dismiss, enabled = !working) { Text("Not now") }
         },
     )
 }

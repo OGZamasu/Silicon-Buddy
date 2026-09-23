@@ -43,7 +43,6 @@ import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.Reachability
 import dev.siliconoptimizer.buddy.transport.ServerConfig
 import dev.siliconoptimizer.buddy.transport.TailnetHost
-import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.launch
 
 /** The ways in, in the order most people need them. */
@@ -88,7 +87,19 @@ fun PairingScreen(
     var developerPort by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var message by remember { mutableStateOf(notice) }
-    var working by remember { mutableStateOf(false) }
+    // The Developer form's own probe. A code is spent by AppState, so that closing this
+    // sheet mid-request never cuts off one the Mac may already have answered.
+    var connecting by remember { mutableStateOf(false) }
+    val attempt = app.pairing.state
+    val working = connecting || attempt is PairingExchange.State.Working
+    val failure = (attempt as? PairingExchange.State.Failed)?.message
+
+    // Paired while this sheet is up — by its own form, or by a link confirmed over it — and
+    // it has done its job. Forgetting the Mac bumps the generation too, and leaves it open.
+    val openedAt = remember { app.connectionGeneration }
+    LaunchedEffect(app.connectionGeneration) {
+        if (app.connectionGeneration != openedAt && app.isPaired) onDone()
+    }
     // What "Replace" goes on to do once it is agreed to — pair with a code, or connect —
     // and the address it would replace the paired Mac with.
     var replacing by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
@@ -125,7 +136,7 @@ fun PairingScreen(
             message = TailnetHost.EXPLANATION
             return
         }
-        working = true
+        connecting = true
         scope.launch {
             val candidate = ServerConfig(developerHost.trim(), portNumber, token.trim())
             // Prove it works before storing it: a saved address that does not answer is
@@ -136,11 +147,11 @@ fun PairingScreen(
                     runCatching { ControlClient(candidate).node().name }
                         .getOrNull()?.let { app.noteMacName(it) }
                     app.refreshReachability()
-                    working = false
+                    connecting = false
                     onDone()
                 }
                 else -> {
-                    working = false
+                    connecting = false
                     message = result.detail
                 }
             }
@@ -166,7 +177,7 @@ fun PairingScreen(
     }
 
     /**
-     * A typed code goes where a scanned one does — [AppState.pair], and from there
+     * A typed code goes where a scanned one does — [AppState.startPairing], and from there
      * `POST /buddy/pair` — held to the same host rule. It skips the scan's confirmation,
      * which is there because whoever printed a QR chose its host; here the person
      * holding the phone typed it. Replacing a paired Mac still asks first. A link left
@@ -182,17 +193,7 @@ fun PairingScreen(
             return
         }
         message = null
-        working = true
-        scope.launch {
-            try {
-                app.pair(invite)
-                working = false
-                onDone()
-            } catch (error: TransportError) {
-                working = false
-                message = if (error.isMissingRoute) MAC_TOO_OLD_FOR_CODES else error.message
-            }
-        }
+        app.startPairing(invite)
     }
 
     replacing?.let { (address, proceed) ->
@@ -397,7 +398,7 @@ fun PairingScreen(
             }
         }
 
-        message?.let {
+        (message ?: failure)?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.bodySmall,
