@@ -93,7 +93,6 @@ import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsSection
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsViewModel
 import dev.siliconoptimizer.buddy.transport.Reachability
-import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.pairing.MAC_TOO_OLD_FOR_CODES
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingExchange
@@ -887,7 +886,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { app.pairing.acknowledge() },
                 title = { Text("Pairing didn't finish") },
-                text = { Text("${TailnetHost.forUrl(failed.invite.host)}:${failed.invite.port}: ${failed.message}") },
+                text = { Text("${failed.invite.displayAddress}: ${failed.message}") },
                 confirmButton = {
                     TextButton(onClick = { app.pairing.acknowledge() }) { Text("OK") }
                 },

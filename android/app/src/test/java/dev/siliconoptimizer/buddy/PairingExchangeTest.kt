@@ -180,6 +180,31 @@ class PairingExchangeTest {
         assertEquals("Not a tailnet address.", (exchange.state as PairingExchange.State.Failed).message)
     }
 
+    /** The dialog for a second link: it waits, and saying no to it is still fine. */
+    @Test
+    fun `a second invite waits for the one being spent`() = runTest {
+        val exchange = PairingExchange(this)
+        val answer = CompletableDeferred<ServerConfig>()
+        val other = PairingInvite("100.64.0.10", 8788, "135790")
+        assertEquals(PairingExchange.Phase.Ready, exchange.phaseOf(other))
+        exchange.start(invite, exchange = { answer.await() }, store = {})
+        runCurrent()
+        assertEquals(PairingExchange.Phase.Spending, exchange.phaseOf(invite))
+        assertEquals(PairingExchange.Phase.Waiting(invite), exchange.phaseOf(other))
+
+        answer.completeExceptionally(TransportError.Forbidden("That pairing code is not the one on screen."))
+        advanceUntilIdle()
+        assertEquals(
+            PairingExchange.Phase.Failed("That pairing code is not the one on screen.", macTooOld = false),
+            exchange.phaseOf(invite),
+        )
+        assertEquals(
+            "the other dialog says it, since nothing else is left to",
+            PairingExchange.Phase.OtherFailed(invite, "That pairing code is not the one on screen."),
+            exchange.phaseOf(other),
+        )
+    }
+
     @Test
     fun `one code at a time`() = runTest {
         val exchange = PairingExchange(this)

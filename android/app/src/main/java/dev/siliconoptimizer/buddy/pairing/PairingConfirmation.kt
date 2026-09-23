@@ -16,7 +16,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
-import dev.siliconoptimizer.buddy.transport.TailnetHost
 
 /**
  * The dialog between scanning a code and holding a token.
@@ -37,10 +36,9 @@ fun PairingConfirmation(
     var confirmingReplacement by remember { mutableStateOf(false) }
     // The exchange is AppState's, so a dialog recreated with the activity, mid-request,
     // picks up where it was. This only shows how it is going.
-    val attempt = app.pairing.state
-    val working = attempt is PairingExchange.State.Working
-    val failed = (attempt as? PairingExchange.State.Failed)?.takeIf { it.invite == invite }
-    val failure = failed?.message
+    val phase = app.pairing.phaseOf(invite)
+    val spending = phase == PairingExchange.Phase.Spending
+    val failed = phase as? PairingExchange.Phase.Failed
 
     LaunchedEffect(failed) {
         if (failed?.macTooOld == true) {
@@ -55,7 +53,10 @@ fun PairingConfirmation(
     }
 
     fun dismiss() {
-        if (failed != null) app.pairing.acknowledge()
+        // A refusal this dialog was showing has been seen — its own, or the other code's.
+        if (phase is PairingExchange.Phase.Failed || phase is PairingExchange.Phase.OtherFailed) {
+            app.pairing.acknowledge()
+        }
         onDismiss()
     }
 
@@ -90,14 +91,13 @@ fun PairingConfirmation(
     }
 
     AlertDialog(
-        onDismissRequest = { if (!working) dismiss() },
+        // Not while this code is being spent: it cannot be taken back, and "Not now" would
+        // say it had been. While another one is, saying no to this one is fine.
+        onDismissRequest = { if (!spending) dismiss() },
         title = { Text("Pair with this Mac?") },
         text = {
             Column {
-                Text(
-                    "${TailnetHost.forUrl(invite.host)}:${invite.port}",
-                    style = MaterialTheme.typography.titleMedium,
-                )
+                Text(invite.displayAddress, style = MaterialTheme.typography.titleMedium)
                 Text("Code $displayCode", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     "Silicon Buddy will ask that address for a token of its own and keep it " +
@@ -116,29 +116,43 @@ fun PairingConfirmation(
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
-                failure?.let {
-                    Text(
-                        it,
+                when (phase) {
+                    is PairingExchange.Phase.Failed -> Text(
+                        phase.message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(top = 8.dp),
                     )
-                }
-                if (working) {
-                    CircularProgressIndicator(modifier = Modifier.padding(top = 8.dp))
+                    is PairingExchange.Phase.OtherFailed -> Text(
+                        "The other pairing (${phase.other.displayAddress}) didn't finish: ${phase.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    // Not a spinner: nothing is happening to *this* code yet.
+                    is PairingExchange.Phase.Waiting -> Text(
+                        "Waiting for the other pairing (${phase.other.displayAddress}) to finish…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    PairingExchange.Phase.Spending ->
+                        CircularProgressIndicator(modifier = Modifier.padding(top = 8.dp))
+                    PairingExchange.Phase.Ready -> Unit
                 }
             }
         },
         confirmButton = {
             TextButton(
                 onClick = { if (app.isPaired) confirmingReplacement = true else pair() },
-                enabled = !working,
+                // One code at a time: a second one would land over the first without asking.
+                enabled = !app.pairing.isWorking,
             ) {
                 Text(if (app.isPaired) "Replace this Mac…" else "Pair")
             }
         },
         dismissButton = {
-            TextButton(onClick = ::dismiss, enabled = !working) { Text("Not now") }
+            TextButton(onClick = ::dismiss, enabled = !spending) { Text("Not now") }
         },
     )
 }

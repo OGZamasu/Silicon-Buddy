@@ -36,10 +36,36 @@ class PairingExchange(private val scope: CoroutineScope) {
         ) : State
     }
 
+    /** What a dialog asking about one invite shows of the exchange. */
+    sealed interface Phase {
+        /** Nothing is being spent: this invite may go. */
+        data object Ready : Phase
+
+        /** This invite is being spent. */
+        data object Spending : Phase
+
+        /** Another code is being spent, and this one waits for it. Declining is still fine. */
+        data class Waiting(val other: PairingInvite) : Phase
+
+        /** This invite was refused, and may be tried again. */
+        data class Failed(val message: String, val macTooOld: Boolean) : Phase
+
+        /** Another code was refused, and nothing has said so yet. This one may go. */
+        data class OtherFailed(val other: PairingInvite, val message: String) : Phase
+    }
+
     var state by mutableStateOf<State>(State.Idle)
         private set
 
     val isWorking: Boolean get() = state is State.Working
+
+    fun phaseOf(invite: PairingInvite): Phase = when (val now = state) {
+        State.Idle -> Phase.Ready
+        is State.Working -> if (now.invite == invite) Phase.Spending else Phase.Waiting(now.invite)
+        is State.Failed ->
+            if (now.invite == invite) Phase.Failed(now.message, now.macTooOld)
+            else Phase.OtherFailed(now.invite, now.message)
+    }
 
     /**
      * Spends [invite] with [exchange] and hands what the Mac answered to [store]. False, with

@@ -21,6 +21,9 @@ data class PairingInvite(
     /** The other direction, so the format has one definition and the tests round-trip it. */
     fun toUriString(): String = "siliconbuddy://pair?host=$host&port=$port&code=$code"
 
+    /** Where it points, as a dialog names it: an IPv6 host in brackets. */
+    val displayAddress: String get() = "${TailnetHost.forUrl(host)}:$port"
+
     /**
      * Spends the code at `POST /buddy/pair` — with no token, because the code is the
      * credential — and returns where and how this device talks to the Mac from now on.

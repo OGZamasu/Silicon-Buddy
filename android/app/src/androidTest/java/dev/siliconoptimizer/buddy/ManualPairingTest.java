@@ -229,6 +229,44 @@ public class ManualPairingTest {
         assertTrue(device.wait(Until.gone(By.text("Pairing didn't finish")), WAIT));
     }
 
+    /**
+     * A link that arrives while another code is still with its Mac. Its dialog used to show a
+     * spinner — as if it were the one being spent — and keep "Not now" disabled for as long
+     * as the other took, up to about 28 seconds. It says what it is waiting for, may be
+     * declined, and once the first code has paired, asks to replace that Mac like any other.
+     */
+    @Test
+    public void aLinkThatArrivesWhileAnotherCodeIsSpentWaitsAndMayBeDeclined() throws Exception {
+        mac.macName = "First Mac";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("135 791");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+        closeTheSheet();
+
+        context.startActivity(new Intent(Intent.ACTION_VIEW,
+            Uri.parse("siliconbuddy://pair?host=127.0.0.1&port=" + mac.port() + "&code=246802"))
+            .setPackage(PACKAGE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        assertNotNull("the second link was not asked about",
+            device.wait(Until.findObject(By.text("Code 246 802")), WAIT));
+        assertNotNull("it does not say what it is waiting for",
+            device.findObject(By.text("Waiting for the other pairing (127.0.0.1:" + mac.port() + ") to finish…")));
+        UiObject2 notNow = device.findObject(By.text("Not now"));
+        assertNotNull(notNow);
+        assertTrue("Not now is disabled while another code is spent", notNow.isEnabled());
+        UiObject2 pair = device.findObject(By.text(Pattern.compile("Pair|Replace this Mac…")));
+        assertNotNull(pair);
+        assertTrue("a second code could start while the first is out", !pair.isEnabled());
+
+        mac.pairHeld.countDown();
+        assertNotNull("once the first has paired, the second asks to replace it",
+            device.wait(Until.findObject(By.textStartsWith("This replaces First Mac")), WAIT));
+        UiObject2 replace = device.wait(Until.findObject(By.text("Replace this Mac…").enabled(true)), WAIT);
+        assertNotNull(replace);
+        device.findObject(By.text("Not now")).click();
+        assertTrue(device.wait(Until.gone(By.text("Code 246 802")), WAIT));
+        assertTrue("the second code was spent", mac.count("POST", "/buddy/pair") == 1);
+    }
+
     /** The code form, filled with {@code code} for this test's Mac, and its Pair tapped. */
     private void spendATypedCode(String code) {
         openCodeForm();

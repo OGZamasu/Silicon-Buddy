@@ -122,6 +122,15 @@ final class FakeMac implements Closeable {
         return false;
     }
 
+    /** How many times something asked for {@code method path}. */
+    int count(String method, String path) {
+        int count = 0;
+        for (String line : received) {
+            if (line.startsWith(method + " " + path + " ")) count++;
+        }
+        return count;
+    }
+
     String bodyOf(String method, String path) {
         for (String line : received) {
             if (line.startsWith(method + " " + path + " ")) {
