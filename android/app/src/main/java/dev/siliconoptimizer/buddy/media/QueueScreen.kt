@@ -332,9 +332,14 @@ private fun JobCard(
         }
         if (job.canStopFollowing) {
             Text(
-                "Stopping pauses the queue and lets go of this render. The node may " +
-                    "still finish it — the Mac won't claim to have cancelled work on " +
-                    "another machine.",
+                if (job.offersCancelRender(canControl)) {
+                    "Stop following pauses the queue and lets go of this render, and " +
+                        "the node may still finish it. Cancel render asks the node to stop it."
+                } else {
+                    "Stopping pauses the queue and lets go of this render. The node may " +
+                        "still finish it — the Mac won't claim to have cancelled work on " +
+                        "another machine."
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline,
             )
@@ -385,12 +390,7 @@ private fun JobCard(
             }
             VideoQueueControlRequest.REMOVE -> {
                 Text(
-                    if (job.state == JobState.Done) {
-                        "This takes the take off the queue. The file it wrote stays on " +
-                            "the Mac."
-                    } else {
-                        "This take will not be rendered."
-                    },
+                    "This take will not be rendered.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

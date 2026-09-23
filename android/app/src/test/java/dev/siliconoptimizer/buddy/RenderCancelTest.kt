@@ -14,6 +14,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -68,15 +69,24 @@ class RenderCancelTest {
     private fun view(item: VideoQueueItem, message: String? = null) =
         VideoQueueView(paused = false, activeID = CLIP, message = message, items = listOf(item))
 
-    /** A Mac with one clip in its queue. It answers a cancel when the test says so. */
+    /**
+     * A Mac with one clip in its queue. It answers a verb when the test says so, and can
+     * hold a read on the wire — answered with the queue as it was when the read arrived.
+     */
     private class QueueMac(var queue: VideoQueueView) : HangingTransport() {
         val sent = mutableListOf<VideoQueueControlRequest>()
         var reads = 0
         var answer = CompletableDeferred<VideoQueueView>()
+        var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun videoQueue(): VideoQueueView {
             reads++
-            return queue
+            val snapshot = queue
+            gate?.let {
+                it.await()
+                gate = null
+            }
+            return snapshot
         }
 
         override suspend fun controlVideoQueue(request: VideoQueueControlRequest): VideoQueueView {
@@ -231,6 +241,58 @@ class RenderCancelTest {
         val clip = model.queue.job(CLIP)!!
         assertEquals(JobState.Stopped, clip.state)
         assertEquals(CancelState.Confirmed, clip.cancel)
+    }
+
+    @Test
+    fun `a failure that lands while a read is on the wire still gets a read of its own`() = runTest(dispatcher) {
+        val mac = QueueMac(view(item(status = "submitting", canCancel = false)))
+        opened(mac)
+        assertEquals(1, mac.reads)
+
+        // The node took it: the queue is read again, and that read is held on the wire.
+        mac.queue = view(item(status = "rendering", canCancel = true))
+        mac.gate = CompletableDeferred()
+        model.apply(progress("running", 0.05), transport = mac)
+        advanceUntilIdle()
+        assertEquals(2, mac.reads)
+
+        // The node fails it meanwhile, and the Mac stops offering to cancel it. The read
+        // on the wire was answered before that, with canCancel still true.
+        model.apply(progress("failed", null), transport = mac)
+        mac.queue = view(item(status = "failed", canCancel = false))
+        mac.gate!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("the failure's reason to read was not dropped", 3, mac.reads)
+        assertFalse(model.queue.job(CLIP)!!.offersCancelRender(canControl = true))
+    }
+
+    /**
+     * Stop following, through the screen's own verb. The Mac answers the moment it has let
+     * go — the clip still rendering — and the failure that follows reaches the phone first
+     * on the stream. The older answer must not walk the failure back.
+     */
+    @Test
+    fun `an answer to stop following that an event overtook leaves the failure standing`() = runTest(dispatcher) {
+        val mac = QueueMac(view(item(canCancel = false)))
+        opened(mac)
+        model.control(VideoQueueControlRequest.STOP_FOLLOWING, CLIP, mac)
+        advanceUntilIdle()
+
+        mac.queue = view(item(status = "failed", canCancel = false), message = null)
+        model.apply(progress("failed", null), transport = mac)
+        advanceUntilIdle()
+        assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
+        val readsBefore = mac.reads
+
+        mac.gate = CompletableDeferred()
+        mac.answer.complete(view(item(canCancel = false)))
+        runCurrent()
+        assertEquals("the older answer did not walk it back", JobState.Failed, model.queue.job(CLIP)!!.state)
+        assertFalse("nor bring Stop following back", model.queue.job(CLIP)!!.canStopFollowing)
+        mac.gate!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("and the queue was read to settle it", readsBefore + 1, mac.reads)
+        assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
     }
 
     @Test

@@ -134,12 +134,13 @@ data class MediaJob(
     val canRetry: Boolean get() = isQueued && (state == JobState.Failed || state == JobState.Stopped)
 
     /**
-     * Removing needs a state that is positively still — waiting, or over. A word this
-     * build has never heard of is not one of those: the Mac may well be in the middle
-     * of something, and a button that removes it would be guessing.
+     * The Mac removes only a clip it has not handed to a node yet ("Only clips that have
+     * not been submitted can be removed."); finished ones leave with Clear finished. A
+     * word this build has never heard of is not waiting either: the Mac may well be in
+     * the middle of something, and a button that removes it would be guessing.
      */
     val canRemove: Boolean
-        get() = isQueued && (state == JobState.Queued || state.isTerminal)
+        get() = isQueued && state == JobState.Queued
 
     val canStopFollowing: Boolean get() = isQueued && isActive && state.isRunning
 
@@ -246,6 +247,15 @@ internal fun mayMove(from: JobState?, to: JobState): Boolean = when {
     else -> to == JobState.Queued
 }
 
+/**
+ * The Mac's answer to a verb this phone sent about one clip, and where that clip stood
+ * when the verb went out. [sentFrom] is null when this phone had no row for it.
+ */
+data class Answering(val id: String, val sentFrom: JobState?) {
+    /** The answer is the newest word on the row only if the row has not moved since. */
+    fun overrides(row: MediaJob): Boolean = row.id == id && row.state == sentFrom
+}
+
 /** The whole queue: what the Mac is doing, and whether it is doing it. */
 data class QueueState(
     val paused: Boolean = false,
@@ -266,13 +276,16 @@ data class QueueState(
      * an image or a mesh is a `job` event and nothing else, and a poll of the video
      * queue must not make one disappear.
      *
-     * [answering] is the clip this queue is the Mac's answer about — the one this phone
-     * just asked it to act on. That answer comes after the Mac acted, so it is
-     * not a snapshot the stream can be ahead of, and it may take a clip out of an ending:
-     * a retry that goes back to the node's job, or a cancel the node is still carrying
-     * out on a clip the Mac had stopped following, puts it back to rendering.
+     * [answering] is the Mac's answer to something this phone asked of one clip. The Mac
+     * acted before it answered, so the answer may take the clip out of an ending — a
+     * retry that goes back to the node's job, or a cancel the node is still carrying out
+     * on a clip the Mac had stopped following, puts it back to rendering — but only if
+     * nothing moved the row while the request was out. The Mac writes its answer the
+     * moment it has acted, and an event can still overtake it: `stop_following` answers
+     * "rendering" and the failure it causes may reach the phone first. That answer is
+     * the older of the two, and takes the ordinary rule like any other read.
      */
-    fun applying(view: VideoQueueView, answering: String? = null): QueueState {
+    fun applying(view: VideoQueueView, answering: Answering? = null): QueueState {
         val known = jobs.associateBy { it.id }
         val fromQueue = view.items.map { item ->
             val existing = known[item.id]
@@ -282,7 +295,7 @@ data class QueueState(
                 existing == null -> fresh
                 // A snapshot older than what the stream already said. Its prompt, its
                 // settings and its reason are still worth having; its state is not.
-                item.id != answering && !mayMove(existing.state, incoming) -> fresh.copy(
+                answering?.overrides(existing) != true && !mayMove(existing.state, incoming) -> fresh.copy(
                     state = existing.state,
                     statusWord = existing.statusWord,
                     fraction = existing.fraction,

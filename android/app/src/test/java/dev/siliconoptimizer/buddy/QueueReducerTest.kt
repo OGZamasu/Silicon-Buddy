@@ -1,6 +1,9 @@
 package dev.siliconoptimizer.buddy
 
+import dev.siliconoptimizer.buddy.media.Answering
 import dev.siliconoptimizer.buddy.media.CancelState
+import dev.siliconoptimizer.buddy.media.JobAnnouncer
+import dev.siliconoptimizer.buddy.media.JobNotice
 import dev.siliconoptimizer.buddy.media.JobState
 import dev.siliconoptimizer.buddy.media.cancelNeedsTheQueue
 import dev.siliconoptimizer.buddy.media.QueueState
@@ -139,7 +142,7 @@ class QueueReducerTest {
     }
 
     @Test
-    fun `a stopped clip can be retried but not removed while it runs`() {
+    fun `a stopped clip can be retried, and removed neither while it runs nor after`() {
         val running = QueueState.empty
             .applying(view(item(status = "rendering"), active = "9C2F-0001"))
         assertFalse(running.job("9C2F-0001")!!.canRemove)
@@ -148,7 +151,8 @@ class QueueReducerTest {
         val stopped = running.applying(job(status = "cancelled"))
         assertEquals(JobState.Stopped, stopped.job("9C2F-0001")!!.state)
         assertTrue(stopped.job("9C2F-0001")!!.canRetry)
-        assertTrue(stopped.job("9C2F-0001")!!.canRemove)
+        // The Mac removes only what it has not handed to a node; Clear finished takes the rest.
+        assertFalse(stopped.job("9C2F-0001")!!.canRemove)
         assertFalse(stopped.job("9C2F-0001")!!.canStopFollowing)
         assertEquals("a cancelled status is a cancel the node confirmed", "Cancelled", stopped.job("9C2F-0001")!!.stateLabel)
         assertEquals("Stopped", running.applying(job(status = "stopped")).job("9C2F-0001")!!.stateLabel)
@@ -320,13 +324,16 @@ class QueueReducerTest {
         assertFalse(row.canRetry)
     }
 
+    /**
+     * Only a waiting take: the Mac answers every other remove with "Only clips that have not
+     * been submitted can be removed.", and Clear finished is how an ended one leaves.
+     */
     @Test
-    fun `waiting and finished takes may be removed`() {
+    fun `only a take still waiting may be removed`() {
         assertTrue(QueueState.empty.applying(view(item(status = "pending"))).job("9C2F-0001")!!.canRemove)
-        assertTrue(QueueState.empty.applying(view(item(status = "completed"))).job("9C2F-0001")!!.canRemove)
-        assertTrue(QueueState.empty.applying(view(item(status = "failed"))).job("9C2F-0001")!!.canRemove)
-        assertFalse(QueueState.empty.applying(view(item(status = "rendering"))).job("9C2F-0001")!!.canRemove)
-        assertFalse(QueueState.empty.applying(view(item(status = "submitting"))).job("9C2F-0001")!!.canRemove)
+        for (status in listOf("completed", "failed", "cancelled", "rendering", "submitting")) {
+            assertFalse(status, QueueState.empty.applying(view(item(status = status))).job("9C2F-0001")!!.canRemove)
+        }
     }
 
     /**
@@ -491,14 +498,42 @@ class QueueReducerTest {
             "a read of the queue cannot walk a failure back",
             JobState.Failed, failed.applying(following).job("9C2F-0001")!!.state,
         )
-        val answered = failed.applying(following, answering = "9C2F-0001").job("9C2F-0001")!!
+        val asked = Answering("9C2F-0001", sentFrom = JobState.Failed)
+        val answered = failed.applying(following, asked).job("9C2F-0001")!!
         assertEquals("the answer to this phone's own cancel can", JobState.Rendering, answered.state)
         assertEquals(CancelState.Requested, answered.cancel)
         assertEquals(
             "and only for the clip it answers",
             JobState.Failed,
-            failed.applying(following, answering = "9C2F-0002").job("9C2F-0001")!!.state,
+            failed.applying(following, Answering("9C2F-0002", JobState.Failed)).job("9C2F-0001")!!.state,
         )
+    }
+
+    /**
+     * Stop following: the Mac answers the moment it has let go, while the clip still says
+     * rendering, and the failure that follows can reach the phone first on the stream. The
+     * answer is then the older of the two, and must neither walk the failure back nor make
+     * the announcer say it twice.
+     */
+    @Test
+    fun `an answer an event overtook takes the ordinary rule, and the failure is said once`() {
+        val announcer = JobAnnouncer()
+        var state = QueueState.empty.applying(view(item(status = "rendering"), active = "9C2F-0001"))
+        announcer.prime(state)
+        val notices = mutableListOf<JobNotice>()
+        fun step(next: QueueState) {
+            notices += announcer.notices(state, next)
+            state = next
+        }
+        val asked = Answering("9C2F-0001", sentFrom = state.job("9C2F-0001")!!.state)
+
+        step(state.applying(job(status = "failed")))
+        step(state.applying(view(item(status = "rendering"), active = "9C2F-0001", paused = true), asked))
+        assertEquals("the older answer did not walk it back", JobState.Failed, state.job("9C2F-0001")!!.state)
+        assertFalse("nor bring Stop following back", state.job("9C2F-0001")!!.canStopFollowing)
+        step(state.applying(view(item(status = "failed", error = "Stopped following."), paused = true)))
+        assertEquals("one notification for one failure", 1, notices.size)
+        assertFalse(asked.overrides(state.job("9C2F-0001")!!))
     }
 
     @Test
