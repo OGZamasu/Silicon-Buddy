@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -83,6 +84,15 @@ public class OnDeviceModelTest {
     private Context context;
     private StandInMac mac;
 
+    /**
+     * Once, before anything here: with no stand-in running, every test would otherwise fail
+     * in setUp with the same message, fourteen times over. This is that message, once.
+     */
+    @BeforeClass
+    public static void theStandInIsRunning() {
+        new StandInMac().check();
+    }
+
     @Before
     public void setUp() throws Exception {
         instrumentation = InstrumentationRegistry.getInstrumentation();
@@ -99,7 +109,10 @@ public class OnDeviceModelTest {
 
     @After
     public void tearDown() throws Exception {
-        mac.unreachable(0);
+        // Only a stand-in that answered is put back. One that was never there has already
+        // failed setUp with how to start it, and that is the failure worth reading — not a
+        // second one about the same missing server.
+        if (mac != null && mac.answered) mac.unreachable(0);
         probe("unload", context);
     }
 

@@ -11,3 +11,5 @@ android/.idea/
 ios/SiliconBuddy.xcodeproj/
 android/app/build/
 android/**/.cxx/
+tools/standin/models/
+tools/standin/state/
