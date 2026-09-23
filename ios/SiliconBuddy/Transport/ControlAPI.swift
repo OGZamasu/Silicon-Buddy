@@ -171,6 +171,10 @@ public enum ControlAPI {
         public var weightsBytes: Int64
         public var expertsBytes: Int64
         public var kvCacheBytes: Int64
+        /// A hybrid model's fixed linear-attention state, already counted in
+        /// `residentBytes`. Absent for a model whose every block keeps a KV cache, and on
+        /// an older Mac.
+        public var recurrentStateBytes: Int64?
         public var computeBytes: Int64
         public var streamedFromDiskBytes: Int64
         public var suggestions: [Suggestion]
@@ -178,8 +182,9 @@ public enum ControlAPI {
 
         public init(
             verdict: String, residentBytes: Int64, budgetBytes: Int64, weightsBytes: Int64,
-            expertsBytes: Int64, kvCacheBytes: Int64, computeBytes: Int64,
-            streamedFromDiskBytes: Int64, suggestions: [Suggestion], notes: [String]
+            expertsBytes: Int64, kvCacheBytes: Int64, recurrentStateBytes: Int64? = nil,
+            computeBytes: Int64, streamedFromDiskBytes: Int64, suggestions: [Suggestion],
+            notes: [String]
         ) {
             self.verdict = verdict
             self.residentBytes = residentBytes
@@ -187,6 +192,7 @@ public enum ControlAPI {
             self.weightsBytes = weightsBytes
             self.expertsBytes = expertsBytes
             self.kvCacheBytes = kvCacheBytes
+            self.recurrentStateBytes = recurrentStateBytes
             self.computeBytes = computeBytes
             self.streamedFromDiskBytes = streamedFromDiskBytes
             self.suggestions = suggestions
@@ -628,6 +634,17 @@ public enum ControlAPI {
             public var mediaURL: String?
             /// Its poster frame, which a chat-scope device may fetch too.
             public var thumbnailMediaID: String?
+            /// Set once somebody asked the clip's node to cancel its render: `sending`,
+            /// `requested`, `confirmed`, `completed` (it finished first), `failed`,
+            /// `unsupported` or `unknown`. Absent on an older Mac, and on every clip nobody
+            /// tried to cancel.
+            public var cancelState: String?
+            /// The node's own words about that cancel, when it gave any.
+            public var cancelDetail: String?
+            /// Whether `cancel` applies to this clip now — the Mac's answer, per item, and
+            /// the only one this app goes by: its node advertises job cancellation for the
+            /// lane, and the render may still be running.
+            public var canCancel: Bool?
 
             public init(
                 id: String, batchID: String, title: String, prompt: String, scene: Int,
@@ -637,7 +654,8 @@ public enum ControlAPI {
                 uncertainSubmission: Bool, h3Steps: Int? = nil,
                 negativePrompt: String? = nil, detail: String? = nil,
                 mediaID: String? = nil, mediaURL: String? = nil,
-                thumbnailMediaID: String? = nil
+                thumbnailMediaID: String? = nil, cancelState: String? = nil,
+                cancelDetail: String? = nil, canCancel: Bool? = nil
             ) {
                 self.id = id
                 self.batchID = batchID
@@ -662,6 +680,9 @@ public enum ControlAPI {
                 self.mediaID = mediaID
                 self.mediaURL = mediaURL
                 self.thumbnailMediaID = thumbnailMediaID
+                self.cancelState = cancelState
+                self.cancelDetail = cancelDetail
+                self.canCancel = canCancel
             }
         }
         public var paused: Bool
@@ -674,6 +695,34 @@ public enum ControlAPI {
             self.activeID = activeID
             self.message = message
             self.items = items
+        }
+    }
+
+    /// `POST /video/queue/control`: one of the Mac's seven verbs, and the queue it answers
+    /// with. `stop_following` lets go of a clip while its node may keep rendering it;
+    /// `cancel` asks that node to stop the one render, and applies only where the item's
+    /// `canCancel` says so. A Mac older than `cancel` answers it with a 400.
+    public struct VideoQueueControl: Codable, Sendable, Equatable {
+        public static let pause = "pause"
+        public static let resume = "resume"
+        public static let retry = "retry"
+        public static let remove = "remove"
+        public static let stopFollowing = "stop_following"
+        public static let cancel = "cancel"
+        public static let clearFinished = "clear_finished"
+
+        /// The verbs that mean nothing without an item.
+        public static let needsID: Set<String> = [retry, remove, stopFollowing, cancel]
+
+        public var action: String
+        public var id: String?
+        /// `retry` on a clip that may already have been rendered, sent deliberately.
+        public var confirmNewRender: Bool?
+
+        public init(action: String, id: String? = nil, confirmNewRender: Bool? = nil) {
+            self.action = action
+            self.id = id
+            self.confirmNewRender = confirmNewRender
         }
     }
 

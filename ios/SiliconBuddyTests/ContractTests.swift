@@ -47,6 +47,12 @@ final class ContractTests: XCTestCase {
             piece = try XCTUnwrap(
                 fields["errors"]?[status], "\(name) has no \(part)", file: file, line: line
             )
+        } else if part.hasPrefix("requests.") {
+            // `requests.cancel`: one of the bodies a route with several verbs takes.
+            let verb = String(part.dropFirst("requests.".count))
+            piece = try XCTUnwrap(
+                fields["requests"]?[verb], "\(name) has no \(part)", file: file, line: line
+            )
         } else if part.hasPrefix("responseVariants.") {
             // `responseVariants.still loading`: another answer the same route can give.
             let label = String(part.dropFirst("responseVariants.".count))
@@ -191,6 +197,62 @@ final class ContractTests: XCTestCase {
         let done = try XCTUnwrap(queue.items.first { $0.status == "completed" })
         XCTAssertNotNil(done.mediaID)
         XCTAssertNotNil(done.thumbnailMediaID)
+        try roundTrip(ControlAPI.VideoQueueView.self, "POST__video_queue")
+    }
+
+    /// Seven verbs, each with a fixture of its own, and no eighth.
+    func testControllingTheQueue() throws {
+        guard case .object(let requests)? = try fixture("POST__video_queue_control")["requests"] else {
+            return XCTFail("POST__video_queue_control has no requests")
+        }
+        let verbs = Set(requests.keys)
+        XCTAssertEqual(verbs, [
+            ControlAPI.VideoQueueControl.pause, ControlAPI.VideoQueueControl.resume,
+            ControlAPI.VideoQueueControl.retry, ControlAPI.VideoQueueControl.remove,
+            ControlAPI.VideoQueueControl.stopFollowing, ControlAPI.VideoQueueControl.cancel,
+            ControlAPI.VideoQueueControl.clearFinished,
+        ])
+        for verb in verbs.sorted() {
+            let sent = try roundTrip(
+                ControlAPI.VideoQueueControl.self, "POST__video_queue_control", "requests.\(verb)"
+            )
+            XCTAssertEqual(sent.action, verb)
+            XCTAssertEqual(
+                sent.id != nil, ControlAPI.VideoQueueControl.needsID.contains(verb),
+                "\(verb) names an item exactly when it needs one"
+            )
+        }
+        XCTAssertEqual(
+            try roundTrip(ControlAPI.VideoQueueControl.self, "POST__video_queue_control", "requests.retry")
+                .confirmNewRender, true, "retry is the one that has to be meant"
+        )
+        try roundTrip(ControlAPI.VideoQueueView.self, "POST__video_queue_control")
+        let swarm = try roundTrip(
+            ControlAPI.ErrorResponse.self, "POST__video_queue_control", "errorVariants.403.swarm"
+        )
+        XCTAssertTrue(swarm.error.contains("swarm"), "the swarm secret is refused every verb")
+    }
+
+    /// `cancel` names the one clip the Mac marked `canCancel`; whether it applies is the
+    /// Mac's answer per item, never this app's guess.
+    func testCancellingARenderNamesTheClipTheMacSaysCanBeCancelled() throws {
+        let sent = try roundTrip(
+            ControlAPI.VideoQueueControl.self, "POST__video_queue_control", "requests.cancel"
+        )
+        XCTAssertEqual(sent.action, ControlAPI.VideoQueueControl.cancel)
+        XCTAssertNil(sent.confirmNewRender)
+        for name in ["GET__video_queue", "POST__video_queue", "POST__video_queue_control"] {
+            let items = try roundTrip(ControlAPI.VideoQueueView.self, name).items
+            XCTAssertEqual(
+                items.filter { $0.offersCancelRender(canControl: true) }.map(\.id), [sent.id],
+                "\(name) offers Cancel render on exactly the clip it marks"
+            )
+            XCTAssertFalse(items.contains { $0.offersCancelRender(canControl: false) })
+            let cancelled = try XCTUnwrap(items.first { $0.status == "cancelled" })
+            XCTAssertEqual(QueueCancelState(wire: cancelled.cancelState), .confirmed)
+            XCTAssertEqual(cancelled.phase, .cancelled)
+            XCTAssertFalse(cancelled.cancelDetail?.isEmpty ?? true)
+        }
     }
 
     func testImageModels() throws {
@@ -227,7 +289,26 @@ final class ContractTests: XCTestCase {
 
     func testPlanRequest() throws {
         try roundTrip(ControlAPI.PlanRequest.self, "POST__plan", "request")
-        try roundTrip(ControlAPI.Plan.self, "POST__plan")
+        XCTAssertNil(
+            try roundTrip(ControlAPI.Plan.self, "POST__plan").recurrentStateBytes,
+            "an ordinary model has no recurrent state"
+        )
+    }
+
+    /// A hybrid model's plan (OGZamasu/silicon-optimizer#26) carries its fixed
+    /// linear-attention state. The exported example is not a hybrid, so the field is added
+    /// to it here — and it has to survive the round trip, which it would not unmirrored.
+    func testAHybridModelsPlanCarriesItsRecurrentState() throws {
+        guard case .object(var plan)? = try fixture("POST__plan")["response"] else {
+            return XCTFail("POST__plan has no response")
+        }
+        plan["recurrentStateBytes"] = .number(301_989_888)
+        let decoded = try JSONDecoder.buddy.decode(
+            ControlAPI.Plan.self, from: try JSONEncoder().encode(JSONValue.object(plan))
+        )
+        XCTAssertEqual(decoded.recurrentStateBytes, 301_989_888)
+        let rebuilt = try JSONValue(data: try JSONEncoder.buddy.encode(decoded)).strippingNulls()
+        XCTAssertEqual(rebuilt, JSONValue.object(plan).strippingNulls())
     }
 
     // MARK: - The M0 routes
@@ -486,6 +567,8 @@ final class ContractTests: XCTestCase {
         "GET__ondevice_models 403 swarm",
         "GET__ondevice_models__id__file 403 swarm",
         "POST__ondevice_models__id__prepare 403 swarm",
+        // The queue's controls are the owner's: the swarm secret is refused every verb.
+        "POST__video_queue_control 403 swarm",
     ]
 
     /// The refusals a status can carry beyond the one in `errors`, read strictly: each is

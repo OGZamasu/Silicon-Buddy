@@ -54,7 +54,7 @@ struct PhoneTabs: View {
     @State private var openConversation: String?
     @State private var tab = Tab.dashboard
 
-    enum Tab: Hashable { case dashboard, models, chat, settings }
+    enum Tab: Hashable { case dashboard, models, queue, chat, settings }
 
     var body: some View {
         TabView(selection: $tab) {
@@ -69,6 +69,12 @@ struct PhoneTabs: View {
             }
             .tabItem { Label("Models", systemImage: "square.stack.3d.up") }
             .tag(Tab.models)
+
+            NavigationStack {
+                QueueView()
+            }
+            .tabItem { Label("Queue", systemImage: "film.stack") }
+            .tag(Tab.queue)
 
             NavigationStack {
                 ConversationListView(model: chat) { id in openConversation = id }
@@ -110,7 +116,7 @@ struct PadSplit: View {
     @State private var columns = NavigationSplitViewVisibility.all
 
     enum SidebarItem: Hashable {
-        case dashboard, models, settings
+        case dashboard, models, queue, settings
         case conversation(String)
     }
 
@@ -122,6 +128,8 @@ struct PadSplit: View {
                         .tag(SidebarItem.dashboard)
                     Label("Models", systemImage: "square.stack.3d.up")
                         .tag(SidebarItem.models)
+                    Label("Render queue", systemImage: "film.stack")
+                        .tag(SidebarItem.queue)
                     Label("Settings", systemImage: "gearshape")
                         .tag(SidebarItem.settings)
                 }
@@ -177,6 +185,8 @@ struct PadSplit: View {
                     DashboardView()
                 case .models:
                     ModelsView()
+                case .queue:
+                    QueueView()
                 case .settings:
                     SettingsView(chat: chat)
                 case .conversation(let id):
