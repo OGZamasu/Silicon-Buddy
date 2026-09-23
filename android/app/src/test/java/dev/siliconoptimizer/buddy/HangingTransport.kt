@@ -48,7 +48,7 @@ open class HangingTransport : ControlTransport {
     override suspend fun imageModels(): List<ImageModel> = hang()
     override suspend fun load(request: LoadRequest): Status = hang()
     override suspend fun install(request: LoadRequest): String = hang()
-    override suspend fun unload() = hang()
+    override suspend fun unload(): Unit = hang()
     override suspend fun chat(request: ChatRequest): ChatResponse = hang()
     override suspend fun pair(code: String, deviceName: String, platform: String): PairResponse =
         hang()

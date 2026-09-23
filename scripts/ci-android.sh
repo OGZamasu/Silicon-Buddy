@@ -126,12 +126,14 @@ for class in AskQuickPromptAction ClearQuickAnswerAction; do
     grep -q "dev.siliconoptimizer.buddy.widget.$class$" "$seeds" || fail "$class was not kept"
 done
 # 48 after M2.1, 62 with M3's media types, 75 with M4's agent sessions, 83 with M5's phone
-# models. Raise it with every wire type: a floor that lags lets a lost serializer through.
+# models, 84 with a failed load's facts. Raise it with every wire type: a floor that lags
+# lets a lost serializer through.
 serializers=$(grep -oE '^[A-Za-z0-9_.]+\$\$serializer' "$seeds" | sort -u | wc -l | tr -d ' ')
 echo "serializers kept: $serializers"
-[ "$serializers" -ge 83 ] || fail "only $serializers serializers kept, expected at least 83"
+[ "$serializers" -ge 84 ] || fail "only $serializers serializers kept, expected at least 84"
 for type in AgentEvent AgentSessionDetail AgentSessionSummary AgentApproval ResyncEvent \
-            PhoneModel PhoneModelList PhoneModelOnMac PhoneModelRecommended PhoneModelMeasured; do
+            PhoneModel PhoneModelList PhoneModelOnMac PhoneModelRecommended PhoneModelMeasured \
+            LoadFailure; do
     grep -qF "dev.siliconoptimizer.buddy.transport.$type\$\$serializer" "$seeds" ||
         fail "$type's serializer was not kept"
 done

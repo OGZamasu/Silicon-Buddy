@@ -47,6 +47,12 @@ final class ContractTests: XCTestCase {
             piece = try XCTUnwrap(
                 fields["errors"]?[status], "\(name) has no \(part)", file: file, line: line
             )
+        } else if part.hasPrefix("responseVariants.") {
+            // `responseVariants.still loading`: another answer the same route can give.
+            let label = String(part.dropFirst("responseVariants.".count))
+            piece = try XCTUnwrap(
+                fields["responseVariants"]?[label], "\(name) has no \(part)", file: file, line: line
+            )
         } else if part.hasPrefix("errorVariants.") {
             // `errorVariants.409.still screening`: one more refusal a status can carry.
             let path = part.dropFirst("errorVariants.".count)
@@ -203,6 +209,17 @@ final class ContractTests: XCTestCase {
     func testLoadAndInstall() throws {
         try roundTrip(ControlAPI.LoadRequest.self, "POST__load", "request")
         try roundTrip(ControlAPI.Status.self, "POST__load")
+        // A load slower than the request's patience: the live status, nothing resident yet,
+        // and nothing claimed to have failed — the load carries on on the Mac.
+        let stillLoading = try roundTrip(ControlAPI.Status.self, "POST__load", "responseVariants.still loading")
+        XCTAssertNil(stillLoading.loadedModelID)
+        XCTAssertNil(stillLoading.failure)
+        // A second load while one runs is refused, and the phone is told it as a conflict.
+        let body = try JSONEncoder().encode(try XCTUnwrap(try fixture("POST__load")["errors"]?["409"]))
+        guard case .conflict(let message)? = TransportError.from(status: 409, body: body, path: "/load") else {
+            return XCTFail("409 on /load should be a conflict")
+        }
+        XCTAssertTrue(message.contains("Nothing was changed"))
         try roundTrip(ControlAPI.LoadRequest.self, "POST__install", "request")
         try roundTrip(ControlAPI.StatusMessage.self, "POST__install")
         try roundTrip(ControlAPI.StatusMessage.self, "POST__unload")
@@ -293,7 +310,10 @@ final class ContractTests: XCTestCase {
         XCTAssertFalse(qwen.recommended.thinking)
         XCTAssertEqual(qwen.measured?.secondsToFirstWord300, 2.5)
         XCTAssertNil(qwen.measured?.sustainedTokensPerSecond, "not measured is not claimed")
-        let gemma = try XCTUnwrap(list.models.first { !$0.isDefault })
+        // The Mac lists more than one alternative now; each is found by its id.
+        let gemma = try XCTUnwrap(list.models.first { $0.id == "gemma-4-e2b-q4_0" })
+        XCTAssertFalse(gemma.isDefault)
+        XCTAssertEqual(list.models.filter(\.isDefault).count, 1, "only one default")
         XCTAssertTrue(gemma.slowerOnPhone)
         XCTAssertEqual(gemma.recommended.minFreeMemoryBytes, 4_700_000_000)
         XCTAssertEqual(gemma.onMac.state, "failed")
@@ -761,12 +781,58 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(json["messages"]?[0]?["images"], .array([]))
     }
 
+    // MARK: - A failed load
+
+    /// Every ending the Mac documents on `GET /status`, decoded and re-encoded whole.
+    func testEveryFailedLoadTheMacDocumentsRoundTrips() throws {
+        guard case .object(let variants)? = try fixture("GET__status")["responseVariants"] else {
+            return XCTFail("GET /status documents no failed loads — refresh the contract")
+        }
+        var decoded: [String: ControlAPI.Status] = [:]
+        for label in variants.keys {
+            decoded[label] = try roundTrip(ControlAPI.Status.self, "GET__status", "responseVariants.\(label)")
+        }
+        XCTAssertGreaterThanOrEqual(decoded.count, 5)
+        for (label, status) in decoded {
+            let failure = try XCTUnwrap(status.failure, label)
+            XCTAssertFalse(status.state.contains("\n"), "\(label): state stays one line")
+            XCTAssertNil(status.loadedModelID, label)
+            XCTAssertFalse(failure.at.isEmpty, label)
+        }
+
+        let killed = try XCTUnwrap(decoded["after a failed load"]?.failure)
+        XCTAssertEqual(killed.kind, .killed)
+        XCTAssertEqual(killed.signal, 9)
+        XCTAssertTrue(killed.detail?.contains("load_tensors") == true, "the log is the detail")
+        XCTAssertEqual(killed.facts, "llama.cpp · signal 9")
+
+        let replaced = try XCTUnwrap(decoded["after a load that was replaced"]?.failure)
+        XCTAssertTrue(replaced.wasReplaced)
+        XCTAssertEqual(replaced.kind, .replaced)
+        XCTAssertEqual(decoded["after a load that was cancelled"]?.failure?.kind, .cancelled)
+        XCTAssertEqual(decoded["after a load that never answered"]?.failure?.kind, .timedOut)
+
+        // A device paired for chat is told the same failure without the runtime's log.
+        let withheld = try XCTUnwrap(decoded["as a chat-scope device or a peer sees it"])
+        XCTAssertNil(withheld.failure?.detail)
+        XCTAssertEqual(withheld.state, decoded["after a failed load"]?.state)
+    }
+
+    func testAFailureReasonThisAppDoesNotKnowReadsAsExited() throws {
+        let json = Data(#"{"state":"The runtime ran out of cheese.","expertStreaming":false,"failure":{"reason":"outOfCheese","wasReplaced":false,"at":"2026-09-19T11:04:38Z"}}"#.utf8)
+        let failure = try XCTUnwrap(try JSONDecoder.buddy.decode(ControlAPI.Status.self, from: json).failure)
+        XCTAssertEqual(failure.kind, .exited)
+        XCTAssertNil(failure.detail)
+        XCTAssertNil(failure.facts, "nothing to say about how it ended")
+    }
+
     // MARK: - Decoding is forgiving where the Mac says it may be
 
     func testAStatusFromAnOlderMacStillDecodes() throws {
         let json = Data(#"{"state":"Not loaded","expertStreaming":false}"#.utf8)
         let status = try JSONDecoder.buddy.decode(ControlAPI.Status.self, from: json)
         XCTAssertFalse(status.hasLoadedModel)
+        XCTAssertNil(status.failure, "a Mac from before failures were structured sends none")
     }
 
     func testAPairResponseWithoutAScopeMeansFull() throws {

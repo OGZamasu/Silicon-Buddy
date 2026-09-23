@@ -5,8 +5,12 @@ public struct RootView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
+    let models: ModelsModel
 
-    public init(chat: ChatModel) { self.chat = chat }
+    public init(chat: ChatModel, models: ModelsModel) {
+        self.chat = chat
+        self.models = models
+    }
 
     public var body: some View {
         Group {
@@ -23,7 +27,18 @@ public struct RootView: View {
             app.events.start(using: app.transport)
             chat.macChanged()
             Task { await chat.loadConversations(using: app.transport) }
+            // Whatever the list was following belongs to the last Mac: stopped, and read
+            // afresh from this one.
+            models.reset()
+            Task { await models.refresh(using: app.transport) }
         }
+        // What the Mac pushes is what the list shows, and a load it started is followed by
+        // it — `POST /load` may answer "still loading" and carry on — on whichever screen.
+        .onChange(of: app.events.status) { _, pushed in
+            if let pushed { models.statusChanged(pushed) }
+        }
+        .onChange(of: app.events.isLive, initial: true) { _, live in models.eventsLive = live }
+        .environment(models)
         // Answer checks arrive after the reply they are about, on the shared event
         // stream, so they are applied wherever the chat screen happens to be.
         .onChange(of: app.events.verdicts) { _, verdicts in

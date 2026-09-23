@@ -29,6 +29,18 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     /// survive it.
     var statusHangs = false
     var chatHangs = false
+    var installedHangs = false
+
+    /// Readings `GET /status` walks through before falling back to `statusResult`; the
+    /// last one repeats.
+    var statusReadings: [ControlAPI.Status] = []
+    private(set) var statusReads = 0
+    private(set) var loads = 0
+    /// How long `POST /load` takes to answer. Not cut short when the caller gives up: the
+    /// Mac answers when it answers, and a late answer is the case this exists for.
+    var loadDelay: Duration?
+    var installError: Error?
+    var unloadError: Error?
 
     private(set) var chatCallCount = 0
     private(set) var streamCallCount = 0
@@ -44,11 +56,17 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     func health() async throws -> ControlAPI.Health { try healthResult.get() }
     func status() async throws -> ControlAPI.Status {
         if statusHangs { try await Task.sleep(for: .seconds(3600)) }
+        statusReads += 1
+        if statusReadings.count > 1 { return statusReadings.removeFirst() }
+        if let last = statusReadings.first { return last }
         return try statusResult.get()
     }
     func profile() async throws -> ControlAPI.Profile { try profileResult.get() }
     func metrics() async throws -> ControlAPI.Metrics { try metricsResult.get() }
-    func installed() async throws -> [ControlAPI.InstalledModel] { try installedResult.get() }
+    func installed() async throws -> [ControlAPI.InstalledModel] {
+        if installedHangs { try await Task.sleep(for: .seconds(3600)) }
+        return try installedResult.get()
+    }
     func catalog(category: String?, onlyRunnable: Bool) async throws -> [ControlAPI.CatalogModel] {
         try catalogResult.get()
     }
@@ -57,10 +75,19 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     func videoModels() async throws -> [ControlAPI.VideoModel] { [] }
     func imageModels() async throws -> [ControlAPI.ImageModel] { [] }
     func load(_ request: ControlAPI.LoadRequest) async throws -> ControlAPI.Status {
-        try loadResult.get()
+        loads += 1
+        if let loadDelay {
+            await Task.detached { try? await Task.sleep(for: loadDelay) }.value
+        }
+        return try loadResult.get()
     }
-    func install(_ request: ControlAPI.LoadRequest) async throws -> String { "Downloading." }
-    func unload() async throws {}
+    func install(_ request: ControlAPI.LoadRequest) async throws -> String {
+        if let installError { throw installError }
+        return "Downloading."
+    }
+    func unload() async throws {
+        if let unloadError { throw unloadError }
+    }
 
     func chat(_ request: ControlAPI.ChatRequest) async throws -> ControlAPI.ChatResponse {
         chatCallCount += 1

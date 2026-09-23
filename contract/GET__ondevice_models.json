@@ -73,6 +73,30 @@
         }
       },
       {
+        "id" : "qwen3.5-0.8b-q4_0",
+        "isDefault" : false,
+        "label" : "Qwen3.5 0.8B",
+        "licence" : "Apache-2.0",
+        "onMac" : {
+          "state" : "absent"
+        },
+        "recommended" : {
+          "contextLength" : 4096,
+          "minFreeMemoryBytes" : 1400000000,
+          "thinking" : false,
+          "threadsGenerate" : 4,
+          "threadsPrompt" : 6
+        },
+        "sha256" : "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf",
+        "sizeBytes" : 563036064,
+        "slowerOnPhone" : false,
+        "source" : {
+          "commit" : "8fea620810c4afa23dd6443f999a48574c1611a3",
+          "file" : "Qwen3.5-0.8B-Q4_0.gguf",
+          "repo" : "ggml-org\/Qwen3.5-0.8B-GGUF"
+        }
+      },
+      {
         "id" : "gemma-4-e2b-q4_0",
         "isDefault" : false,
         "label" : "Gemma 4 E2B",
