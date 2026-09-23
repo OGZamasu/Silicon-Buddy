@@ -6,11 +6,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.agents.AgentNotifications
 import dev.siliconoptimizer.buddy.agents.AgentNotifier
 import dev.siliconoptimizer.buddy.pairing.PairingExchange
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
+import dev.siliconoptimizer.buddy.pairing.PendingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.widget.BuddyWidget
@@ -30,7 +32,7 @@ import kotlinx.coroutines.launch
  * The one piece of state every screen needs: which Mac we are talking to, whether it is
  * answering, and which of the newer routes it turned out to have.
  */
-class AppState(application: Application) : AndroidViewModel(application) {
+class AppState(application: Application, saved: SavedStateHandle) : AndroidViewModel(application) {
 
     private val tokens = TokenStore(application)
     private val snapshots = SnapshotStore(application)
@@ -50,11 +52,16 @@ class AppState(application: Application) : AndroidViewModel(application) {
     var connectionGeneration by mutableStateOf(0)
         private set
 
+    private val waiting = PendingInvite(saved)
+
     /**
      * An invite from a QR or a link that has not been agreed to yet. Nothing is dialled
-     * and nothing is stored until the person says yes.
+     * and nothing is stored until the person says yes. Unanswered, it outlives the
+     * process: see [PendingInvite].
      */
-    var pendingInvite by mutableStateOf<PairingInvite?>(null)
+    var pendingInvite: PairingInvite?
+        get() = waiting.invite
+        set(value) = waiting.offer(value)
 
     val isPaired: Boolean get() = config != null
 
@@ -93,8 +100,8 @@ class AppState(application: Application) : AndroidViewModel(application) {
      * [pairing]: a Mac that has not shipped `/buddy/pair` ends it as `macTooOld`, so the
      * screen can say that Mac needs updating.
      */
-    fun startPairing(invite: PairingInvite): Boolean =
-        pairing.start(
+    fun startPairing(invite: PairingInvite): Boolean {
+        val started = pairing.start(
             invite,
             exchange = { it.exchange(deviceName, platform) },
             store = { newConfig ->
@@ -104,6 +111,10 @@ class AppState(application: Application) : AndroidViewModel(application) {
                 refreshReachability()
             },
         )
+        // Answered: a restart from here on does not ask about it again.
+        if (started && pendingInvite == invite) waiting.spending()
+        return started
+    }
 
     /**
      * Stores a Mac this device can already talk to: the end of [startPairing], and the
