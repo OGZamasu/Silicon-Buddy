@@ -26,8 +26,10 @@ import java.util.concurrent.TimeUnit;
  *
  * It speaks the little of the control API the Agents tab needs: pairing, health, status,
  * the event stream with `agent` frames, the two sessions, and answering the approvals Codex
- * is holding — one, or two when a test needs to tell them apart. Everything else is the
- * Mac's 404, which the app already treats as a route this Mac does not have.
+ * is holding — one, or two when a test needs to tell them apart. And the little the Models
+ * tab needs: one model on disk, and loading and unloading it — each of which a test can make
+ * fail. Everything else is the Mac's 404, which the app already treats as a route this Mac
+ * does not have.
  */
 final class FakeMac implements Closeable {
 
@@ -49,6 +51,23 @@ final class FakeMac implements Closeable {
     volatile String secondDecision;
     private final boolean second;
     private int seq = 41;
+
+    // MARK: - The Models tab
+
+    static final String DRIVE_GONE = "The model drive is disconnected.";
+    static final String IDLE = "{\"state\":\"Not loaded\",\"expertStreaming\":false}";
+    static final String LOADED = "{\"state\":\"Ready\",\"loadedModelID\":\"test-model@Q4_K_M\","
+        + "\"loadedModelName\":\"Test Model\",\"contextLength\":4096,\"expertStreaming\":false}";
+    private static final String INSTALLED = "[{\"id\":\"test-model@Q4_K_M\",\"name\":\"Test Model\","
+        + "\"quantization\":\"Q4_K_M\",\"sizeOnDiskBytes\":1300000000,\"isLoaded\":false,"
+        + "\"supportsVision\":false}]";
+
+    /** `GET /installed` answers 503 while this is set. */
+    volatile boolean installedFails;
+    /** `POST /load` answers 503 while this is set. */
+    volatile boolean loadFails;
+    /** What `GET /status` says; null for the Agents tests' plain "Ready". */
+    volatile String status;
 
     FakeMac() throws IOException {
         this(false);
@@ -238,7 +257,23 @@ final class FakeMac implements Closeable {
                 return;
             }
             if (path.equals("/status")) {
-                reply(output, 200, "{\"state\":\"Ready\",\"expertStreaming\":false}");
+                String now = status;
+                reply(output, 200, now != null ? now : "{\"state\":\"Ready\",\"expertStreaming\":false}");
+            } else if (path.equals("/installed")) {
+                if (installedFails) reply(output, 503, "{\"error\":\"" + DRIVE_GONE + "\"}");
+                else reply(output, 200, INSTALLED);
+            } else if (path.equals("/catalog")) {
+                reply(output, 200, "[]");
+            } else if (method.equals("POST") && path.equals("/load")) {
+                if (loadFails) {
+                    reply(output, 503, "{\"error\":\"" + DRIVE_GONE + "\"}");
+                } else {
+                    status = LOADED;
+                    reply(output, 200, LOADED);
+                }
+            } else if (method.equals("POST") && path.equals("/unload")) {
+                status = IDLE;
+                reply(output, 200, "{\"status\":\"unloaded\"}");
             } else if (path.equals("/events")) {
                 stream(output);
             } else if (path.equals("/agent/sessions")) {

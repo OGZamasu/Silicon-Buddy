@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.Button
@@ -23,6 +26,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -36,6 +40,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
@@ -84,6 +91,20 @@ fun ModelsScreen(
                     ),
                 ) { Text(section.label) }
             }
+        }
+
+        // Above the list rather than in it, so it is on screen whichever section is.
+        model.problem?.let { problem ->
+            ProblemBanner(
+                problem = problem,
+                onRetry = if (problem.retry != null && app.isPaired) {
+                    { model.retry(app.transport) }
+                } else {
+                    null
+                },
+                onDismiss = model::clearError,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
         }
 
         model.job?.let { job ->
@@ -147,8 +168,21 @@ fun ModelsScreen(
                             HorizontalDivider()
                         }
                     }
-                    item { SectionHeader("${model.filteredInstalled.size} on disk") }
-                    if (model.filteredInstalled.isEmpty() && !model.isLoading) {
+                    // Nothing arrived, which is not the same as an empty disk: saying "Your
+                    // model library… explore the Catalog" then would be false.
+                    val listMissing = model.installedFailed && model.installed.isEmpty()
+                    if (listMissing) {
+                        item {
+                            ListUnavailable(
+                                "The Mac's models didn't load",
+                                "This phone couldn't read what is on the Mac's disk. " +
+                                    "Nothing there has changed.",
+                            ) { model.refresh(app.transport) }
+                        }
+                    } else {
+                        item { SectionHeader("${model.filteredInstalled.size} on disk") }
+                    }
+                    if (model.filteredInstalled.isEmpty() && !model.isLoading && !listMissing) {
                         item {
                             EmptyState(
                                 if (model.search.isNotBlank()) "No matching models" else "Your model library",
@@ -174,7 +208,16 @@ fun ModelsScreen(
                 }
 
                 ModelsViewModel.Section.Catalog -> {
-                    item { SectionHeader("${model.filteredCatalog.size} in the catalog") }
+                    if (model.catalogFailed && model.catalog.isEmpty()) {
+                        item {
+                            ListUnavailable(
+                                "The catalog didn't load",
+                                "This phone couldn't read the Mac's catalog.",
+                            ) { model.refresh(app.transport) }
+                        }
+                    } else {
+                        item { SectionHeader("${model.filteredCatalog.size} in the catalog") }
+                    }
                     items(model.filteredCatalog, key = { it.id }) { entry ->
                         CatalogRow(entry, app.canControl) {
                             model.install(entry, transport = app.transport)
@@ -183,7 +226,15 @@ fun ModelsScreen(
                 }
 
                 ModelsViewModel.Section.Cloud -> {
-                    if (model.filteredCloud.isEmpty()) {
+                    if (model.catalogFailed && model.catalog.isEmpty()) {
+                        item {
+                            ListUnavailable(
+                                "The catalog didn't load",
+                                "Cloud models are listed in the Mac's catalog, and this " +
+                                    "phone couldn't read it.",
+                            ) { model.refresh(app.transport) }
+                        }
+                    } else if (model.filteredCloud.isEmpty()) {
                         item {
                             Column(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
                                 Text("No cloud models yet", style = MaterialTheme.typography.titleMedium)
@@ -217,6 +268,59 @@ private fun SectionHeader(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
     )
+}
+
+/**
+ * Why the last thing asked of the Mac did not happen: announced as it appears, put away
+ * by hand, and with Retry only where asking again could help.
+ */
+@Composable
+private fun ProblemBanner(
+    problem: ModelsViewModel.Problem,
+    onRetry: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val content = MaterialTheme.colorScheme.onErrorContainer
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(16.dp))
+            .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = content)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp, top = 6.dp, bottom = 6.dp)
+                    // One announcement, heading and sentence together, when it appears.
+                    .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            ) {
+                Text(problem.title, style = MaterialTheme.typography.titleSmall, color = content)
+                Text(problem.message, style = MaterialTheme.typography.bodySmall, color = content)
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = content)
+            }
+        }
+        onRetry?.let {
+            TextButton(onClick = it, modifier = Modifier.padding(start = 22.dp)) {
+                Text("Retry", color = content)
+            }
+        }
+    }
+}
+
+/** A list that did not arrive, said as that rather than as an empty one. */
+@Composable
+private fun ListUnavailable(title: String, message: String, onRetry: () -> Unit) {
+    Column {
+        EmptyState(title, message, Icons.Filled.CloudOff)
+        OutlinedButton(onClick = onRetry, modifier = Modifier.padding(horizontal = 24.dp)) {
+            Text("Try again")
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
