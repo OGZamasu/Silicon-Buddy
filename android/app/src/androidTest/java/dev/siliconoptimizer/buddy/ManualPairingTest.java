@@ -22,6 +22,7 @@ import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.regex.Pattern;
 
 import org.junit.After;
@@ -182,6 +183,79 @@ public class ManualPairingTest {
             waitFor(() -> mac.saw("POST", "/buddy/pair")));
         String body = mac.bodyOf("POST", "/buddy/pair");
         assertTrue(body, body.contains("\"code\":\"246810\""));
+    }
+
+    /**
+     * Closing the sheet while the Mac is answering. The code was spent in the sheet's own
+     * coroutine scope, so closing it cancelled the request — after the Mac had the code, had
+     * made this phone a device, and was sending back its token. Now the request is the app's,
+     * and the answer that comes after the sheet has gone is kept.
+     */
+    @Test
+    public void closingTheSheetMidPairingStillKeepsTheMacsAnswer() throws Exception {
+        mac.macName = "Slow Mac";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("135 790");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+
+        closeTheSheet();
+        mac.pairHeld.countDown();
+
+        assertNotNull("the Mac's answer, which came after the sheet closed, was dropped",
+            device.wait(Until.findObject(By.text("Slow Mac")), WAIT));
+        assertTrue("and the phone talks to it with the token it was given",
+            waitFor(() -> mac.saw("GET", "/status")));
+    }
+
+    /**
+     * The same, when the Mac says no. The sheet that would have said so is gone, so the app
+     * says it, and names the Mac that refused.
+     */
+    @Test
+    public void aRefusalThatComesAfterTheSheetClosedIsStillSaid() throws Exception {
+        mac.pairRefusal = "That pairing code has expired.";
+        mac.pairHeld = new CountDownLatch(1);
+        spendATypedCode("246 813");
+        assertTrue("the typed code never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+
+        closeTheSheet();
+        mac.pairHeld.countDown();
+
+        assertNotNull("a refusal nobody was left to show was never said",
+            device.wait(Until.findObject(By.text("Pairing didn't finish")), WAIT));
+        assertNotNull(device.findObject(By.textContains("That pairing code has expired.")));
+        assertNotNull(device.findObject(By.textContains("127.0.0.1:" + mac.port())));
+        device.findObject(By.text("OK")).click();
+        assertTrue(device.wait(Until.gone(By.text("Pairing didn't finish")), WAIT));
+    }
+
+    /** The code form, filled with {@code code} for this test's Mac, and its Pair tapped. */
+    private void spendATypedCode(String code) {
+        openCodeForm();
+        List<UiObject2> fields = device.wait(Until.findObjects(By.clazz("android.widget.EditText")), WAIT);
+        assertNotNull(fields);
+        assertTrue("expected the code, the address and the port, got " + fields.size(), fields.size() >= 3);
+        fields.get(0).setText(code);
+        fields.get(1).setText("127.0.0.1");
+        fields.get(2).setText(String.valueOf(mac.port()));
+        hideKeyboard();
+        UiObject2 pair = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
+        assertNotNull("no Pair button", pair);
+        boolean replacing = pair.getText().startsWith("Replace");
+        pair.click();
+        if (replacing) {
+            UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
+            assertNotNull(replace);
+            replace.click();
+        }
+    }
+
+    /** The sheet's own Close, while the Mac is still thinking. */
+    private void closeTheSheet() {
+        UiObject2 close = device.wait(Until.findObject(By.text("Close")), WAIT);
+        assertNotNull("the sheet has no Close", close);
+        close.click();
+        assertTrue("the sheet stayed up", device.wait(Until.gone(By.text("Pairing code")), WAIT));
     }
 
     /** Settings, pairing, and the camera refused: which lands on the code form. */

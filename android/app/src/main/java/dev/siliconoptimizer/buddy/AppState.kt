@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.agents.AgentNotifications
 import dev.siliconoptimizer.buddy.agents.AgentNotifier
+import dev.siliconoptimizer.buddy.pairing.PairingExchange
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
@@ -80,18 +81,33 @@ class AppState(application: Application) : AndroidViewModel(application) {
     // MARK: - Pairing
 
     /**
-     * Trades an invite — scanned, followed as a link, or typed in — for a per-device
-     * token. Throws `TransportError.RouteUnavailable` on a Mac that has not shipped
-     * `/buddy/pair`, so the caller can say that Mac needs updating.
+     * The code being spent, and how the last one ended when no screen has said so yet. Here
+     * rather than in the sheet or the dialog, so that closing either never cuts off a request
+     * the Mac may already have answered.
      */
-    suspend fun pair(invite: PairingInvite) {
-        connect(invite.exchange(deviceName, platform))
-        refreshReachability()
-    }
+    val pairing = PairingExchange(viewModelScope)
 
     /**
-     * Stores a Mac this device can already talk to: the end of [pair], and the Developer
-     * form's host, port and control.json token, which only the emulator can use.
+     * Trades an invite — scanned, followed as a link, or typed in — for a per-device token,
+     * and stores it. False while another code is still being spent. How it goes is in
+     * [pairing]: a Mac that has not shipped `/buddy/pair` ends it as `macTooOld`, so the
+     * screen can say that Mac needs updating.
+     */
+    fun startPairing(invite: PairingInvite): Boolean =
+        pairing.start(
+            invite,
+            exchange = { it.exchange(deviceName, platform) },
+            store = { newConfig ->
+                connect(newConfig)
+                // The invite it spent, not one that arrived while it was being spent.
+                if (pendingInvite == invite) pendingInvite = null
+                refreshReachability()
+            },
+        )
+
+    /**
+     * Stores a Mac this device can already talk to: the end of [startPairing], and the
+     * Developer form's host, port and control.json token, which only the emulator can use.
      */
     fun connect(newConfig: ServerConfig) {
         if (!TailnetHost.isAllowed(newConfig.host)) {
@@ -104,7 +120,6 @@ class AppState(application: Application) : AndroidViewModel(application) {
         snapshots.clear()
         status = null
         reachability = Reachability.Unknown
-        pendingInvite = null
         connectionGeneration++
         // "No longer paired" from a watcher that ended on a 401 is not true any more.
         AgentNotifier(getApplication()).cancel(AgentNotifications.LOST_TOUCH_NOTIFICATION)
