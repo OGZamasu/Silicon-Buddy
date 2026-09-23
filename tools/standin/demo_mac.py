@@ -1519,8 +1519,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/buddy/pair":
             body = self.read_body()
             live = INVITATION["code"] and time.time() < (INVITATION["expiresAt"] or 0)
-            if not live or body.get("code") != INVITATION["code"]:
-                return self.send_json({"error": "That code is wrong or has expired."}, 401)
+            # As the Mac (BuddyRegistry.pair): whitespace in the code is ignored, and a wrong
+            # code and no open code get one answer, 403 with this sentence. Never 401: a Mac
+            # that has this route cannot answer it that way, and the app reads a 401 here as a
+            # Mac too old for pairing codes.
+            offered = "".join(str(body.get("code") or "").split())
+            if not live or offered != INVITATION["code"]:
+                return self.send_json({"error": "That pairing code is not the one on screen."}, 403)
             token = "device-%06d" % random.randrange(1_000_000)
             DEVICE_TOKENS.add(token)
             TOKEN_SCOPES[token] = INVITATION["scope"]
