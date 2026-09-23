@@ -42,17 +42,20 @@ skipped when the stand-in does not serve it.
 |---|---|---|
 | `BUDDY_STANDIN_MODELS` | `tools/standin/models` | where the models are kept (git ignores it); give both scripts the same |
 | `STANDIN_PORT` | `8916` | another port needs the tests told too: `BUDDY_STANDIN=10.0.2.2:<port>` for `ci-android.sh`, or `-Pandroid.testInstrumentationRunnerArguments.standin=10.0.2.2:<port>` for Gradle |
-| `STANDIN_HOST` | `127.0.0.1` | loopback is all the emulator needs; a wider address is an unauthenticated model API on your network |
+| `STANDIN_HOST` | `127.0.0.1` | loopback is all the emulator needs. Any other address is refused unless `STANDIN_ALLOW_NONLOOPBACK=1`: the control token is public, so whoever can reach the stand-in can flip its switches, mint pairing codes and fetch its files |
 | `STANDIN_STATE` | `tools/standin/state/<port>` | its output, the request log, and the phones it has paired, kept across a restart |
 | `QWEN=0` | | leaves Qwen3.5 2B out even when it was fetched |
 | `READY=1` | | starts with every model already on the "Mac", rather than waiting to be prepared |
 
-`standin.sh stop` stops only the process `start` started, by its pid file.
+`standin.sh stop` stops only the process `start` started from this checkout, by its pid file.
+The stand-in serves a model only when the file is the pinned one; anything else is listed
+as "not serving" when it starts.
 
 ## Its own routes
 
 All of them take the stand-in's control token, `Authorization: Bearer demo-token`; a paired
-phone's own token is refused.
+phone's own token is refused. The token is the only check — it is public, and the loopback
+bind is what keeps these to your machine.
 
 | Route | What it does |
 |---|---|

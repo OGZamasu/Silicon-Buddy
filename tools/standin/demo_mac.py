@@ -15,25 +15,30 @@ Start it with tools/standin/standin.sh, which also says where the models come fr
 """
 
 import base64
+import ipaddress
 import json
 import os
 import random
 import re
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The stand-in's own made-up control token. It is in StandInMac.java too, which is how a
-# test mints a pairing code and flips the switches.
+# test mints a pairing code and flips the switches — and so it is public: anyone who can
+# reach this server can use it. The routes check only the token; what keeps them to this
+# machine is the bind below.
 TOKEN = "demo-token"
-# Loopback by default: the Android emulator reaches its host's loopback as 10.0.2.2, and a
-# stand-in answering on a LAN address would be an unauthenticated model API on somebody's
-# network. 8916 is what StandInMac expects unless told otherwise.
+# Loopback, which is all the Android emulator needs: it reaches its host's loopback as
+# 10.0.2.2. Any other address is refused at the bottom unless SILICON_DEMO_ALLOW_NONLOOPBACK=1
+# says so, because there the public token is the whole control surface of a server on
+# somebody's network. 8916 is what StandInMac expects unless told otherwise.
 HOST = os.environ.get("SILICON_DEMO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SILICON_DEMO_PORT", "8916"))
 
 # The pairing code the Mac's Settings UI would be showing, and the device tokens this
-# stand-in has minted. Loopback only, like the real thing — see the bind at the bottom.
+# stand-in has minted. A code is minted with the control token, as on the real Mac.
 INVITATION = {"code": None, "expiresAt": None, "scope": "full"}
 DEVICE_TOKENS = set()
 # What each minted token was paired for: the agent routes are full scope only.
@@ -890,14 +895,21 @@ def digest_of(path):
     return h.hexdigest()
 
 
-def add_phone_model(identifier, label, path, repo, commit, licence, recommended,
+def add_phone_model(identifier, label, path, repo, commit, pinned, licence, recommended,
                     measured=None, default=False, slower=False, ready=False):
     if not path or not os.path.exists(path):
+        return
+    # Only the pinned file. The phone checks what it fetched against the digest listed
+    # here, so a wrong file served under its own digest would pass that check.
+    digest = digest_of(path)
+    if digest != pinned:
+        print("not serving %s: %s is not the pinned file (sha256 %s, expected %s); "
+              "run tools/standin/fetch-models.sh" % (identifier, path, digest, pinned), flush=True)
         return
     PHONE[identifier] = {
         "entry": {
             "id": identifier, "label": label, "isDefault": default,
-            "sizeBytes": os.path.getsize(path), "sha256": digest_of(path),
+            "sizeBytes": os.path.getsize(path), "sha256": digest,
             "licence": licence,
             "source": {"repo": repo, "commit": commit, "file": os.path.basename(path)},
             "recommended": recommended, "slowerOnPhone": slower,
@@ -914,7 +926,7 @@ def seed_phone_models():
             "smollm2-135m-q8_0", "SmolLM2 135M",
             os.path.join(PHONE_DIR, "SmolLM2-135M-Instruct-Q8_0.gguf"),
             "bartowski/SmolLM2-135M-Instruct-GGUF", "09816acd5d99df7be770d85ea30822623dab342c",
-            "Apache-2.0",
+            "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83", "Apache-2.0",
             {"threadsPrompt": 2, "threadsGenerate": 2, "contextLength": 2048,
              "minFreeMemoryBytes": 400000000, "thinking": False},
             default=not QWEN_FILE, ready=ready)
@@ -922,7 +934,7 @@ def seed_phone_models():
             "stories260k-f32", "Stories 260K",
             os.path.join(PHONE_DIR, "stories260K-f32.gguf"),
             "ggml-org/test-model-stories260K", "479896ec924af6d40fd419ab8f4d1eb2101de00d",
-            "MIT",
+            "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d", "MIT",
             {"threadsPrompt": 2, "threadsGenerate": 2, "contextLength": 256,
              "minFreeMemoryBytes": 100000000, "thinking": False},
             ready=ready)
@@ -933,7 +945,7 @@ def seed_phone_models():
         add_phone_model(
             "qwen3.5-2b-q4_0", "Qwen3.5 2B", QWEN_FILE,
             "bartowski/Qwen_Qwen3.5-2B-GGUF", "7d26695454df6de5fbcce2e58681e62dae06ce43",
-            "Apache-2.0",
+            "91c102fc9a86de80e427057ee938e1e34fcaf3bba956b7296e252406e05f36f6", "Apache-2.0",
             {"threadsPrompt": 6, "threadsGenerate": 4, "contextLength": 4096,
              "minFreeMemoryBytes": 3100000000, "thinking": False},
             measured={
@@ -945,6 +957,9 @@ def seed_phone_models():
                 "firstWordEstimated": True, "sustainedMeasured": False,
                 "peakMemoryBytes": 2586836992, "peakMemoryContextTokens": 640},
             default=True, ready=ready)
+    # SmolLM2 is the default when Qwen was asked for but not served.
+    if "smollm2-135m-q8_0" in PHONE and not any(m["entry"]["isDefault"] for m in PHONE.values()):
+        PHONE["smollm2-135m-q8_0"]["entry"]["isDefault"] = True
 
 
 def phone_wire(identifier):
@@ -1553,7 +1568,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.phone_route("POST", path):
             return
 
-        # The stand-in's own switches, for the tests: loopback and the control token.
+        # The stand-in's own switches, for the tests: the control token only (public; the
+        # bind is what keeps them to this machine).
         if path == "/demo/unreachable":
             if not self.is_control():
                 return self.send_json({"error": "Only this Mac can do that."}, 403)
@@ -1574,7 +1590,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"knobs": PHONE_KNOBS,
                                    "states": {i: PHONE[i]["onMac"] for i in PHONE}})
 
-        # The owner answering at the Mac, for the stand-in: loopback and the control token.
+        # The owner answering at the Mac, for the stand-in: the control token only.
         answer = re.fullmatch(r"/demo/agents/([^/]+)/answer", path)
         if answer:
             if not self.is_control():
@@ -1586,8 +1602,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"id": approval["id"], "decision": decision})
 
         if path == "/buddy/invitations":
-            # Loopback and the control token only, which is the whole point of the route
-            # the Mac grew for this: tests and CLIs could not pair before it.
+            # The control token only, which is the whole point of the route the Mac grew
+            # for this: tests and CLIs could not pair before it. (The real Mac also insists
+            # on loopback; here only the bind does.)
             if not self.is_control():
                 return self.send_json({"error": "Only this Mac can do that."}, 403)
             scope = body.get("scope") or "full"
@@ -1761,8 +1778,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"error": f"Unknown endpoint POST {path}"}, 404)
 
 
+def is_loopback(host):
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 if __name__ == "__main__":
-    # Loopback unless told otherwise (HOST, above).
+    # Loopback unless explicitly told otherwise (HOST, above).
+    if not is_loopback(HOST):
+        if os.environ.get("SILICON_DEMO_ALLOW_NONLOOPBACK") != "1":
+            sys.exit("Not listening on %s: anyone who can reach it could use the control "
+                     "token, demo-token, which is public. Set SILICON_DEMO_ALLOW_NONLOOPBACK=1 "
+                     "to listen there anyway." % HOST)
+        print("warning: listening on %s, where anyone who can reach it has the public control "
+              "token demo-token: the switches, pairing codes and the model files" % HOST, flush=True)
     threading.Thread(target=queue_worker, daemon=True).start()
     seed_agents()
     seed_phone_models()

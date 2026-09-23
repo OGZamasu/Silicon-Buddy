@@ -9,8 +9,9 @@
 # Environment:
 #   STANDIN_PORT           8916. Another port needs the tests told as well:
 #                          BUDDY_STANDIN=10.0.2.2:<port> scripts/ci-android.sh --connected
-#   STANDIN_HOST           127.0.0.1. Loopback is all the emulator needs; anything wider is an
-#                          unauthenticated model API on your network.
+#   STANDIN_HOST           127.0.0.1. Loopback is all the emulator needs. Anything else is
+#                          refused without STANDIN_ALLOW_NONLOOPBACK=1: the stand-in's control
+#                          token, demo-token, is public, so whoever can reach it can use it.
 #   BUDDY_STANDIN_MODELS   where fetch-models.sh put the models (tools/standin/models)
 #   STANDIN_STATE          its log, request log and paired phones (tools/standin/state/<port>)
 #   QWEN=0                 leaves Qwen3.5 2B out even when it was fetched; the two tests that
@@ -26,21 +27,24 @@ host="${STANDIN_HOST:-127.0.0.1}"
 models="${BUDDY_STANDIN_MODELS:-$here/models}"
 state="${STANDIN_STATE:-$here/state/$port}"
 pidfile="$state/demo_mac.pid"
-# How to say this command again, from the repository, for the port in use.
+# How to say this command again, from the repository, with the settings in use.
 again="tools/standin/standin.sh"
+[ -z "${STANDIN_STATE:-}" ] || again="STANDIN_STATE=$STANDIN_STATE $again"
 [ "$port" = 8916 ] || again="STANDIN_PORT=$port $again"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# The pid in the pid file, if that process is still this stand-in.
+# The pid in the pid file, if that process is still this checkout's stand-in: a pid left
+# behind by a crash or a reboot may since have gone to anything, another checkout's
+# stand-in included. `start` runs it by this absolute path, so that is what is matched.
 running() {
     [ -f "$pidfile" ] || return 1
     local pid
     pid=$(cat "$pidfile")
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
     local command
-    command=$(ps -o command= -p "$pid" 2>/dev/null) || return 1
-    [[ "$command" == *demo_mac.py* ]] && echo "$pid"
+    command=$(ps -ww -o command= -p "$pid" 2>/dev/null) || return 1
+    [[ "$command" == *" $here/demo_mac.py" ]] && echo "$pid"
 }
 
 answers() {
@@ -65,7 +69,8 @@ case "${1:-}" in
             echo "stopped (pid $pid)"
         else
             rm -f "$pidfile"
-            echo "not running"
+            echo "not running from $state"
+            answers && echo "something else is answering on $host:$port: not started by this script, or with another STANDIN_STATE"
         fi
         ;;
 
@@ -75,6 +80,14 @@ case "${1:-}" in
             exit 0
         fi
         answers && fail "something else is answering on $host:$port; pick another port: STANDIN_PORT=<port> tools/standin/standin.sh start"
+        case "$host" in
+            127.*|::1|localhost) ;;
+            *)
+                [ "${STANDIN_ALLOW_NONLOOPBACK:-}" = 1 ] ||
+                    fail "not listening on $host: anyone who can reach it could use the stand-in's control token, demo-token, which is public. STANDIN_ALLOW_NONLOOPBACK=1 listens there anyway"
+                echo "warning: listening on $host, where anyone who can reach it has the public control token demo-token" >&2
+                ;;
+        esac
         command -v python3 >/dev/null || fail "python3 (3.9 or later) is needed"
         [ -f "$models/stories260K-f32.gguf" ] && [ -f "$models/SmolLM2-135M-Instruct-Q8_0.gguf" ] ||
             fail "no test models in $models: run tools/standin/fetch-models.sh first"
@@ -90,6 +103,7 @@ case "${1:-}" in
         (
             cd "$state"
             SILICON_DEMO_HOST="$host" SILICON_DEMO_PORT="$port" \
+                SILICON_DEMO_ALLOW_NONLOOPBACK="${STANDIN_ALLOW_NONLOOPBACK:-}" \
                 SILICON_DEMO_PHONE_MODELS="$models" SILICON_DEMO_QWEN="$qwen" \
                 SILICON_DEMO_PHONE_READY="${READY:-0}" \
                 SILICON_DEMO_REQUEST_LOG="$state/requests.log" \
@@ -99,16 +113,28 @@ case "${1:-}" in
             echo $! > "$pidfile"
         )
         pid=$(cat "$pidfile")
-        # Hashing the models comes before it listens: a second or two, more with Qwen.
-        for _ in $(seq 1 180); do
+        # It checks every model's SHA-256 before it listens: seconds when the files are in
+        # the disk cache, a minute or two for Qwen's 1.3 GB when they are not.
+        echo "checking the models' SHA-256 (pid $pid)…"
+        for _ in $(seq 1 600); do
             answers && break
             kill -0 "$pid" 2>/dev/null || { tail -20 "$state/demo_mac.log" >&2; rm -f "$pidfile"; fail "the stand-in exited"; }
             sleep 0.5
         done
-        answers || fail "the stand-in (pid $pid) did not answer on $host:$port within 90 seconds; see $state/demo_mac.log"
+        if ! answers; then
+            kill "$pid" 2>/dev/null; rm -f "$pidfile"
+            fail "the stand-in did not answer on $host:$port within 5 minutes and was stopped; see $state/demo_mac.log"
+        fi
+        # It serves a model only when the file is the pinned one, and says which it refused.
+        grep -E "^(not serving|warning)" "$state/demo_mac.log" >&2 || true
+        served=$(grep "^phone models:" "$state/demo_mac.log" || true)
+        if [[ "$served" != *stories260k-f32* || "$served" != *smollm2-135m-q8_0* ]]; then
+            kill "$pid"; rm -f "$pidfile"
+            fail "the stand-in would not serve the test models ($served); run tools/standin/fetch-models.sh"
+        fi
         echo "started (pid $pid) on $host:$port — the emulator's 10.0.2.2:$port"
-        grep "^phone models:" "$state/demo_mac.log" || true
-        [ -n "$qwen" ] || echo "without Qwen3.5 2B: qwenAnswersWithThinkingOff and makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo will be skipped"
+        echo "$served"
+        [[ "$served" == *qwen3.5-2b-q4_0* ]] || echo "without Qwen3.5 2B: qwenAnswersWithThinkingOff and makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo will be skipped (tools/standin/fetch-models.sh without --small fetches it)"
         echo "stop it with: $again stop"
         ;;
 

@@ -28,7 +28,9 @@ import java.util.List;
  * points elsewhere; `scripts/ci-android.sh` passes `$BUDDY_STANDIN` there.
  *
  * Its control token is the stand-in's own made-up one, which is how a test mints a
- * pairing code and flips its switches — loopback on the host, as on the real Mac.
+ * pairing code and flips its switches. It is public — it is right here — so the stand-in
+ * checks only the token and keeps to the host's loopback; it will not listen anywhere
+ * else unless told to.
  */
 final class StandInMac {
 
@@ -65,7 +67,10 @@ final class StandInMac {
         return new JSONObject(request("POST", "/buddy/invitations", "{\"scope\":\"full\"}")).getString("code");
     }
 
-    /** Whether the stand-in lists [id] on `/ondevice/models` (Qwen3.5 2B only with QWEN=1). */
+    /**
+     * Whether the stand-in lists [id] on `/ondevice/models`: Qwen3.5 2B only once
+     * `tools/standin/fetch-models.sh` has fetched it (without `--small`).
+     */
     boolean offers(String id) throws Exception {
         JSONArray models = new JSONObject(request("GET", "/ondevice/models", null)).getJSONArray("models");
         for (int i = 0; i < models.length(); i++) if (models.getJSONObject(i).getString("id").equals(id)) return true;

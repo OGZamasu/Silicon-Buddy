@@ -54,6 +54,8 @@ host, _, port = standin.rpartition(":")
 probe = "127.0.0.1" if host == "10.0.2.2" else host
 where = f"{probe}:{port}" + (f" (the emulator's {standin})" if probe != host else "")
 start = "tools/standin/standin.sh start" if port == "8916" else f"STANDIN_PORT={port} tools/standin/standin.sh start"
+# Where to start a stand-in of your own when this one is somebody else's.
+other = f"STANDIN_PORT={int(port) + 1} tools/standin/standin.sh start, with BUDDY_STANDIN={host}:{int(port) + 1}"
 
 def get(path, token=None):
     request = urllib.request.Request(f"http://{probe}:{port}{path}")
@@ -72,19 +74,23 @@ except Exception:
         sys.exit(f"FAIL: the stand-in Mac is not answering at {where}. Start it, from the "
                  f"repository: tools/standin/fetch-models.sh && {start}")
     sys.exit(f"FAIL: the stand-in Mac at {where} is playing a Mac that went away — another "
-             f"test run is using it. Wait for that run, or start your own on another port: "
-             f"STANDIN_PORT=8917 tools/standin/standin.sh start, with BUDDY_STANDIN=10.0.2.2:8917")
-served = {model["id"] for model in get("/ondevice/models", "demo-token")["models"]}
+             f"test run is using it. Wait for that run, or start your own on another port: {other}")
+try:
+    served = {model["id"] for model in get("/ondevice/models", "demo-token")["models"]}
+except Exception as refusal:
+    sys.exit(f"FAIL: something answers at {where}, but not as tools/standin/demo_mac.py does "
+             f"({refusal}). Stop it, or start the stand-in on another port: {other}")
 missing = sorted({"stories260k-f32", "smollm2-135m-q8_0"} - served)
 if missing:
     stop = start.replace(" start", " stop")
     sys.exit(f"FAIL: the stand-in Mac at {where} does not serve {', '.join(missing)}. "
-             f"Fetch the models and restart it: tools/standin/fetch-models.sh && {stop} && {start}")
+             f"Fetch the models and restart it: tools/standin/fetch-models.sh && {stop} && {start} "
+             f"(if it was not started by tools/standin/standin.sh, stop it yourself)")
 print(f"stand-in: {where}, serving {', '.join(sorted(served))}")
 if "qwen3.5-2b-q4_0" not in served:
     print("stand-in: without Qwen3.5 2B, so qwenAnswersWithThinkingOff and "
           "makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo will be skipped "
-          "(tools/standin/fetch-models.sh fetches it)")
+          "(tools/standin/fetch-models.sh without --small fetches it)")
 PY
 fi
 

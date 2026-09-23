@@ -429,11 +429,12 @@ public class OnDeviceModelTest {
      * Qwen3.5 2B, the owner's default, answers with thinking off: its template closes an
      * empty thinking block before the answer, and opens one only when asked to think. Read
      * from the real file's vocabulary — the weights do not fit this emulator — when the
-     * stand-in serves it (`QWEN=1 standin.sh start`).
+     * stand-in serves it, which it does once `tools/standin/fetch-models.sh` has fetched it
+     * (without `--small`).
      */
     @Test
     public void qwenAnswersWithThinkingOff() throws Exception {
-        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only with QWEN=1", mac.offers(QWEN));
+        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only once tools/standin/fetch-models.sh has fetched it (without --small)", mac.offers(QWEN));
         try {
             install(QWEN);
             String off = (String) probe("renderPrompt", context, QWEN, "What is a tailnet?", "recommended");
@@ -722,7 +723,7 @@ public class OnDeviceModelTest {
      */
     @Test
     public void makeRoomSaysWhatIsFreeAndWhatThisAppCannotDo() throws Exception {
-        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only with QWEN=1", mac.offers(QWEN));
+        org.junit.Assume.assumeTrue("the stand-in serves Qwen3.5 2B only once tools/standin/fetch-models.sh has fetched it (without --small)", mac.offers(QWEN));
         mac.ondevice("{\"state\":{\"" + QWEN + "\":\"ready\"}}");
         pair();
         bringToFront();
