@@ -274,14 +274,41 @@ public enum ControlAPI {
         /// True when a language model is resident and ready to answer.
         public var hasLoadedModel: Bool { loadedModelID != nil }
 
-        /// How the Mac stopped a load of `modelID`, when it did.
-        public func interruption(of modelID: String) -> LoadInterruption? {
-            interruptedLoads?.first { Self.sameModel($0.modelID, modelID) }
+        /// How the Mac stopped a load of `modelID`, when it did — unless that is `earlier`,
+        /// the entry this phone already knew of before it asked for the load it is following.
+        /// The Mac clears a model's entry when a load of it starts, but a load refused before
+        /// it starts ("already loading … Nothing was changed") leaves the last one where it was.
+        public func interruption(
+            of modelID: String, earlier: LoadInterruption? = nil
+        ) -> LoadInterruption? {
+            guard let entry = interruptedLoads?.first(where: { Self.sameModel($0.modelID, modelID) }),
+                  entry != earlier
+            else { return nil }
+            return entry
         }
 
         /// An installed id carries its quantization ("model@Q4_K_M"); a status may use either.
         public static func sameModel(_ a: String, _ b: String) -> Bool {
             a == b || a.hasPrefix(b + "@") || b.hasPrefix(a + "@")
+        }
+    }
+
+    /// `POST /load` answers 409 for two different things, told apart only by the Mac's
+    /// sentence: the load was refused before it started, because another is running — nothing
+    /// changed, and trying again later is right — or it started and was stopped on the Mac, by
+    /// an unload or another load — somebody's choice, which trying again would undo.
+    public enum LoadConflict {
+        /// `LoadDispatcher`'s refusal: "This Mac is already loading <id> (started <n>s ago),
+        /// and this route runs one load at a time. Nothing was changed. …"
+        public static func isAlreadyLoading(_ sentence: String) -> Bool {
+            sentence.hasPrefix("This Mac is already loading ") || sentence.contains("Nothing was changed.")
+        }
+
+        /// `InterruptedLoad.sentence`: "<name> was not loaded: an unload stopped it before it
+        /// finished loading." and "<name> was not loaded: another load (<name>) replaced it
+        /// before it finished."
+        public static func wasStopped(_ sentence: String) -> Bool {
+            sentence.contains(" was not loaded: ")
         }
     }
 

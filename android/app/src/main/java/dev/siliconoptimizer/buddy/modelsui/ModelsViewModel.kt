@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.LoadConflict
 import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.transport.LoadInterruption
 import dev.siliconoptimizer.buddy.transport.LoadRequest
@@ -68,18 +69,19 @@ class ModelsViewModel : ViewModel() {
      *
      * In the Mac's order: the model resident; the Mac saying it stopped this load
      * (`interruptedLoads`, which a new load of the model clears, so an entry is this
-     * load's); a failure that is this load's — `failure.modelID` names it, or is absent on
-     * a Mac from before it did; a failure of another model, which means the Mac went on to
-     * a load that was not this one; another model resident.
+     * load's — unless it is `earlier`, the one this phone knew of before it asked); a
+     * failure that is this load's — `failure.modelID` names it, or is absent on a Mac from
+     * before it did; a failure of another model, which means the Mac went on to a load that
+     * was not this one; another model resident.
      */
     enum class LoadOutcome {
         Pending, Loaded, Failed, Replaced, Cancelled;
 
         companion object {
-            fun of(status: Status, modelID: String): LoadOutcome {
+            fun of(status: Status, modelID: String, earlier: LoadInterruption? = null): LoadOutcome {
                 val loaded = status.loadedModelID
                 val failure = status.failure
-                val stopped = status.interruption(modelID)
+                val stopped = status.interruption(modelID, earlier)
                 return when {
                     loaded != null && sameModel(loaded, modelID) -> Loaded
                     stopped != null -> when (stopped.kind) {
@@ -112,8 +114,13 @@ class ModelsViewModel : ViewModel() {
      * The one line for a load that ended without being this phone's fault, in the words of
      * how it ended — never a retry: asking again would only undo what somebody else chose.
      */
-    private fun notLoaded(status: Status, modelID: String, name: String): Problem {
-        val stopped = status.interruption(modelID)
+    private fun notLoaded(
+        status: Status,
+        modelID: String,
+        name: String,
+        earlier: LoadInterruption?,
+    ): Problem {
+        val stopped = status.interruption(modelID, earlier)
         val failure = status.failure?.takeIf { it.modelID == null || LoadOutcome.sameModel(it.modelID, modelID) }
         val message = when {
             stopped?.kind == LoadInterruption.Kind.Replaced ->
@@ -287,6 +294,8 @@ class ModelsViewModel : ViewModel() {
         loader = mac.launch {
             val name = nameOf(modelID)
             val retry = Operation.Load(modelID, quantization)
+            // An earlier load's ending, which this one's is not.
+            val earlier = status?.interruption(modelID)
             job = ModelJob(modelID, "load", "Loading…")
             val answer = try {
                 transport.load(LoadRequest(modelID, quantization))
@@ -300,8 +309,10 @@ class ModelsViewModel : ViewModel() {
                     when {
                         // A 409 for a load another load or an unload stopped inside the Mac's
                         // patience: its sentence says which, and the status lists it. An
-                        // ending somebody chose, not a fault, and nothing to retry.
-                        error is TransportError.Conflict && after.interruption(modelID) != null ->
+                        // ending somebody chose, not a fault, and nothing to retry. Not the
+                        // 409 for a load refused because another is running: that one never
+                        // started, and a retry once it is done is exactly right.
+                        error is TransportError.Conflict && stoppedOnTheMac(error.detail, after, modelID, earlier) ->
                             if (problem == failed) {
                                 problem = failed.copy(
                                     title = "$name wasn't loaded", retry = null, isFault = false,
@@ -327,7 +338,7 @@ class ModelsViewModel : ViewModel() {
 
             var latest = answer
             val outcome = withTimeoutOrNull(FOLLOW_LIMIT_MS) {
-                var outcome = LoadOutcome.of(latest, modelID)
+                var outcome = LoadOutcome.of(latest, modelID, earlier)
                 var askNow = dropped
                 while (outcome == LoadOutcome.Pending) {
                     job = ModelJob(modelID, "load", latest.state.ifBlank { "Loading…" })
@@ -338,7 +349,7 @@ class ModelsViewModel : ViewModel() {
                         ?: attempt { transport.status() }.getOrNull()?.also { status = it }
                         ?: continue
                     latest = next
-                    outcome = LoadOutcome.of(next, modelID)
+                    outcome = LoadOutcome.of(next, modelID, earlier)
                 }
                 outcome
             }
@@ -349,7 +360,7 @@ class ModelsViewModel : ViewModel() {
                 LoadOutcome.Failed -> Problem(
                     "Couldn't load $name", latest.state, failure?.detail, retry, failure = failure,
                 )
-                LoadOutcome.Replaced, LoadOutcome.Cancelled -> notLoaded(latest, modelID, name)
+                LoadOutcome.Replaced, LoadOutcome.Cancelled -> notLoaded(latest, modelID, name, earlier)
                 LoadOutcome.Pending, null -> Problem(
                     "Still loading $name",
                     "The Mac hasn't said how this load ended. Refresh to ask it again.",
@@ -360,6 +371,19 @@ class ModelsViewModel : ViewModel() {
             // that succeeded would clear the one thing there is to say.
             if (outcome != null) refresh(transport)
         }
+    }
+
+    /** A 409 from `POST /load` says the load started and was stopped on the Mac. */
+    private fun stoppedOnTheMac(
+        sentence: String,
+        after: Status,
+        modelID: String,
+        earlier: LoadInterruption?,
+    ): Boolean = when {
+        LoadConflict.isAlreadyLoading(sentence) -> false
+        LoadConflict.wasStopped(sentence) -> true
+        // Words this app does not know: the Mac's list says it, when the entry is new.
+        else -> after.interruption(modelID, earlier) != null
     }
 
     fun unload(transport: ControlTransport?) {

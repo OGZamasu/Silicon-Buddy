@@ -48,15 +48,19 @@ public final class ModelsModel {
     ///
     /// In the Mac's order: the model resident; the Mac saying it stopped this load
     /// (`interruptedLoads`, which a new load of the model clears, so an entry is this
-    /// load's); a failure that is this load's — `failure.modelID` names it, or is absent on
-    /// a Mac from before it did; a failure of another model, which means the Mac went on to
-    /// a load that was not this one; another model resident.
+    /// load's — unless it is `earlier`, the one this phone knew of before it asked); a
+    /// failure that is this load's — `failure.modelID` names it, or is absent on a Mac from
+    /// before it did; a failure of another model, which means the Mac went on to a load
+    /// that was not this one; another model resident.
     public enum LoadOutcome: Equatable, Sendable {
         case pending, loaded, failed, replaced, cancelled
 
-        public static func of(_ status: ControlAPI.Status, modelID: String) -> LoadOutcome {
+        public static func of(
+            _ status: ControlAPI.Status, modelID: String,
+            earlier: ControlAPI.LoadInterruption? = nil
+        ) -> LoadOutcome {
             if let loaded = status.loadedModelID, sameModel(loaded, modelID) { return .loaded }
-            if let stopped = status.interruption(of: modelID) {
+            if let stopped = status.interruption(of: modelID, earlier: earlier) {
                 return stopped.kind == .replaced ? .replaced : .cancelled
             }
             if let failure = status.failure {
@@ -258,6 +262,8 @@ public final class ModelsModel {
         let generation = generation
         let name = name(of: modelID)
         let retry = Operation.load(modelID: modelID, quantization: quantization)
+        // An earlier load's ending, which this one's is not.
+        let earlier = status?.interruption(of: modelID)
         job = Job(modelID: modelID, kind: .load, message: "Loading…", fraction: nil)
         let answer: ControlAPI.Status
         do {
@@ -272,10 +278,13 @@ public final class ModelsModel {
             if case .success(let after) = await Self.attempt({ try await transport.status() }),
                generation == self.generation, !Task.isCancelled {
                 status = after
-                if case .conflict = error as? TransportError, after.interruption(of: modelID) != nil {
+                if case .conflict(let sentence) = error as? TransportError,
+                   Self.stoppedOnTheMac(sentence, after: after, modelID: modelID, earlier: earlier) {
                     // A 409 for a load another load or an unload stopped inside the Mac's
                     // patience: its sentence says which, and the status lists it. An ending
-                    // somebody chose, not a fault, and nothing to retry.
+                    // somebody chose, not a fault, and nothing to retry. Not the 409 for a
+                    // load refused because another is running: that one never started, and a
+                    // retry once it is done is exactly right.
                     if problem == failed {
                         problem?.title = "\(name) wasn't loaded"
                         problem?.retry = nil
@@ -304,7 +313,7 @@ public final class ModelsModel {
         status = answer
 
         var latest = answer
-        var outcome = LoadOutcome.of(answer, modelID: modelID)
+        var outcome = LoadOutcome.of(answer, modelID: modelID, earlier: earlier)
         let deadline = ContinuousClock.now + followLimit
         while outcome == .pending, ContinuousClock.now < deadline {
             job = Job(
@@ -327,7 +336,7 @@ public final class ModelsModel {
             }
             guard let next else { continue }
             latest = next
-            outcome = LoadOutcome.of(next, modelID: modelID)
+            outcome = LoadOutcome.of(next, modelID: modelID, earlier: earlier)
         }
 
         job = nil
@@ -341,7 +350,7 @@ public final class ModelsModel {
                 detail: failure?.detail, retry: retry, failure: failure
             )
         case .replaced, .cancelled:
-            problem = notLoaded(latest, modelID: modelID, name: name)
+            problem = notLoaded(latest, modelID: modelID, name: name, earlier: earlier)
         case .pending:
             // Not refreshed after this: the status has just been read, and a refresh that
             // succeeded would clear the one thing there is to say.
@@ -358,9 +367,10 @@ public final class ModelsModel {
     /// The one line for a load that ended without being this phone's fault, in the words of
     /// how it ended — never a retry: asking again would only undo what somebody else chose.
     private func notLoaded(
-        _ status: ControlAPI.Status, modelID: String, name: String
+        _ status: ControlAPI.Status, modelID: String, name: String,
+        earlier: ControlAPI.LoadInterruption?
     ) -> Problem {
-        let stopped = status.interruption(of: modelID)
+        let stopped = status.interruption(of: modelID, earlier: earlier)
         let failure = status.failure.flatMap { LoadOutcome.isAbout($0, modelID) ? $0 : nil }
         let message: String
         if let stopped, stopped.kind == .replaced {
@@ -571,6 +581,17 @@ public final class ModelsModel {
     /// failed to load: <the status line>", so the line is matched at the end.
     static func describes(_ error: String, state: String) -> Bool {
         !state.isEmpty && (error == state || error.hasSuffix(": " + state))
+    }
+
+    /// Whether a 409 from `POST /load` says the load started and was stopped on the Mac.
+    static func stoppedOnTheMac(
+        _ sentence: String, after: ControlAPI.Status, modelID: String,
+        earlier: ControlAPI.LoadInterruption?
+    ) -> Bool {
+        if ControlAPI.LoadConflict.isAlreadyLoading(sentence) { return false }
+        if ControlAPI.LoadConflict.wasStopped(sentence) { return true }
+        // Words this app does not know: the Mac's list says it, when the entry is new.
+        return after.interruption(of: modelID, earlier: earlier) != nil
     }
 
     private static func describe(_ error: any Error) -> String {
