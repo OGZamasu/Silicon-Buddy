@@ -289,12 +289,19 @@ QUEUE = {
          "variation": 1, "prompt": "A crane turning above the harbour at night",
          "seed": 90210, "modelID": "hailuo-h3", "seconds": 5, "resolution": "768P",
          "h3Turbo": False, "h3Steps": 30, "status": "failed", "nodeJobID": None,
-         "file": None, "outputDirectory": "/Users/you/Movies/Silicon/Harbour",
+         "file": None, "outputDirectory": "Harbour",
          "error": "No node accepted this clip: render-node was busy for 90 seconds.",
          "uncertainSubmission": False},
     ],
 }
 PROGRESS = {}
+# Clips this stand-in stopped following while their node kept the job: a node that offers
+# to cancel can still be asked to, as with the real Mac.
+RECEIPTS = set()
+# The lanes whose node here advertises cancelling one job. H3 goes through Phosphene, which
+# has no job-specific stop for a running render, so — as on the real bundled node — it
+# offers Stop following and nothing more.
+CANCELLABLE_LANES = {"ltx-2", "wan-2-2"}
 BATCH = {"n": 0x9C2F}
 # What this stand-in was sent and what it has rendered, by the ids it handed out.
 MEDIA = {}
@@ -331,13 +338,23 @@ STEP = float(os.environ.get("SILICON_DEMO_STEP", "0.07"))
 SYNC_SECONDS = float(os.environ.get("SILICON_DEMO_SYNC_SECONDS", "6"))
 
 
+def can_cancel(item):
+    """The Mac's `canCancel`: the clip's node offers it for the lane, and the render may
+    still be running there. Called with QUEUE_LOCK held."""
+    if item["modelID"] not in CANCELLABLE_LANES or not item.get("nodeJobID"):
+        return False
+    if item.get("cancelState") in ("sending", "requested", "confirmed", "completed", "failed"):
+        return False
+    return item["status"] == "rendering" or (item["status"] == "failed" and item["id"] in RECEIPTS)
+
+
 def queue_view():
     with QUEUE_LOCK:
         return {
             "paused": QUEUE["paused"],
             "activeID": QUEUE["activeID"],
             "message": QUEUE["message"],
-            "items": [dict(item) for item in QUEUE["items"]],
+            "items": [dict(item, canCancel=can_cancel(item)) for item in QUEUE["items"]],
         }
 
 
@@ -384,9 +401,8 @@ def queue_worker():
             fraction = PROGRESS.get(active["id"], 0.0) + STEP
             if fraction >= 1.0:
                 active["status"] = "completed"
-                active["file"] = "%s/scene-%03d_take-%02d.mp4" % (
-                    active["outputDirectory"], active["scene"], active["variation"],
-                )
+                # A device is told the file's name, never where it sits on the Mac.
+                active["file"] = "scene-%03d_take-%02d.mp4" % (active["scene"], active["variation"])
                 active["mediaID"] = keep_placeholder("video")
                 active["mediaURL"] = "/media/%s" % active["mediaID"]
                 active["thumbnailMediaID"] = keep_placeholder("image")
@@ -1676,7 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
                             "modelID": model, "seconds": seconds, "resolution": "768P",
                             "h3Turbo": False, "h3Steps": 30, "status": "pending",
                             "nodeJobID": None, "file": None,
-                            "outputDirectory": "/Users/you/Movies/Silicon/" + title,
+                            "outputDirectory": title,
                             "error": None, "uncertainSubmission": False,
                             "negativePrompt": body.get("negativePrompt"),
                             "detail": None,
@@ -1697,6 +1713,9 @@ class Handler(BaseHTTPRequestHandler):
                     if item is None:
                         return self.send_json({"error": "An item ID is required."}, 400)
                     item.update(status="pending", error=None, file=None)
+                    for key in ("cancelState", "cancelDetail"):
+                        item.pop(key, None)
+                    RECEIPTS.discard(identifier)
                 elif action == "remove":
                     if item is None:
                         return self.send_json({"error": "An item ID is required."}, 400)
@@ -1709,13 +1728,36 @@ class Handler(BaseHTTPRequestHandler):
                     QUEUE["paused"] = True
                     item.update(status="failed", error="Stopped following. The node may still finish it.")
                     QUEUE["activeID"] = None
+                    RECEIPTS.add(identifier)
+                elif action == "cancel":
+                    if item is None:
+                        return self.send_json({"error": "An item ID is required."}, 400)
+                    if item.get("cancelState") == "confirmed":
+                        return self.send_json({"error": "This clip's render is already cancelled."}, 400)
+                    if not can_cancel(item):
+                        return self.send_json({"error": (
+                            "This clip's node does not offer to cancel its render. Use "
+                            "stop_following: the app stops waiting and keeps the receipt, but "
+                            "the node may still finish the render."
+                        )}, 400)
+                    # This node stops a render at once, so the answer is always a confirmed
+                    # cancel; the real Mac may also answer requested, unsupported or unknown.
+                    item.update(status="cancelled", error=None, cancelState="confirmed",
+                                cancelDetail="Cancelled; the renderer was stopped.")
+                    RECEIPTS.discard(identifier)
+                    PROGRESS.pop(identifier, None)
+                    if QUEUE["activeID"] == identifier:
+                        QUEUE["activeID"] = None
+                    QUEUE["message"] = "The node stopped this render. Nothing will be published for it."
+                    publish_job(item)
                 elif action == "clear_finished":
                     QUEUE["items"] = [
-                        i for i in QUEUE["items"] if i["status"] not in ("completed", "failed")
+                        i for i in QUEUE["items"]
+                        if i["status"] not in ("completed", "failed", "cancelled")
                     ]
                 else:
                     return self.send_json(
-                        {"error": "Use pause, resume, retry, remove, stop_following, or clear_finished."},
+                        {"error": "Use pause, resume, retry, remove, stop_following, cancel, or clear_finished."},
                         400,
                     )
             return self.send_json(queue_view())
@@ -1725,7 +1767,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(SYNC_SECONDS)
             clip = keep_placeholder("video")
             return self.send_json({
-                "file": "/Users/you/Movies/Silicon/one-off-%04d.mp4" % random.randrange(9999),
+                "file": "one-off-%04d.mp4" % random.randrange(9999),
                 "node": "render-node", "model": body.get("modelID") or "hailuo-h3",
                 "elapsedSeconds": 3.0 + seconds,
                 "mediaID": clip, "mediaURL": "/media/%s" % clip,
@@ -1749,7 +1791,7 @@ class Handler(BaseHTTPRequestHandler):
             done.wait(SYNC_SECONDS * 4 + 10)
             picture = keep_placeholder("image")
             return self.send_json({
-                "path": "/Users/you/Pictures/Silicon/lisbon-%04d.png" % random.randrange(9999),
+                "path": "lisbon-%04d.png" % random.randrange(9999),
                 "elapsedSeconds": 6.4, "peakMemoryBytes": 13958643712,
                 "predictedPeakBytes": 14200000000, "model": model["name"],
                 "mediaID": picture, "mediaURL": "/media/%s" % picture,
@@ -1764,7 +1806,7 @@ class Handler(BaseHTTPRequestHandler):
             done.wait(SYNC_SECONDS * 4 + 10)
             mesh = keep(b"glTF-placeholder", "model/gltf-binary")
             return self.send_json({
-                "glbPath": "/Users/you/Models/Silicon/kettle.glb",
+                "glbPath": "kettle.glb",
                 "objPath": None, "elapsedSeconds": 5.2, "model": "Hunyuan3D 2",
                 "mediaID": mesh, "mediaURL": "/media/%s" % mesh,
             })

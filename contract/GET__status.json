@@ -28,6 +28,7 @@
       "failure" : {
         "at" : "2026-09-19T11:04:38Z",
         "detail" : "load_tensors: loading model tensors\nloaded multimodal model, 'mmproj-Q8_0.gguf'",
+        "modelID" : "bonsai-2-27b",
         "reason" : "killed",
         "runtime" : "llama.cpp",
         "signal" : 9,
@@ -40,6 +41,7 @@
       "failure" : {
         "at" : "2026-09-19T11:04:38Z",
         "detail" : "llama_context: constructing llama_context",
+        "modelID" : "bonsai-2-27b",
         "reason" : "timedOut",
         "runtime" : "llama.cpp",
         "wasReplaced" : false
@@ -50,28 +52,38 @@
       "expertStreaming" : false,
       "failure" : {
         "at" : "2026-09-19T11:04:38Z",
+        "modelID" : "bonsai-2-27b",
         "reason" : "cancelled",
         "runtime" : "llama.cpp",
         "signal" : 15,
         "wasReplaced" : false
       },
+      "interruptedLoads" : [
+        {
+          "at" : "2026-09-19T11:04:38Z",
+          "modelID" : "bonsai-2-27b",
+          "reason" : "cancelled"
+        }
+      ],
       "state" : "llama-server was stopped by an unload before it finished loading."
     },
     "after a load that was replaced" : {
       "expertStreaming" : false,
-      "failure" : {
-        "at" : "2026-09-19T11:04:38Z",
-        "reason" : "replaced",
-        "runtime" : "llama.cpp",
-        "signal" : 15,
-        "wasReplaced" : true
-      },
-      "state" : "llama-server was replaced by another load (Qwen3-Coder 30B)."
+      "interruptedLoads" : [
+        {
+          "at" : "2026-09-19T11:04:38Z",
+          "modelID" : "bonsai-2-27b",
+          "reason" : "replaced",
+          "replacedBy" : "qwen3-coder-30b"
+        }
+      ],
+      "state" : "Loading weights… 42%"
     },
     "as a chat-scope device or a peer sees it" : {
       "expertStreaming" : false,
       "failure" : {
         "at" : "2026-09-19T11:04:38Z",
+        "modelID" : "bonsai-2-27b",
         "reason" : "killed",
         "runtime" : "llama.cpp",
         "signal" : 9,
@@ -84,5 +96,5 @@
     "full",
     "chat"
   ],
-  "summary" : "What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap."
+  "summary" : "What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap. `interruptedLoads` lists loads this Mac stopped before they finished."
 }

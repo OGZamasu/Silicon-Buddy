@@ -223,6 +223,7 @@ class MediaViewModel : ViewModel() {
         canControl: Boolean = true,
     ) {
         if (transport == null) return
+        val mac = generation
         viewModelScope.launch {
             isLoading = true
             val video = async { runCatching { transport.videoModels() }.getOrNull() }
@@ -241,6 +242,8 @@ class MediaViewModel : ViewModel() {
             val newMesh = mesh.await()
             val newQueue = queued.await()
             val newJev = jev.await()
+            // Asked of the Mac this phone was paired with then; a re-pair has its own read.
+            if (mac != generation) return@launch
 
             newVideo?.let { videoModels = it }
             newImage?.let { imageModels = it }
@@ -284,9 +287,11 @@ class MediaViewModel : ViewModel() {
     ) {
         poller?.cancel()
         if (transport == null) return
+        val mac = generation
         poller = viewModelScope.launch {
             while (isActive) {
                 runCatching { transport.videoQueue() }.getOrNull()
+                    ?.takeIf { mac == generation }
                     ?.let { if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it) }
                 if (live) return@launch
                 delay(seconds * 1000)
@@ -311,26 +316,102 @@ class MediaViewModel : ViewModel() {
         transport: ControlTransport? = null,
     ) {
         MediaJobCenter.note(event.kind, event.fraction)
-        val unknown = event.kind == "video" && queue.job(event.id)?.isQueued != true
+        val state = JobState.of(event.status)
+        if (state.isTerminal || state == JobState.Queued) {
+            endingsSeen[event.id] = (endingsSeen[event.id] ?: 0) + 1
+        }
+        val before = queue.job(event.id)
+        val unknown = event.kind == "video" && before?.isQueued != true
         update(queue.applying(event), notifier)
+        val after = queue.job(event.id)
+        // Rendering again after a failure is a reconnect — from the Mac's own window, say
+        // — or a late word. The reducer will not take it from an event, so the queue is
+        // asked, after it: a read that leaves after the event is newer than it, and may
+        // speak for the clip if no ending reaches it meanwhile.
+        val reconnect = before?.isQueued == true && before.state == JobState.Failed &&
+            state.isRunning && after?.state == JobState.Failed
+        if (reconnect) reopening += event.id
         // A clip queued from somewhere else — the Mac's own window, another phone —
         // is first heard of here, and an event carries no prompt and no settings. So
         // the queue is read once, for that clip's details; this is not the old poll
         // coming back, which asked every six seconds whether anything had happened.
-        if (unknown) readQueueOnce(transport, notifier)
+        // The same goes for whether the clip can be cancelled, which an event never says.
+        if (unknown || reconnect || cancelNeedsTheQueue(before, after)) {
+            readQueueOnce(transport, notifier)
+        }
     }
 
-    private var lastRead = 0L
+    /**
+     * What this phone knew of one clip when a verb or a read about it went out: its state,
+     * and how many endings (or re-queueings) the stream had said of it. The answer may
+     * speak for the clip over an ending only if neither has changed since — the second
+     * catches an ending that left the state as it was, a clip failing again, say.
+     */
+    private data class Asked(val answering: Answering, val endings: Int)
 
+    private val endingsSeen = mutableMapOf<String, Int>()
+
+    /** Clips a stream said were rendering again after failing, waiting for a read to confirm it. */
+    private val reopening = mutableSetOf<String>()
+
+    /**
+     * Bumped by [reset]. Anything that was asking the last Mac checks it before it writes,
+     * so an answer that arrives after a re-pair — a cancel waits up to 75 seconds — never
+     * lands on the next Mac's queue.
+     */
+    private var generation = 0
+
+    private fun asked(id: String) = Asked(Answering(id, queue.job(id)?.state), endingsSeen[id] ?: 0)
+
+    private fun Asked.unmoved(): Boolean =
+        (endingsSeen[answering.id] ?: 0) == endings && queue.job(answering.id)?.state == answering.sentFrom
+
+    private var lastRead = 0L
+    private var nextRead: Job? = null
+    /** A read is on the wire now, and may have been answered before a newer reason. */
+    private var readInFlight = false
+    /** A reason to read arrived while one was on the wire: read once more after it. */
+    private var readAgain = false
+
+    /**
+     * One read of the queue, at most every three seconds. A reason to read that arrives
+     * sooner waits for the end of those three seconds rather than being dropped: it is a
+     * different clip's, or a later moment of the same one. One that arrives while a read
+     * is on the wire gets a read of its own after it, because that read may already have
+     * been answered with the queue as it was before the reason.
+     */
     private fun readQueueOnce(transport: ControlTransport?, notifier: MediaNotifier?) {
         if (transport == null) return
-        val now = System.currentTimeMillis()
-        if (now - lastRead < 3_000) return
-        lastRead = now
-        viewModelScope.launch {
-            runCatching { transport.videoQueue() }.getOrNull()?.let {
-                if (announcer.isPrimed) update(queue.applying(it), notifier) else prime(it)
-            }
+        if (nextRead?.isActive == true) {
+            // Still waiting out the three seconds: that read comes after this reason.
+            if (readInFlight) readAgain = true
+            return
+        }
+        val mac = generation
+        nextRead = viewModelScope.launch {
+            do {
+                readAgain = false
+                val wait = lastRead + 3_000 - System.currentTimeMillis()
+                if (wait > 0) delay(wait)
+                lastRead = System.currentTimeMillis()
+                // Taken as the read leaves, so the read is newer than everything counted.
+                val confirming = reopening.map { asked(it) }
+                reopening.clear()
+                readInFlight = true
+                try {
+                    val view = runCatching { transport.videoQueue() }.getOrNull()
+                    if (mac != generation) return@launch
+                    if (view == null) {
+                        reopening += confirming.map { it.answering.id }
+                    } else if (announcer.isPrimed) {
+                        update(queue.applying(view, confirming.filter { it.unmoved() }.map { it.answering }), notifier)
+                    } else {
+                        prime(view)
+                    }
+                } finally {
+                    readInFlight = false
+                }
+            } while (readAgain)
         }
     }
 
@@ -350,14 +431,17 @@ class MediaViewModel : ViewModel() {
             return
         }
         if (transport == null) return
+        val mac = generation
         viewModelScope.launch {
             try {
-                update(queue.applying(transport.enqueueVideos(request)), notifier)
+                val view = transport.enqueueVideos(request)
+                if (mac != generation) return@launch
+                update(queue.applying(view), notifier)
                 message = "Added to the queue on the Mac."
                 videoPrompt = ""
                 tab = Tab.Queue
             } catch (failure: TransportError) {
-                error = failure.message
+                if (mac == generation) error = failure.message
             }
         }
     }
@@ -369,16 +453,75 @@ class MediaViewModel : ViewModel() {
         notifier: MediaNotifier? = null,
     ) {
         if (transport == null) return
+        val mac = generation
+        val sentFrom = id?.let { asked(it) }
         viewModelScope.launch {
             try {
-                update(
-                    queue.applying(
-                        transport.controlVideoQueue(VideoQueueControlRequest(action, id)),
-                    ),
-                    notifier,
-                )
+                val view = transport.controlVideoQueue(VideoQueueControlRequest(action, id))
+                if (mac == generation) answered(view, sentFrom, transport, notifier)
             } catch (failure: TransportError) {
-                error = failure.message
+                if (mac == generation) error = failure.message
+            }
+        }
+    }
+
+    /**
+     * The Mac's answer to something this phone asked of one clip.
+     *
+     * It is the newest word on that clip only if nothing moved the row while the request
+     * was out ([Answering.overrides]). If something did, an event overtook the answer
+     * and the two disagree about which came last, so the queue is read once more to
+     * settle it. So is an answer that took a clip out of an ending: the node confirming a
+     * cancel the moment it was asked can overtake it after it has been applied.
+     */
+    private fun answered(
+        view: VideoQueueView,
+        asked: Asked?,
+        transport: ControlTransport,
+        notifier: MediaNotifier?,
+    ) {
+        val before = asked?.let { queue.job(it.answering.id) }
+        val unmoved = asked?.unmoved() == true
+        update(queue.applying(view, asked?.answering?.takeIf { unmoved }), notifier)
+        val after = asked?.let { queue.job(it.answering.id) }
+        val moved = before != null && !unmoved
+        val reopened = before != null && after != null &&
+            before.state.isTerminal && !after.state.isTerminal
+        if (moved || reopened) readQueueOnce(transport, notifier)
+    }
+
+    /** Clips with a cancel on its way to the Mac, which waits for the node's answer. */
+    var cancelling by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /**
+     * `cancel`: asks the clip's node to stop this one render.
+     *
+     * The screen offers it only where the Mac said `canCancel`, and only once the person
+     * has confirmed it, because the GPU work so far is thrown away. The Mac answers after
+     * the node does — up to a minute — with the queue, and the clip in it says how the
+     * cancel went: requested, confirmed, too late, or not something that node can do.
+     */
+    fun cancelRender(id: String, transport: ControlTransport?, notifier: MediaNotifier? = null) {
+        if (transport == null || id in cancelling) return
+        cancelling = cancelling + id
+        val mac = generation
+        val sentFrom = asked(id)
+        viewModelScope.launch {
+            try {
+                val view = transport.controlVideoQueue(
+                    VideoQueueControlRequest(VideoQueueControlRequest.CANCEL, id),
+                )
+                if (mac == generation) answered(view, sentFrom, transport, notifier)
+            } catch (failure: TransportError) {
+                if (mac == generation) {
+                    error = failure.message
+                    // The Mac may have asked the node before the answer went missing,
+                    // and it keeps what the node said on the clip.
+                    readQueueOnce(transport, notifier)
+                }
+            } finally {
+                if (mac == generation) cancelling = cancelling - id
             }
         }
     }
@@ -391,20 +534,16 @@ class MediaViewModel : ViewModel() {
         notifier: MediaNotifier? = null,
     ) {
         if (transport == null) return
+        val mac = generation
+        val sentFrom = asked(id)
         viewModelScope.launch {
             try {
-                update(
-                    queue.applying(
-                        transport.controlVideoQueue(
-                            VideoQueueControlRequest(
-                                VideoQueueControlRequest.RETRY, id, confirmNewRender,
-                            ),
-                        ),
-                    ),
-                    notifier,
+                val view = transport.controlVideoQueue(
+                    VideoQueueControlRequest(VideoQueueControlRequest.RETRY, id, confirmNewRender),
                 )
+                if (mac == generation) answered(view, sentFrom, transport, notifier)
             } catch (failure: TransportError) {
-                error = failure.message
+                if (mac == generation) error = failure.message
             }
         }
     }
@@ -579,7 +718,15 @@ class MediaViewModel : ViewModel() {
         videoModels = emptyList()
         imageModels = emptyList()
         meshModels = emptyList()
+        generation++
         queue = QueueState.empty
+        cancelling = emptySet()
+        nextRead?.cancel()
+        nextRead = null
+        readInFlight = false
+        readAgain = false
+        endingsSeen.clear()
+        reopening.clear()
         announcer.forget()
         routesMedia = false
         autoNote = null

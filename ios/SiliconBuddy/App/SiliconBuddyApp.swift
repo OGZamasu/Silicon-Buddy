@@ -7,11 +7,14 @@ struct SiliconBuddyApp: App {
     /// The Models list, held here rather than by its screen: a load it started is followed
     /// to its end while another screen is showing, and a re-pair reaches it wherever it is.
     @State private var models = ModelsModel()
+    /// The render queue, held here for the same reason: a cancel waits up to a minute for
+    /// the node, and leaving the screen must not forget that it is on its way.
+    @State private var queue = QueueModel()
     @State private var badLink: LinkRefusal?
 
     var body: some Scene {
         WindowGroup {
-            RootView(chat: chat, models: models)
+            RootView(chat: chat, models: models, queue: queue)
                 .environment(app)
                 .task { await app.refreshReachability() }
                 .onOpenURL { url in

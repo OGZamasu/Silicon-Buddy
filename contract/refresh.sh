@@ -6,19 +6,27 @@
 # encode, so a change there fails a test here before it fails a person holding a
 # phone. Both apps read these same files.
 #
-#   ./contract/refresh.sh                      # uses the default checkout below
 #   ./contract/refresh.sh ~/src/silicon-optimizer
 #   ./contract/refresh.sh ~/src/silicon-optimizer origin/some-branch
+#   SILICON_OPTIMIZER_CHECKOUT=~/src/silicon-optimizer ./contract/refresh.sh
 #
 # The Mac checkout is never modified: the export runs in a detached worktree in
 # a temporary directory, which is removed afterwards.
 set -euo pipefail
 
-checkout="${1:-/Volumes/T9/Apple Silicon AI Optimizer}"
+checkout="${1:-${SILICON_OPTIMIZER_CHECKOUT:-}}"
 ref="${2:-origin/main}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ ! -d "$checkout/.git" ]; then
+# There is no default: where somebody keeps their clone is theirs to say, and a
+# guess would be one person's disk written into everybody's script.
+if [ -z "$checkout" ]; then
+    echo "Which silicon-optimizer clone? Pass its path, or set SILICON_OPTIMIZER_CHECKOUT:" >&2
+    echo "  ./contract/refresh.sh ~/src/silicon-optimizer [ref, default origin/main]" >&2
+    exit 2
+fi
+# `-e`, not `-d`: in a linked worktree `.git` is a file.
+if [ ! -e "$checkout/.git" ]; then
     echo "Not a git checkout: $checkout" >&2
     exit 1
 fi
@@ -33,15 +41,23 @@ cleanup() {
     git -C "$checkout" worktree remove --force "$worktree" >/dev/null 2>&1 || true
     rm -rf "$(dirname "$worktree")" "$(dirname "$export_dir")"
 }
+# Interrupted too: a registered worktree left behind in somebody's clone outlives the run.
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
-echo "Fetching $ref…"
+echo "Fetching ${ref}…"
 git -C "$checkout" fetch --quiet origin
 git -C "$checkout" worktree add --detach "$worktree" "$ref" >/dev/null
 
-echo "Exporting…"
+echo "Exporting from ${ref} ($(git -C "$worktree" rev-parse --short HEAD))…"
 mkdir -p "$export_dir"
-( cd "$worktree" && SILICON_EXPORT_CONTRACT="$export_dir" swift test --filter ContractExportTests >/dev/null )
+# The build is long and loud, so it goes to a log — whose end is shown if it fails.
+log="$(dirname "$export_dir")/export.log"
+if ! ( cd "$worktree" && SILICON_EXPORT_CONTRACT="$export_dir" swift test --filter ContractExportTests >"$log" 2>&1 ); then
+    echo "The export failed. The end of its log:" >&2
+    tail -n 40 "$log" >&2
+    exit 1
+fi
 
 count=$(ls "$export_dir" | wc -l | tr -d ' ')
 if [ "$count" -lt 2 ]; then

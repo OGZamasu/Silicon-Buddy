@@ -69,6 +69,15 @@ on every fetch, not remembered from when the id was issued. All of those are
 the same 404, and so is another device's upload id: "that is not yours" and
 "that does not exist" have to look alike, or the route is an oracle.
 
+A result names its files for a device, and never locates them: an image's
+`path`, a mesh's `glbPath` and `objPath`, a clip's `file`, and a queue item's
+`file` and `outputDirectory` are the file's or folder's own name — enough to show
+and to read an extension off — because a path on the Mac names the owner's
+account and a device could not open it anyway. Fetch by `mediaID`. A `warning`,
+`detail`, `error` or refusal that mentions one of the Mac's folders names it by
+its last component, or `~` for the home folder. The Mac's own control token
+still gets absolute paths; the swarm secret gets names, like a device.
+
 `POST /uploads` is how a device names a picture without naming a path. Send the
 bytes with a `Content-Type` and an `X-Filename`, or a `multipart/form-data`
 body; both are read, and neither is believed — the type is decided from the
@@ -84,7 +93,11 @@ name. `POST /mesh/plan`, `POST /mesh/generate`, `POST /image/plan`,
 request from a paired phone is refused, because a device that could name a file
 could name any file. Full scope only — uploading spends this Mac's disk, and
 the 24 MiB ceiling is granted to an identified full-scope device rather than to
-the path, so an unknown bearer gets the ordinary 4 MiB.
+the path, so an unknown bearer gets the ordinary 4 MiB. Each device may have at
+most 200 uploads or 1024 MiB
+waiting at once; past that an upload is a 429 with `Retry-After` set to when its
+oldest expires, and nothing is written. Reuse an `uploadID` or `mediaID` rather
+than sending the same picture again.
 
 `GET /swarm` says what the Mac's last poll saw, which is why every field beyond
 name, address and reachability is optional there. `GET /swarm/peers/{name}/status`
@@ -92,16 +105,21 @@ asks one node now, and is the only place the adapter riding on its loaded GGUF
 appears. The Mac's credential for that node goes out in a header and is never
 in the answer. Full scope only.
 
-`POST /video/queue/control` takes one of six verbs, and the fixture has an
+`POST /video/queue/control` takes one of seven verbs, and the fixture has an
 example of each. `pause` and `resume` and `clear_finished` take no `id`;
-`retry`, `remove` and `stop_following` need one. There is no `cancel`: a clip
-already handed to a node keeps rendering there, and `stop_following` says what
-actually happens — this Mac stops following it and the queue pauses.
+`retry`, `remove`, `stop_following` and `cancel` need one. `stop_following`
+says what actually happens — this Mac stops following the clip and the queue
+pauses, while the node may keep rendering it. `cancel` asks the clip's node to
+stop that one render, and applies only where the item's `canCancel` is true:
+its node advertises job cancellation for the lane. The item's `cancelState`
+then says how it went — `requested`, `confirmed` (and the status becomes
+`cancelled`), `completed` (it finished first and the clip is kept), `failed`,
+`unsupported` or `unknown` — and no answer ever resubmits the clip.
 `confirmNewRender` matters on `retry` alone. A failed clip the Mac can
 reconnect to is reconnected; one whose submission is uncertain is refused until
 the caller passes `confirmNewRender: true`, which is the caller saying it has
 checked the node and accepts that a second render may start. A verb that is not
-one of the six is a 400 saying exactly which six there are.
+one of the seven is a 400 saying exactly which seven there are.
 
 Two constants the phone should stop guessing. A batch is at most 20 variations
 per prompt, at most 200 unfinished clips at once and at most 2,000 items of
@@ -132,7 +150,26 @@ asked for, possibly minutes into reading a 30 GB file, and the first load would
 then fail in a way that looked like the model's fault. `POST /unload` stops the
 load in flight if that is really what is wanted. The Mac's own window is not
 held by this route and can still start a load that replaces one; the load that
-loses says so (`failure.wasReplaced`) rather than reporting a fault.
+loses says so (`interruptedLoads`, below) rather than reporting a fault.
+
+**A load this Mac stopped.** An unload part-way through a load, or another load
+started meanwhile — from the Mac's own window, say — is not a failure, and it
+is an ending. `interruptedLoads` lists them, newest first, at most four and one
+per model: `modelID` (as `loadedModelID` spells it), `reason` (`cancelled` for
+an unload, `replaced` for another load — treat an unknown one as `cancelled`),
+`replacedBy` (the model whose load took over, when replaced) and `at`. It is
+published the moment the Mac stops the load, on `GET /status` and in the
+`status` frame on `/events`, to every caller. A new load of a model clears that
+model's entry, so a client that has just asked for a model and finds it here
+knows its own load was stopped. The key is **absent** when there are none. A
+`POST /load` whose load was stopped inside its 25 seconds answers 409 with the
+sentence ("…was not loaded: another load (Gemma 4 E2B) replaced it before it
+finished."). A newer load of the *same* model is not an ending: nothing is
+listed, and the `POST /load` it took over from is answered with the live status
+to follow, as a slow load is. After an unload the state line also becomes the
+sentence and `failure` says `cancelled`, as a client written before
+`interruptedLoads` reads it; after a replacement the state line is the new
+load's.
 
 **A failed load.** `state` is one sentence — "llama-server stopped on its own
 after 8 seconds (exit 1)", "…was killed (signal 9), which usually means the
@@ -142,9 +179,11 @@ answered in 10 minutes" — and it is meant to be shown as it is. Beside it,
 `replaced`, `cancelled`, `timedOut`, `launchFailed`, `notInstalled` — treat an
 unknown one as `exited`), `detail` (the tail of the runtime's log, at most 20
 lines: put it behind a tap, never in the line a person reads first), `runtime`,
-`exitStatus`, `signal`, `wasReplaced` and `at`. The key is **absent** unless a
-load has failed, so a client written before it existed reads what it always
-did.
+`exitStatus`, `signal`, `wasReplaced`, `at`, and `modelID` — whose load it was,
+as `loadedModelID` spells it (absent from an older Mac). A client following one
+load compares `modelID` with the model it asked for: a failure naming another
+model is somebody else's load. The key is **absent** unless a load has failed,
+so a client written before it existed reads what it always did.
 
 `detail` is the only part of this that is scoped. It is the runtime's raw log,
 and on a Mac that log names files — so a device paired for **chat**, and the
@@ -285,7 +324,7 @@ is a 404. Full scope only, and the swarm secret is refused with its own sentence
 | `GET` | `/health` | none | Unauthenticated, so a client can tell a dead app from a bad token. Says which build of the app is answering: `appVersion` and `appBuild` are its CFBundleShortVersionString and CFBundleVersion, and `version` repeats `appVersion` for clients written before those existed. |
 | `GET` | `/profile` | device | What this Mac is, and how much of it a model may have. |
 | `GET` | `/metrics` | device | Memory, swap, GPU and CPU right now. |
-| `GET` | `/status` | device | What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap. |
+| `GET` | `/status` | device | What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap. `interruptedLoads` lists loads this Mac stopped before they finished. |
 | `GET` | `/installed` | device | The models on this Mac's disk. |
 | `GET` | `/catalog` | device | The catalogue, each entry judged against this Mac. |
 | `GET` | `/recommend` | device | The strongest model this machine can actually run. |
@@ -322,7 +361,7 @@ is a 404. Full scope only, and the swarm secret is refused with its own sentence
 | `GET` | `/video/models` | device | The video models, and which machine can run each. |
 | `GET` | `/video/queue` | device | The render queue and what is running. |
 | `POST` | `/video/queue` | device | Add prompts to the queue without holding a connection. |
-| `POST` | `/video/queue/control` | device | One of six verbs on the queue: pause, resume, retry, remove, stop_following, clear_finished. There is no cancel. |
+| `POST` | `/video/queue/control` | device | One of seven verbs on the queue: pause, resume, retry, remove, stop_following, cancel, clear_finished. cancel applies where canCancel is true. |
 | `POST` | `/video/generate` | device | Render one clip and wait for it. At most eight of these at once. |
 | `GET` | `/media/{id}` | device | The file itself. Answers bytes, not JSON: the content type of the result, `Accept-Ranges: bytes`, an `ETag`, 206 for a `Range` and 304 for a matching `If-None-Match`. A chat-only device may fetch preview images but not the renders themselves. |
 | `POST` | `/uploads` | device | Send a picture or a short clip, and get back the two ids that let a render start from it. Raw bytes or multipart; at most 24 MiB; kept for seven days. |

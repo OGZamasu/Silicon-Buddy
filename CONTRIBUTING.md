@@ -70,7 +70,9 @@ It exits non-zero on the first failure, so it chains onto a merge with `&&`.
 `ContractExportTests`. Both apps round-trip every type against them, which is how a change
 on the Mac fails a build here rather than failing a user. Do not hand-edit those files:
 change the Mac side, then re-export with `./contract/refresh.sh <your silicon-optimizer
-clone>` — without the argument the script looks for the maintainer's own checkout.
+clone> [ref]` (or set `SILICON_OPTIMIZER_CHECKOUT` to that clone). The ref defaults to
+`origin/main`; the script builds it in a throwaway worktree under `$TMPDIR`, so point
+`TMPDIR` at a roomy drive.
 
 ## Sending a change
 

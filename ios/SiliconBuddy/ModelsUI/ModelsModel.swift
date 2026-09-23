@@ -45,12 +45,23 @@ public final class ModelsModel {
     }
 
     /// How a load this screen started has ended, read from one status.
+    ///
+    /// In the Mac's order: the model resident; the Mac saying it stopped this load
+    /// (`interruptedLoads`, which a new load of the model clears, so an entry is this
+    /// load's); a failure that is this load's — `failure.modelID` names it, or is absent on
+    /// a Mac from before it did; a failure of another model, which means the Mac went on to
+    /// a load that was not this one; another model resident.
     public enum LoadOutcome: Equatable, Sendable {
         case pending, loaded, failed, replaced, cancelled
 
         public static func of(_ status: ControlAPI.Status, modelID: String) -> LoadOutcome {
             if let loaded = status.loadedModelID, sameModel(loaded, modelID) { return .loaded }
+            if let stopped = status.interruption(of: modelID) {
+                return stopped.kind == .replaced ? .replaced : .cancelled
+            }
             if let failure = status.failure {
+                // Somebody else's load failed: this one is no longer the Mac's.
+                guard isAbout(failure, modelID) else { return .replaced }
                 switch failure.kind {
                 case .replaced: return .replaced
                 case .cancelled: return .cancelled
@@ -62,9 +73,13 @@ public final class ModelsModel {
             return status.loadedModelID == nil ? .pending : .replaced
         }
 
-        /// An installed id carries its quantization ("model@Q4_K_M"); a status may use either.
         static func sameModel(_ a: String, _ b: String) -> Bool {
-            a == b || a.hasPrefix(b + "@") || b.hasPrefix(a + "@")
+            ControlAPI.Status.sameModel(a, b)
+        }
+
+        /// A failure without a model id is from a Mac that did not say, and is taken as ours.
+        static func isAbout(_ failure: ControlAPI.LoadFailure, _ modelID: String) -> Bool {
+            failure.modelID.map { sameModel($0, modelID) } ?? true
         }
     }
 
@@ -254,15 +269,24 @@ public final class ModelsModel {
             job = nil
             let failed = Problem(title: "Couldn't load \(name)", message: Self.describe(error), retry: retry)
             problem = failed
-            // A load the Mac tried and lost inside its patience is a 400 whose sentence ends
-            // with the status line, and /status has the log beside that line. Said once, as
-            // the line itself: the heading already says the load failed, and the failure it
-            // names is then not said again in the list.
             if case .success(let after) = await Self.attempt({ try await transport.status() }),
                generation == self.generation, !Task.isCancelled {
                 status = after
-                if let failure = after.failure, Self.describes(failed.message, state: after.state),
-                   problem == failed {
+                if case .conflict = error as? TransportError, after.interruption(of: modelID) != nil {
+                    // A 409 for a load another load or an unload stopped inside the Mac's
+                    // patience: its sentence says which, and the status lists it. An ending
+                    // somebody chose, not a fault, and nothing to retry.
+                    if problem == failed {
+                        problem?.title = "\(name) wasn't loaded"
+                        problem?.retry = nil
+                        problem?.isFault = false
+                    }
+                } else if let failure = after.failure,
+                          Self.describes(failed.message, state: after.state), problem == failed {
+                    // A load the Mac tried and lost inside its patience is a 400 whose
+                    // sentence ends with the status line, and /status has the log beside that
+                    // line. Said once, as the line itself: the heading already says the load
+                    // failed, and the failure it names is then not said again in the list.
                     problem?.message = after.state
                     problem?.detail = failure.detail
                     problem?.failure = failure
@@ -307,7 +331,7 @@ public final class ModelsModel {
         }
 
         job = nil
-        let failure = latest.failure
+        let failure = latest.failure.flatMap { LoadOutcome.isAbout($0, modelID) ? $0 : nil }
         switch outcome {
         case .loaded:
             problem = nil
@@ -316,18 +340,8 @@ public final class ModelsModel {
                 title: "Couldn't load \(name)", message: latest.state,
                 detail: failure?.detail, retry: retry, failure: failure
             )
-        case .replaced:
-            let instead = latest.loadedModelName ?? latest.loadedModelID ?? "another model"
-            problem = Problem(
-                title: "\(name) wasn't loaded",
-                message: failure != nil ? latest.state : "The Mac loaded \(instead) instead.",
-                detail: failure?.detail, isFault: false, failure: failure
-            )
-        case .cancelled:
-            problem = Problem(
-                title: "\(name) wasn't loaded", message: latest.state,
-                detail: failure?.detail, isFault: false, failure: failure
-            )
+        case .replaced, .cancelled:
+            problem = notLoaded(latest, modelID: modelID, name: name)
         case .pending:
             // Not refreshed after this: the status has just been read, and a refresh that
             // succeeded would clear the one thing there is to say.
@@ -339,6 +353,33 @@ public final class ModelsModel {
             return
         }
         await refresh(using: transport)
+    }
+
+    /// The one line for a load that ended without being this phone's fault, in the words of
+    /// how it ended — never a retry: asking again would only undo what somebody else chose.
+    private func notLoaded(
+        _ status: ControlAPI.Status, modelID: String, name: String
+    ) -> Problem {
+        let stopped = status.interruption(of: modelID)
+        let failure = status.failure.flatMap { LoadOutcome.isAbout($0, modelID) ? $0 : nil }
+        let message: String
+        if let stopped, stopped.kind == .replaced {
+            message = "Replaced by \(stopped.replacedBy.map(self.name(of:)) ?? "another load") before it finished loading."
+        } else if stopped != nil {
+            message = "Stopped by an unload before it finished loading."
+        } else if failure != nil {
+            message = status.state
+        } else if let instead = status.loadedModelName ?? status.loadedModelID {
+            message = "The Mac loaded \(instead) instead."
+        } else if let other = status.failure?.modelID {
+            message = "The Mac went on to load \(self.name(of: other)) instead."
+        } else {
+            message = "Another load took the Mac before this one finished."
+        }
+        return Problem(
+            title: "\(name) wasn't loaded", message: message,
+            detail: failure?.detail, isFault: false, failure: failure
+        )
     }
 
     /// The next status frame, or nil when none came within `interval`.

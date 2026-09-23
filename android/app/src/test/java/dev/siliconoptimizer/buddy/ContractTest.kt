@@ -1,6 +1,9 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.chat.SendLimits
+import dev.siliconoptimizer.buddy.media.CancelState
+import dev.siliconoptimizer.buddy.media.JobState
+import dev.siliconoptimizer.buddy.media.MediaJob
 import dev.siliconoptimizer.buddy.transport.AgentApprovalDecision
 import dev.siliconoptimizer.buddy.transport.AgentApprovalResult
 import dev.siliconoptimizer.buddy.transport.AgentEvent
@@ -31,6 +34,7 @@ import dev.siliconoptimizer.buddy.transport.InstalledModel
 import dev.siliconoptimizer.buddy.transport.JevView
 import dev.siliconoptimizer.buddy.transport.JobProgress
 import dev.siliconoptimizer.buddy.transport.LoadFailure
+import dev.siliconoptimizer.buddy.transport.LoadInterruption
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.MeshModel
 import dev.siliconoptimizer.buddy.transport.MeshPlan
@@ -244,7 +248,24 @@ class ContractTest {
 
     @Test fun plan() {
         roundTrip<PlanRequest>("POST__plan", "request")
-        roundTrip<Plan>("POST__plan")
+        assertNull("an ordinary model has no recurrent state", roundTrip<Plan>("POST__plan").recurrentStateBytes)
+    }
+
+    /**
+     * A hybrid model's plan (OGZamasu/silicon-optimizer#26) carries its fixed
+     * linear-attention state. The exported example is not a hybrid, so the field is added
+     * to it here — and it has to survive the round trip, which it would not if it were
+     * not mirrored.
+     */
+    @Test fun `a hybrid model's plan carries its recurrent state`() {
+        val plan = part("POST__plan", "response") as JsonObject
+        val hybrid = JsonObject(plan + ("recurrentStateBytes" to JsonPrimitive(301_989_888L)))
+        val decoded = json.decodeFromString<Plan>(hybrid.toString())
+        assertEquals(301_989_888L, decoded.recurrentStateBytes)
+        assertEquals(
+            emptyList<String>(),
+            difference(strip(hybrid), strip(Json.parseToJsonElement(json.encodeToString(decoded)))),
+        )
     }
 
     // MARK: - The M0 routes
@@ -391,14 +412,24 @@ class ContractTest {
         roundTrip<VideoQueueView>("POST__video_queue")
     }
 
-    /** Six verbs, each with a fixture of its own now, and no seventh. */
+    /** Seven verbs, each with a fixture of its own, and no eighth. */
     @Test
     fun `controlling the queue`() {
         val fixture = fixture("POST__video_queue_control")
         val requests = fixture.getValue("requests") as JsonObject
         assertEquals(
-            setOf("pause", "resume", "retry", "remove", "stop_following", "clear_finished"),
+            setOf("pause", "resume", "retry", "remove", "stop_following", "cancel", "clear_finished"),
             requests.keys,
+        )
+        assertEquals(
+            "the Mac's own list of verbs is this app's",
+            requests.keys,
+            setOf(
+                VideoQueueControlRequest.PAUSE, VideoQueueControlRequest.RESUME,
+                VideoQueueControlRequest.RETRY, VideoQueueControlRequest.REMOVE,
+                VideoQueueControlRequest.STOP_FOLLOWING, VideoQueueControlRequest.CANCEL,
+                VideoQueueControlRequest.CLEAR_FINISHED,
+            ),
         )
         for (action in requests.keys) {
             val sent = roundTrip<VideoQueueControlRequest>(
@@ -418,6 +449,59 @@ class ContractTest {
             ).confirmNewRender == true,
         )
         roundTrip<VideoQueueView>("POST__video_queue_control")
+        // The swarm's secret is refused every verb, in a sentence of its own.
+        val swarm = json.decodeFromString<ErrorResponse>(
+            part("POST__video_queue_control", "errorVariants.403.swarm").toString(),
+        )
+        assertTrue(swarm.error.contains("swarm"))
+    }
+
+    /**
+     * `cancel` names the one clip it is about — the one the Mac marked `canCancel` — and
+     * whether it applies is the Mac's answer per item, never this app's guess.
+     */
+    @Test
+    fun `cancelling a render names the clip the Mac says can be cancelled`() {
+        val sent = roundTrip<VideoQueueControlRequest>("POST__video_queue_control", "requests.cancel")
+        assertEquals(VideoQueueControlRequest.CANCEL, sent.action)
+        assertNull("cancel is never a new render to confirm", sent.confirmNewRender)
+        val queue = roundTrip<VideoQueueView>("POST__video_queue_control")
+        val target = queue.items.single { it.id == sent.id }
+        assertEquals(true, target.canCancel)
+        assertTrue("it has a node job to cancel", target.nodeJobID != null)
+        // A confirmed cancel: its own status, the record, and the node's words.
+        val cancelled = queue.items.single { it.status == "cancelled" }
+        assertEquals("confirmed", cancelled.cancelState)
+        assertTrue(cancelled.cancelDetail!!.isNotBlank())
+        assertEquals("nothing left to cancel on a confirmed one", false, cancelled.canCancel)
+    }
+
+    @Test
+    fun `the queue says per clip whether it can be cancelled and how a cancel went`() {
+        for (name in listOf("GET__video_queue", "POST__video_queue", "POST__video_queue_control")) {
+            val items = roundTrip<VideoQueueView>(name).items.map { MediaJob.of(it, null) }
+            val offered = items.filter { it.canCancelRender }.map { it.id }
+            assertEquals("$name offers Cancel render on exactly the clip it marks", listOf("9C2F-0005"), offered)
+            assertTrue("never to a chat-only pairing", items.none { it.offersCancelRender(canControl = false) })
+            assertEquals(CancelState.Confirmed, items.single { it.id == "9C2F-0004" }.cancel)
+            assertEquals(JobState.Stopped, items.single { it.id == "9C2F-0004" }.state)
+        }
+    }
+
+    /** A Mac from before `cancel` sends none of its fields, and the queue still reads. */
+    @Test
+    fun `an older Mac's queue item still decodes, with nothing to cancel`() {
+        val queue = part("GET__video_queue", "response") as JsonObject
+        val older = JsonObject(
+            queue + ("items" to JsonArray(
+                (queue.getValue("items") as JsonArray).map { item ->
+                    JsonObject((item as JsonObject) - setOf("canCancel", "cancelState", "cancelDetail"))
+                },
+            )),
+        )
+        val view = json.decodeFromString<VideoQueueView>(older.toString())
+        assertTrue(view.items.all { it.canCancel == null && it.cancelState == null })
+        assertTrue(view.items.map { MediaJob.of(it, null) }.none { it.canCancelRender || it.cancel != null })
     }
 
     @Test
@@ -434,7 +518,11 @@ class ContractTest {
         val queue = roundTrip<VideoQueueView>("GET__video_queue")
         assertNotNull("the Mac's word about the queue itself", queue.message)
         val done = queue.items.first { it.status == "completed" }
-        assertNotNull(done.file)
+        assertIsAName(done.file!!)
+        queue.items.forEach { assertIsAName(it.outputDirectory) }
+        // What the app reads off a name: the extension a saved copy is filed under.
+        val saved = dev.siliconoptimizer.buddy.media.MediaLibrary.nameFor("video", "Lisbon", done.file)
+        assertTrue(saved, saved.startsWith("Lisbon-") && saved.endsWith(".mp4"))
         assertNotNull(done.mediaID)
         assertNotNull("a poster a chat-scope device may fetch", done.thumbnailMediaID)
         assertNotNull("why the Mac chose what it chose", done.detail)
@@ -461,6 +549,11 @@ class ContractTest {
         val tooLarge = (part("POST__uploads", "errors.413") as JsonObject)
             .getValue("error").toString()
         assertTrue(tooLarge.contains(Uploads.MAXIMUM_BYTES.toString()))
+        // Past the Mac's allowance of waiting uploads: busy, in the Mac's own words.
+        val tooMany = part("POST__uploads", "errors.429").toString()
+        val busy = TransportError.from(429, tooMany, "/uploads")
+        assertTrue(busy is TransportError.Busy)
+        assertTrue(busy!!.message!!.contains("uploadID or mediaID you already have"))
         // `GET /media/{id}` answers bytes, so there is no response type to mirror —
         // only the scopes, which decide what this app offers to whom.
         assertEquals(listOf("full", "chat"), fixture("GET__media__id_")["scopes"].toString()
@@ -489,7 +582,7 @@ class ContractTest {
         assertNotNull(request.uploadID)
         assertNotNull(request.negativePrompt)
         val clip = roundTrip<VideoResponse>("POST__video_generate")
-        assertTrue(clip.file.startsWith("/"))
+        assertIsAName(clip.file)
         assertNotNull("and now the phone can fetch it", clip.mediaID)
         assertNotNull(clip.thumbnailMediaID)
     }
@@ -501,7 +594,7 @@ class ContractTest {
         assertEquals(planned, generated)
         assertEquals(1024, roundTrip<ImagePlan>("POST__image_plan").width)
         val image = roundTrip<ImageResponse>("POST__image_generate")
-        assertTrue(image.path.startsWith("/"))
+        assertIsAName(image.path)
         assertNotNull(image.peakMemoryBytes)
         assertNotNull(image.mediaID)
     }
@@ -513,7 +606,8 @@ class ContractTest {
         assertEquals(request, roundTrip<MeshRequest>("POST__mesh_generate", "request"))
         assertFalse(roundTrip<MeshPlan>("POST__mesh_plan").isRemote)
         val mesh = roundTrip<MeshResponse>("POST__mesh_generate")
-        assertTrue(mesh.glbPath!!.startsWith("/"))
+        assertIsAName(mesh.glbPath!!)
+        assertIsAName(mesh.objPath!!)
         assertNotNull(mesh.mediaID)
         assertNotNull("the OBJ has an id of its own", mesh.objMediaID)
     }
@@ -720,6 +814,11 @@ class ContractTest {
             "GET__ondevice_models 403 swarm",
             "GET__ondevice_models__id__file 403 swarm",
             "POST__ondevice_models__id__prepare 403 swarm",
+            // The queue's controls are the owner's: the swarm secret is refused every verb.
+            "POST__video_queue_control 403 swarm",
+            // A load this Mac stopped before it finished (OGZamasu/silicon-optimizer#97).
+            "POST__load 409 replaced by another load before it finished",
+            "POST__load 409 stopped by an unload before it finished",
         )
 
         /**
@@ -981,10 +1080,10 @@ class ContractTest {
         val decoded = variants.associateWith { roundTrip<Status>("GET__status", "responseVariants.$it") }
         assertTrue("the export documents the endings", decoded.size >= 5)
         decoded.values.forEach { status ->
-            val failure = assertNotNullAnd(status.failure)
             assertFalse("state stays one line", status.state.contains('\n'))
             assertNull(status.loadedModelID)
-            assertTrue(failure.at.isNotBlank())
+            status.failure?.let { assertTrue(it.at.isNotBlank()) }
+            assertTrue("each variant is a failure or a stopped load", status.failure != null || status.interruptedLoads != null)
         }
 
         val killed = decoded.getValue("after a failed load").failure!!
@@ -992,17 +1091,54 @@ class ContractTest {
         assertEquals(9, killed.signal)
         assertTrue("the log is the detail, not the sentence", killed.detail!!.contains("load_tensors"))
         assertEquals("llama.cpp · signal 9", killed.facts)
+        assertEquals("whose load it was", "bonsai-2-27b", killed.modelID)
 
-        val replaced = decoded.getValue("after a load that was replaced").failure!!
-        assertTrue(replaced.wasReplaced)
-        assertEquals(LoadFailure.Reason.Replaced, replaced.kind)
-        assertEquals(LoadFailure.Reason.Cancelled, decoded.getValue("after a load that was cancelled").failure!!.kind)
+        // Replaced: no failure at all — the state line is the new load's, and the ending is
+        // in `interruptedLoads` only.
+        val replaced = decoded.getValue("after a load that was replaced")
+        assertNull(replaced.failure)
+        val stopped = replaced.interruption("bonsai-2-27b@Q4_K_M")!!
+        assertEquals(LoadInterruption.Kind.Replaced, stopped.kind)
+        assertEquals("qwen3-coder-30b", stopped.replacedBy)
+        assertNull("not a model that was stopped", replaced.interruption("qwen3-coder-30b"))
+
+        // Cancelled by an unload: both, for a phone from before `interruptedLoads`.
+        val cancelled = decoded.getValue("after a load that was cancelled")
+        assertEquals(LoadFailure.Reason.Cancelled, cancelled.failure!!.kind)
+        assertEquals(LoadInterruption.Kind.Cancelled, cancelled.interruption("bonsai-2-27b")!!.kind)
+        assertNull(cancelled.interruption("bonsai-2-27b")!!.replacedBy)
         assertEquals(LoadFailure.Reason.TimedOut, decoded.getValue("after a load that never answered").failure!!.kind)
 
         // A device paired for chat is told the same failure without the runtime's log.
         val withheld = decoded.getValue("as a chat-scope device or a peer sees it")
         assertNull(withheld.failure!!.detail)
         assertEquals(decoded.getValue("after a failed load").state, withheld.state)
+    }
+
+    @Test
+    fun `a stop this app does not know reads as cancelled, and an older Mac sends neither field`() {
+        val status = json.decodeFromString<Status>(
+            """{"state":"Not loaded","expertStreaming":false,
+               "interruptedLoads":[{"modelID":"m","reason":"evicted","at":"2026-09-19T11:04:38Z"}]}""",
+        )
+        assertEquals(LoadInterruption.Kind.Cancelled, status.interruption("m")!!.kind)
+        val older = json.decodeFromString<Status>(
+            """{"state":"x","expertStreaming":false,
+               "failure":{"reason":"killed","wasReplaced":false,"at":"2026-09-19T11:04:38Z"}}""",
+        )
+        assertNull(older.interruptedLoads)
+        assertNull(older.failure!!.modelID)
+    }
+
+    /** A load another load or an unload stopped inside the Mac's patience: a 409, in words. */
+    @Test
+    fun `a load stopped before it finished is a conflict the Mac explains`() {
+        for (label in listOf("replaced by another load before it finished", "stopped by an unload before it finished")) {
+            val body = part("POST__load", "errorVariants.409.$label").toString()
+            val refusal = TransportError.from(409, body, "/load")
+            assertTrue(label, refusal is TransportError.Conflict)
+            assertTrue(label, refusal!!.message!!.startsWith("Bonsai 2 27B was not loaded:"))
+        }
     }
 
     @Test
@@ -1014,6 +1150,14 @@ class ContractTest {
         assertEquals(LoadFailure.Reason.Exited, status.failure!!.kind)
         assertNull(status.failure!!.detail)
         assertNull("nothing to say about how it ended", status.failure!!.facts)
+    }
+
+    /**
+     * A file or folder named for a device: its own name, never where it sits on the Mac,
+     * which would name the owner's account (OGZamasu/silicon-optimizer#95).
+     */
+    private fun assertIsAName(value: String) {
+        assertTrue("$value is a path", value.isNotBlank() && !value.contains('/') && !value.startsWith("~"))
     }
 
     private fun <T : Any> assertNotNullAnd(value: T?): T {

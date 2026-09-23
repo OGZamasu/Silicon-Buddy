@@ -1,5 +1,6 @@
 package dev.siliconoptimizer.buddy
 
+import dev.siliconoptimizer.buddy.media.CancelState
 import dev.siliconoptimizer.buddy.media.JobAnnouncer
 import dev.siliconoptimizer.buddy.media.JobNotifications
 import dev.siliconoptimizer.buddy.media.JobState
@@ -106,6 +107,15 @@ class NotificationTest {
     fun `stopping says what the Mac will not claim`() {
         val notice = JobNotifications.transition(row(JobState.Rendering), row(JobState.Stopped))
         assertTrue(notice!!.body.contains("node may still finish it"))
+    }
+
+    @Test
+    fun `a cancel the node confirmed is said as one, not as a render that may still finish`() {
+        val cancelled = row(JobState.Stopped).copy(statusWord = "cancelled", cancel = CancelState.Confirmed)
+        val notice = JobNotifications.transition(row(JobState.Rendering), cancelled)!!
+        assertEquals("That clip was cancelled", notice.title)
+        assertFalse(notice.body.contains("may still finish"))
+        assertFalse("somebody asked for it", notice.isFailure)
     }
 
     @Test

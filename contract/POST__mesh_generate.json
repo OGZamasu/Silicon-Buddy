@@ -27,12 +27,12 @@
   },
   "response" : {
     "elapsedSeconds" : 323.69999999999999,
-    "glbPath" : "\/Users\/you\/Models\/kettle.glb",
+    "glbPath" : "kettle.glb",
     "mediaID" : "bWVkaWEtbWVzaC1leGFt",
     "mediaURL" : "\/media\/bWVkaWEtbWVzaC1leGFt",
     "model" : "Hunyuan3D 2",
     "objMediaID" : "bWVkaWEtbWVzaC1vYmpl",
-    "objPath" : "\/Users\/you\/Models\/kettle.obj"
+    "objPath" : "kettle.obj"
   },
   "scopes" : [
     "full"
