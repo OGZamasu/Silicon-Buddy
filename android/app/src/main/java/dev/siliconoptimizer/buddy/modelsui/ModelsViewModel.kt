@@ -158,7 +158,7 @@ class ModelsViewModel : ViewModel() {
 
             var settled = 0
             var lastSize = -1L
-            repeat(600) {
+            for (attempt in 0 until 600) {
                 delay(2000)
                 val list = runCatching { transport.installed() }.getOrNull() ?: emptyList()
                 val state = runCatching { transport.status() }.getOrNull()
@@ -178,7 +178,7 @@ class ModelsViewModel : ViewModel() {
                 )
                 if (entry != null && size == lastSize) {
                     settled++
-                    if (settled >= 2) return@repeat // Two identical readings: it stopped growing.
+                    if (settled >= 2) break // Two identical readings: it stopped growing.
                 } else {
                     settled = 0
                 }
