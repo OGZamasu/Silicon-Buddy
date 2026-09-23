@@ -263,6 +263,27 @@ final class ModelsModelTests: XCTestCase {
         XCTAssertNil(model.problem, "nothing was being followed, so nothing failed")
     }
 
+    func testARePairWhileAnInstallPollIsOutLeavesNoInstallBehind() async throws {
+        let model = quickModel()
+        model.installPollInterval = .milliseconds(20)
+        let old = mac(answering: loading)
+        old.installedHangs = true
+        let entry = ControlAPI.CatalogModel(
+            id: "test-model", name: "Test Model", author: "Test", license: "MIT",
+            summary: "", category: "chat", parameters: "2B", activeParameters: nil, isMoE: false,
+            capabilities: ["chat"], rating: 1, maxContext: 4096, quantizations: ["Q4_K_M"],
+            recommendation: nil
+        )
+        let installing = Task { await model.install(model: entry, quantization: nil, using: old) }
+        try await until("the poll is out") { model.job?.message == "Downloading." }
+        try await Task.sleep(for: .milliseconds(60))
+        model.reset()
+        await installing.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(model.job, "no phantom install on the next Mac's screen, and Unload is not held off")
+        XCTAssertTrue(model.installed.isEmpty)
+    }
+
     func testAnOutcomeIsReadFromOneStatus() {
         XCTAssertEqual(ModelsModel.LoadOutcome.of(loading, modelID: id), .pending)
         XCTAssertEqual(ModelsModel.LoadOutcome.of(loaded, modelID: id), .loaded)

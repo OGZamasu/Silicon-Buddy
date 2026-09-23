@@ -97,6 +97,8 @@ public final class ModelsModel {
     /// How long a load is followed. The Mac gives a runtime ten minutes to answer and then
     /// says it timed out; a little over that, and the Mac has had its say.
     var followLimit: Duration = .seconds(11 * 60)
+    /** How often a download is asked about. */
+    var installPollInterval: Duration = .seconds(2)
 
     private var poller: Task<Void, Never>?
     private var loader: Task<Void, Never>?
@@ -411,11 +413,12 @@ public final class ModelsModel {
         of modelID: String, expecting expected: Int64?, using transport: any ControlTransport
     ) async {
         poller?.cancel()
+        let every = installPollInterval
         let task = Task { [weak self] in
             var settled = 0
             var lastSize: Int64 = -1
             for _ in 0..<600 { // Up to ~20 minutes at 2s.
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: every)
                 if Task.isCancelled { return }
                 guard let self else { return }
                 let list = (try? await transport.installed()) ?? []

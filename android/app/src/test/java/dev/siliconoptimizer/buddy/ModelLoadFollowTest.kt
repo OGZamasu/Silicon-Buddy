@@ -420,6 +420,27 @@ class ModelLoadFollowTest {
     }
 
     @Test
+    fun `a re-pair while a follow-up poll hangs never revives the old load`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        val old = object : HangingTransport() {
+            override suspend fun load(request: LoadRequest) = loading
+            // status() hangs, as a Mac that has gone away does.
+        }
+        model.load(id, transport = old)
+        runCurrent()
+        advanceTimeBy(ModelsViewModel.POLL_WITHOUT_EVENTS_MS + 1)
+        runCurrent()
+        assertEquals("load", model.job?.kind)
+
+        model.reset()
+        advanceTimeBy(ModelsViewModel.FOLLOW_LIMIT_MS)
+        runCurrent()
+        assertNull(model.job)
+        assertNull("nothing was left to say it was still loading", model.problem)
+        assertNull(model.status)
+    }
+
+    @Test
     fun `an outcome is read from one status`() {
         assertEquals(LoadOutcome.Pending, LoadOutcome.of(loading, id))
         assertEquals(LoadOutcome.Loaded, LoadOutcome.of(loaded, id))

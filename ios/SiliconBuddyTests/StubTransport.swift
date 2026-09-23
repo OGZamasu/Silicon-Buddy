@@ -29,6 +29,7 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     /// survive it.
     var statusHangs = false
     var chatHangs = false
+    var installedHangs = false
 
     /// Readings `GET /status` walks through before falling back to `statusResult`; the
     /// last one repeats.
@@ -62,7 +63,10 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     }
     func profile() async throws -> ControlAPI.Profile { try profileResult.get() }
     func metrics() async throws -> ControlAPI.Metrics { try metricsResult.get() }
-    func installed() async throws -> [ControlAPI.InstalledModel] { try installedResult.get() }
+    func installed() async throws -> [ControlAPI.InstalledModel] {
+        if installedHangs { try await Task.sleep(for: .seconds(3600)) }
+        return try installedResult.get()
+    }
     func catalog(category: String?, onlyRunnable: Bool) async throws -> [ControlAPI.CatalogModel] {
         try catalogResult.get()
     }

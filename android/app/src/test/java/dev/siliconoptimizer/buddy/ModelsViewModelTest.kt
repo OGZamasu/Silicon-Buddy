@@ -15,8 +15,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -125,6 +127,53 @@ class ModelsViewModelTest {
         } finally {
             model.reset()
         }
+    }
+
+    /** A Mac that takes the install and then never answers a poll, or a refresh. */
+    private class Unanswering : HangingTransport() {
+        override suspend fun install(request: LoadRequest) = "Downloading…"
+        override suspend fun status(): Status = Status("Idle")
+    }
+
+    @Test
+    fun `a re-pair while a poll is in flight leaves no install behind`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        model.install(catalogModel, transport = Unanswering())
+        runCurrent()
+        advanceTimeBy(2_001) // The first poll is out, and hangs in /installed.
+        runCurrent()
+        assertNotNull(model.job)
+
+        model.reset()
+        runCurrent()
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertNull("no phantom install on the next Mac's screen, and Unload is not held off", model.job)
+        assertEquals(emptyList<InstalledModel>(), model.installed)
+    }
+
+    @Test
+    fun `a re-pair while a refresh is in flight leaves the next Mac's lists alone`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        val old = object : HangingTransport() {
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            override suspend fun installed(): List<InstalledModel> {
+                gate.await()
+                return listOf(InstalledModel("old@Q4_K_M", "Old", "Q4_K_M", 1, false, false))
+            }
+            override suspend fun catalog(category: String?, onlyRunnable: Boolean) = emptyList<CatalogModel>()
+            override suspend fun status() = Status("Ready", loadedModelID = "old@Q4_K_M")
+        }
+        model.refresh(old)
+        runCurrent()
+        assertTrue(model.isLoading)
+
+        model.reset()
+        old.gate.complete(Unit)
+        runCurrent()
+        assertTrue("the old Mac's disk is not the new one's", model.installed.isEmpty())
+        assertNull(model.status)
+        assertFalse(model.isLoading)
     }
 
     @Test
