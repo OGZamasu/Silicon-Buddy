@@ -289,7 +289,7 @@ QUEUE = {
          "variation": 1, "prompt": "A crane turning above the harbour at night",
          "seed": 90210, "modelID": "hailuo-h3", "seconds": 5, "resolution": "768P",
          "h3Turbo": False, "h3Steps": 30, "status": "failed", "nodeJobID": None,
-         "file": None, "outputDirectory": "/Users/you/Movies/Silicon/Harbour",
+         "file": None, "outputDirectory": "Harbour",
          "error": "No node accepted this clip: render-node was busy for 90 seconds.",
          "uncertainSubmission": False},
     ],
@@ -401,9 +401,8 @@ def queue_worker():
             fraction = PROGRESS.get(active["id"], 0.0) + STEP
             if fraction >= 1.0:
                 active["status"] = "completed"
-                active["file"] = "%s/scene-%03d_take-%02d.mp4" % (
-                    active["outputDirectory"], active["scene"], active["variation"],
-                )
+                # A device is told the file's name, never where it sits on the Mac.
+                active["file"] = "scene-%03d_take-%02d.mp4" % (active["scene"], active["variation"])
                 active["mediaID"] = keep_placeholder("video")
                 active["mediaURL"] = "/media/%s" % active["mediaID"]
                 active["thumbnailMediaID"] = keep_placeholder("image")
@@ -1693,7 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
                             "modelID": model, "seconds": seconds, "resolution": "768P",
                             "h3Turbo": False, "h3Steps": 30, "status": "pending",
                             "nodeJobID": None, "file": None,
-                            "outputDirectory": "/Users/you/Movies/Silicon/" + title,
+                            "outputDirectory": title,
                             "error": None, "uncertainSubmission": False,
                             "negativePrompt": body.get("negativePrompt"),
                             "detail": None,
@@ -1768,7 +1767,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(SYNC_SECONDS)
             clip = keep_placeholder("video")
             return self.send_json({
-                "file": "/Users/you/Movies/Silicon/one-off-%04d.mp4" % random.randrange(9999),
+                "file": "one-off-%04d.mp4" % random.randrange(9999),
                 "node": "render-node", "model": body.get("modelID") or "hailuo-h3",
                 "elapsedSeconds": 3.0 + seconds,
                 "mediaID": clip, "mediaURL": "/media/%s" % clip,
@@ -1792,7 +1791,7 @@ class Handler(BaseHTTPRequestHandler):
             done.wait(SYNC_SECONDS * 4 + 10)
             picture = keep_placeholder("image")
             return self.send_json({
-                "path": "/Users/you/Pictures/Silicon/lisbon-%04d.png" % random.randrange(9999),
+                "path": "lisbon-%04d.png" % random.randrange(9999),
                 "elapsedSeconds": 6.4, "peakMemoryBytes": 13958643712,
                 "predictedPeakBytes": 14200000000, "model": model["name"],
                 "mediaID": picture, "mediaURL": "/media/%s" % picture,
@@ -1807,7 +1806,7 @@ class Handler(BaseHTTPRequestHandler):
             done.wait(SYNC_SECONDS * 4 + 10)
             mesh = keep(b"glTF-placeholder", "model/gltf-binary")
             return self.send_json({
-                "glbPath": "/Users/you/Models/Silicon/kettle.glb",
+                "glbPath": "kettle.glb",
                 "objPath": None, "elapsedSeconds": 5.2, "model": "Hunyuan3D 2",
                 "mediaID": mesh, "mediaURL": "/media/%s" % mesh,
             })
