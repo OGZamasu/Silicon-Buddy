@@ -119,11 +119,10 @@ class NewConversationOnMacTest {
 
     @After
     fun tearDown() {
-        // The conversation stores read and write on Dispatchers.IO and come back to Main.
-        // Resetting Main with one still in the air turns it into an uncaught exception
-        // reported against whichever test runs next, in whichever class — so the reads are
-        // given their moment to land first. `OnDeviceChatTest` does the same.
-        Thread.sleep(100)
+        // The conversation stores read and write on Dispatchers.IO and come back to Main;
+        // one still in the air at `resetMain` fails whichever test runs next. See
+        // `stopForTest`, which `OnDeviceChatTest` and `RestoreAfterDeathTest` use too.
+        chat.stopForTest()
         Dispatchers.resetMain()
     }
 
