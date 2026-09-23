@@ -4,11 +4,14 @@ import SwiftUI
 struct SiliconBuddyApp: App {
     @State private var app = AppModel()
     @State private var chat = ChatModel()
+    /// The Models list, held here rather than by its screen: a load it started is followed
+    /// to its end while another screen is showing, and a re-pair reaches it wherever it is.
+    @State private var models = ModelsModel()
     @State private var badLink: LinkRefusal?
 
     var body: some Scene {
         WindowGroup {
-            RootView(chat: chat)
+            RootView(chat: chat, models: models)
                 .environment(app)
                 .task { await app.refreshReachability() }
                 .onOpenURL { url in

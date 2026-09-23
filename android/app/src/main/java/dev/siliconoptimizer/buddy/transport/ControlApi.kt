@@ -48,8 +48,57 @@ data class Status(
     val expertStreaming: Boolean = false,
     val lastGenerationTokensPerSecond: Double? = null,
     val activity: String? = null,
+    /**
+     * Why the last load failed, when it did and the Mac knows. Absent while a model is
+     * loading or loaded, and on a Mac from before it existed. [state] is still the line to
+     * show; this is what lies behind it.
+     */
+    val failure: LoadFailure? = null,
 ) {
     val hasLoadedModel: Boolean get() = loadedModelID != null
+}
+
+/**
+ * The facts behind a failed load. The sentence is not here: it is [Status.state], and the
+ * Mac sends it once so the two cannot disagree.
+ */
+@Serializable
+data class LoadFailure(
+    /** A [Reason], as the Mac spells it. Kept as text: the Mac may add reasons. */
+    val reason: String,
+    /**
+     * The runtime's own log tail — at most 20 lines, and never the line to show first.
+     * Absent for a device paired for chat, which the Mac does not show its logs to.
+     */
+    val detail: String? = null,
+    /** `llama.cpp`, `MLX`, `llama.cpp (PrismML)`. */
+    val runtime: String? = null,
+    val exitStatus: Int? = null,
+    /** 9 on a Mac is nearly always the system taking the model's memory back. */
+    val signal: Int? = null,
+    /** True only when another load ended this one: not a fault, a change of plan. */
+    val wasReplaced: Boolean = false,
+    /** ISO 8601, in the Mac's own offset. */
+    val at: String,
+) {
+    enum class Reason(val wire: String) {
+        Exited("exited"), Killed("killed"), Replaced("replaced"), Cancelled("cancelled"),
+        TimedOut("timedOut"), LaunchFailed("launchFailed"), NotInstalled("notInstalled");
+
+        companion object {
+            /** The Mac's rule: a reason this app does not know yet reads as `exited`. */
+            fun of(wire: String): Reason = entries.firstOrNull { it.wire == wire } ?: Exited
+        }
+    }
+
+    val kind: Reason get() = if (wasReplaced) Reason.Replaced else Reason.of(reason)
+
+    /** "llama.cpp · signal 9": which runtime, and how it ended, when the Mac said. */
+    val facts: String?
+        get() = listOfNotNull(
+            runtime?.takeIf { it.isNotBlank() },
+            signal?.let { "signal $it" } ?: exitStatus?.let { "exit status $it" },
+        ).joinToString(" · ").ifEmpty { null }
 }
 
 @Serializable

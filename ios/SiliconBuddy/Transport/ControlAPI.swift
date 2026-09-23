@@ -228,11 +228,16 @@ public enum ControlAPI {
         public var expertStreaming: Bool
         public var lastGenerationTokensPerSecond: Double?
         public var activity: String?
+        /// Why the last load failed, when it did and the Mac knows. Absent while a model is
+        /// loading or loaded, and on a Mac from before it existed. `state` is still the line
+        /// to show; this is what lies behind it.
+        public var failure: LoadFailure?
 
         public init(
             state: String, loadedModelID: String? = nil, loadedModelName: String? = nil,
             contextLength: Int? = nil, expertStreaming: Bool = false,
-            lastGenerationTokensPerSecond: Double? = nil, activity: String? = nil
+            lastGenerationTokensPerSecond: Double? = nil, activity: String? = nil,
+            failure: LoadFailure? = nil
         ) {
             self.state = state
             self.loadedModelID = loadedModelID
@@ -241,10 +246,58 @@ public enum ControlAPI {
             self.expertStreaming = expertStreaming
             self.lastGenerationTokensPerSecond = lastGenerationTokensPerSecond
             self.activity = activity
+            self.failure = failure
         }
 
         /// True when a language model is resident and ready to answer.
         public var hasLoadedModel: Bool { loadedModelID != nil }
+    }
+
+    /// The facts behind a failed load. The sentence is not here: it is `Status.state`, and
+    /// the Mac sends it once so the two cannot disagree.
+    public struct LoadFailure: Codable, Sendable, Equatable {
+        /// How the Mac says a load ended. It may add reasons; an unknown one reads as
+        /// `exited`, which is the Mac's own rule.
+        public enum Reason: String, Sendable, CaseIterable {
+            case exited, killed, replaced, cancelled, timedOut, launchFailed, notInstalled
+        }
+
+        /// A `Reason`, as the Mac spells it. Kept as text: the Mac may add reasons.
+        public var reason: String
+        /// The runtime's own log tail — at most 20 lines, and never the line to show first.
+        /// Absent for a device paired for chat, which the Mac does not show its logs to.
+        public var detail: String?
+        /// `llama.cpp`, `MLX`, `llama.cpp (PrismML)`.
+        public var runtime: String?
+        public var exitStatus: Int?
+        /// 9 on a Mac is nearly always the system taking the model's memory back.
+        public var signal: Int?
+        /// True only when another load ended this one: not a fault, a change of plan.
+        public var wasReplaced: Bool
+        /// ISO 8601, in the Mac's own offset.
+        public var at: String
+
+        public init(
+            reason: String, detail: String? = nil, runtime: String? = nil,
+            exitStatus: Int? = nil, signal: Int? = nil, wasReplaced: Bool = false, at: String
+        ) {
+            self.reason = reason
+            self.detail = detail
+            self.runtime = runtime
+            self.exitStatus = exitStatus
+            self.signal = signal
+            self.wasReplaced = wasReplaced
+            self.at = at
+        }
+
+        public var kind: Reason { wasReplaced ? .replaced : Reason(rawValue: reason) ?? .exited }
+
+        /// "llama.cpp · signal 9": which runtime, and how it ended, when the Mac said.
+        public var facts: String? {
+            let ending = signal.map { "signal \($0)" } ?? exitStatus.map { "exit status \($0)" }
+            let parts = [runtime.flatMap { $0.isEmpty ? nil : $0 }, ending].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
     }
 
     // MARK: - Requests

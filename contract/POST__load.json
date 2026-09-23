@@ -10,6 +10,9 @@
     "403" : {
       "error" : "This device is paired for chat only. Pair it again with full control from Settings → Silicon Buddy on the Mac."
     },
+    "409" : {
+      "error" : "This Mac is already loading bonsai-2-27b (started 12s ago), and this route runs one load at a time. Nothing was changed. Follow it with GET \/status, or POST \/unload to stop it and then load again."
+    },
     "411" : {
       "error" : "This server needs a Content-Length. Chunked bodies are not read."
     },
@@ -32,8 +35,14 @@
     "loadedModelName" : "Qwen3-Coder 30B A3B",
     "state" : "running"
   },
+  "responseVariants" : {
+    "still loading" : {
+      "expertStreaming" : false,
+      "state" : "Loading weights… 42%"
+    }
+  },
   "scopes" : [
     "full"
   ],
-  "summary" : "Load a model into memory."
+  "summary" : "Load a model into memory. The load belongs to the Mac once it has been asked for: it is not cancelled if this request goes away. A load still running after 25 seconds answers with the live status instead of holding the connection — follow it with GET \/status."
 }

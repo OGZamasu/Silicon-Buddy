@@ -438,6 +438,12 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         (events.verdicts[id] ?: events.verdicts[""])?.let { chat.apply(it) }
     }
 
+    // The models list shows what the Mac pushes, and a load it started is followed by it:
+    // `POST /load` may answer "still loading" and carry on. Here rather than on the models
+    // screen, so a load keeps being followed while another screen is showing.
+    LaunchedEffect(events.status) { events.status?.let(models::statusChanged) }
+    LaunchedEffect(events.isLive) { models.eventsLive = events.isLive }
+
     // Pairing happens over the dashboard, so the first reading has to be triggered by
     // the Mac arriving — and a different Mac means everything on screen belongs to the
     // wrong machine.
