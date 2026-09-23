@@ -19,6 +19,9 @@
     "415" : {
       "error" : "That upload is not an image or a short video this Mac will keep. Send a PNG, JPEG, GIF, WebP, MP4, MOV or WebM."
     },
+    "429" : {
+      "error" : "This Mac is already keeping as many uploads from this sender as it will hold at once (200 files or 1024 MiB). Start the render from an uploadID or mediaID you already have, or send this again once older uploads expire — each is kept for seven days."
+    },
     "500" : {
       "error" : "This Mac could not save that upload. Check the Mac has free space, then try again."
     }
