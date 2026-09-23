@@ -253,7 +253,9 @@ class ModelsErrorsTest {
         val sentence = "llama-server was killed (signal 9) after 8 seconds, which usually means " +
             "the system reclaimed its memory."
         val mac = FlakyMac().apply {
-            loadError = TransportError.Server(500, sentence)
+            // What the Mac answers a load that fails before it stops waiting: `ControlHostError
+            // .loadFailed(state)`, a 400 whose sentence ends with the status line.
+            loadError = TransportError.BadRequest("The model failed to load: $sentence")
             state = Status(
                 sentence,
                 failure = LoadFailure(
@@ -263,9 +265,13 @@ class ModelsErrorsTest {
             )
         }
         try {
+            model.refresh(mac)
+            runCurrent()
+            model.clearError()
             model.load(onDisk.id, transport = mac)
             runCurrent()
-            assertEquals(sentence, model.error)
+            assertEquals("Couldn't load Test Model", model.problem?.title)
+            assertEquals("the line itself, not the Mac's prefix around it", sentence, model.error)
             assertEquals("load_tensors: loading model tensors", model.problem?.detail)
             assertNull("the banner already says it; the list does not say it twice", model.standingFailure)
 
@@ -275,6 +281,38 @@ class ModelsErrorsTest {
         } finally {
             model.reset()
         }
+    }
+
+    @Test
+    fun `a refusal that is not about the standing failure does not borrow its log`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        val refusal = "Context length must be between 1 and 4096 tokens for this model."
+        val mac = FlakyMac().apply {
+            loadError = TransportError.BadRequest(refusal)
+            state = Status(
+                "llama-server was killed (signal 9) after 8 seconds.",
+                failure = LoadFailure(reason = "killed", detail = "an older log", at = "2026-09-19T11:04:38Z"),
+            )
+        }
+        try {
+            model.load(onDisk.id, transport = mac)
+            runCurrent()
+            assertEquals(refusal, model.error)
+            assertNull("that log belongs to another load", model.problem?.detail)
+            assertEquals("and the older failure is still said, once, in the list", "killed", model.standingFailure?.reason)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `the Mac's error is matched to its status line, and nothing looser`() {
+        val line = "llama-server never answered in 10 minutes."
+        assertTrue(ModelsViewModel.describes(line, line))
+        assertTrue(ModelsViewModel.describes("The model failed to load: $line", line))
+        assertFalse(ModelsViewModel.describes("Something else. $line", line))
+        assertFalse(ModelsViewModel.describes("The model failed to load: ", ""))
+        assertFalse(ModelsViewModel.describes(null, line))
     }
 
     @Test

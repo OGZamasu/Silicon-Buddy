@@ -256,28 +256,37 @@ class ModelsViewModel : ViewModel() {
                 job = null
                 val failed = Problem("Couldn't load $name", error.message.orEmpty(), retry = retry)
                 problem = failed
-                // A load the Mac tried and lost has its log on /status, next to the same
-                // sentence this error carries.
+                // A load the Mac tried and lost inside its patience is a 400 whose sentence
+                // ends with the status line, and /status has the log beside that line. Said
+                // once, as the line itself: the heading already says the load failed, and
+                // the failure it names is then not said again in the list.
                 attempt { transport.status() }.getOrNull()?.let { after ->
                     status = after
                     val failure = after.failure
-                    if (failure != null && after.state == error.message && problem == failed) {
-                        problem = failed.copy(detail = failure.detail, failure = failure)
+                    if (failure != null && describes(error.message, after.state) && problem == failed) {
+                        problem = failed.copy(message = after.state, detail = failure.detail, failure = failure)
                     }
                 }
                 return@launch
             }
-            // Whatever the feed pushed while the request was out is older than its answer.
-            while (frames.tryReceive().isSuccess) Unit
+            // Whatever the feed pushed while the request was out is older than its answer —
+            // but may have been the load ending just after the Mac stopped waiting. The Mac
+            // pushes a status only when it changes, so nothing would say it again: when a
+            // frame was dropped, the Mac is asked straight away rather than after a wait.
+            var dropped = false
+            while (frames.tryReceive().isSuccess) dropped = true
             status = answer
 
             var latest = answer
             val outcome = withTimeoutOrNull(FOLLOW_LIMIT_MS) {
                 var outcome = LoadOutcome.of(latest, modelID)
+                var askNow = dropped
                 while (outcome == LoadOutcome.Pending) {
                     job = ModelJob(modelID, "load", latest.state.ifBlank { "Loading…" })
                     val every = if (eventsLive) POLL_WITH_EVENTS_MS else POLL_WITHOUT_EVENTS_MS
-                    val next = withTimeoutOrNull(every) { frames.receive() }
+                    val pushed = if (askNow) null else withTimeoutOrNull(every) { frames.receive() }
+                    askNow = false
+                    val next = pushed
                         ?: attempt { transport.status() }.getOrNull()?.also { status = it }
                         ?: continue
                     latest = next
@@ -439,6 +448,14 @@ class ModelsViewModel : ViewModel() {
     }
 
     companion object {
+        /**
+         * Whether an error the Mac answered a load with is about the failure its status now
+         * shows. A load that fails before the Mac stops waiting is answered 400 "The model
+         * failed to load: <the status line>", so the line is matched at the end.
+         */
+        fun describes(error: String?, state: String): Boolean =
+            error != null && state.isNotBlank() && (error == state || error.endsWith(": $state"))
+
         /** Without an event feed, how often a load is asked about. */
         const val POLL_WITHOUT_EVENTS_MS = 2_000L
 

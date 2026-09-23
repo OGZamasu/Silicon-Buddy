@@ -201,13 +201,15 @@ final class ModelsModelTests: XCTestCase {
     func testAPushedFrameOlderThanTheAnswerIsNotTheEnding() async throws {
         let model = quickModel()
         model.eventsLive = true
-        let mac = mac(answering: loading, then: [loaded])
+        // Asked at once because a frame was dropped, the Mac says it is still loading.
+        let mac = mac(answering: loading, then: [loading, loaded])
         mac.loadDelay = .milliseconds(150)
         let following = Task { await model.load(modelID: id, using: mac) }
         try await until("asking") { mac.loads == 1 }
         // The Mac's previous failure, arriving while the request is out.
         model.statusChanged(failed("killed"))
-        try await until("the answer") { model.status == self.loading }
+        try await until("the answer, and the reading after it") { mac.statusReads == 1 }
+        XCTAssertEqual(model.status, loading)
         XCTAssertNil(model.problem, "a failure from before this load is not this load's")
         XCTAssertEqual(model.job?.kind, .load)
         model.statusChanged(loaded)
@@ -282,6 +284,82 @@ final class ModelsModelTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(model.job, "no phantom install on the next Mac's screen, and Unload is not held off")
         XCTAssertTrue(model.installed.isEmpty)
+    }
+
+    /// A re-pair while the follow-up GET /status is out — the old Mac asleep, say.
+    func testARePairWhileAFollowUpPollIsOutLeavesNoLoadBehind() async throws {
+        let model = quickModel()
+        let old = mac(answering: loading)
+        old.statusHangs = true
+        let following = Task { await model.load(modelID: id, using: old) }
+        try await until("following") { model.job?.message == "Loading Test Model…" }
+        try await Task.sleep(for: .milliseconds(80)) // past the 20 ms wait: the poll is out
+        model.reset()
+        await following.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(model.job, "no phantom load on the next Mac's screen, and Unload is not held off")
+    }
+
+    func testALoadThatEndedWhileTheAnswerWasOutIsReadAtOnce() async throws {
+        let model = quickModel()
+        model.eventsLive = true
+        // The load finished just after the Mac stopped waiting: its answer says "loading",
+        // the frame saying "loaded" arrived first, and the Mac will not push it again.
+        let mac = mac(answering: loading, then: [loaded])
+        mac.loadDelay = .milliseconds(150)
+        let following = Task { await model.load(modelID: id, using: mac) }
+        try await until("asking") { mac.loads == 1 }
+        model.statusChanged(loaded)
+        // The slow poll behind a live feed is 30 s here, so only asking at once ends this.
+        await following.value
+        XCTAssertNil(model.job)
+        XCTAssertTrue(model.isLoaded(id))
+        XCTAssertNil(model.problem)
+    }
+
+    func testALoadThatFailsBeforeTheMacStopsWaitingCarriesItsLogOnce() async throws {
+        let model = quickModel()
+        let mac = mac(answering: failed("killed"))
+        // What the Mac answers a load that fails inside its patience: `ControlHostError
+        // .loadFailed(state)`, a 400 whose sentence ends with the status line.
+        mac.loadResult = .failure(TransportError.badRequest("The model failed to load: \(killed)"))
+        await model.refresh(using: mac)
+        await model.load(modelID: id, using: mac)
+        XCTAssertEqual(model.problem?.title, "Couldn't load Test Model")
+        XCTAssertEqual(model.problem?.message, killed, "the line itself, not the Mac's prefix around it")
+        XCTAssertEqual(model.problem?.detail, log)
+        XCTAssertNil(model.standingFailure, "the alert already says it; the list does not say it twice")
+        model.clearError()
+        XCTAssertEqual(model.standingFailure?.reason, "killed")
+    }
+
+    func testARefusalThatIsNotAboutTheStandingFailureDoesNotBorrowItsLog() async throws {
+        let model = quickModel()
+        let refusal = "Context length must be between 1 and 4096 tokens for this model."
+        let mac = mac(answering: failed("killed"))
+        mac.loadResult = .failure(TransportError.badRequest(refusal))
+        await model.load(modelID: id, using: mac)
+        XCTAssertEqual(model.problem?.message, refusal)
+        XCTAssertNil(model.problem?.detail, "that log belongs to another load")
+        XCTAssertEqual(model.standingFailure?.reason, "killed")
+        XCTAssertTrue(ModelsModel.describes("The model failed to load: \(killed)", state: killed))
+        XCTAssertFalse(ModelsModel.describes("Something else. \(killed)", state: killed))
+        XCTAssertFalse(ModelsModel.describes("The model failed to load: ", state: ""))
+    }
+
+    func testARefreshGivenUpOnByItsScreenIsNotAFailure() async throws {
+        let model = quickModel()
+        let mac = mac(answering: loaded)
+        await model.refresh(using: mac)
+        mac.installedHangs = true
+        let reading = Task { await model.refresh(using: mac) }
+        try await until("reading") { model.isLoading }
+        reading.cancel()
+        await reading.value
+        XCTAssertNil(model.problem, "a screen that went away is not a Mac that did not answer")
+        XCTAssertFalse(model.installedFailed)
+        XCTAssertEqual(model.installed.map(\.id), [id])
+        XCTAssertFalse(model.isLoading)
     }
 
     func testAnOutcomeIsReadFromOneStatus() {

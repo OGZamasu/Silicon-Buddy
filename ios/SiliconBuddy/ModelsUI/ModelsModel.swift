@@ -130,7 +130,9 @@ public final class ModelsModel {
         let newInstalled = await installedTask
         let newCatalog = await catalogTask
         let newStatus = await statusTask
-        guard generation == self.generation else { return }
+        // Given up on — a screen that went away mid-read, now that the model outlives it —
+        // is not the Mac failing to answer.
+        guard generation == self.generation, !Task.isCancelled else { return }
         if case .success(let list) = newInstalled { installed = list }
         if case .success(let list) = newCatalog { catalog = list }
         if case .success(let reading) = newStatus { status = reading }
@@ -252,12 +254,16 @@ public final class ModelsModel {
             job = nil
             let failed = Problem(title: "Couldn't load \(name)", message: Self.describe(error), retry: retry)
             problem = failed
-            // A load the Mac tried and lost has its log on /status, next to the same
-            // sentence this error carries.
+            // A load the Mac tried and lost inside its patience is a 400 whose sentence ends
+            // with the status line, and /status has the log beside that line. Said once, as
+            // the line itself: the heading already says the load failed, and the failure it
+            // names is then not said again in the list.
             if case .success(let after) = await Self.attempt({ try await transport.status() }),
-               generation == self.generation {
+               generation == self.generation, !Task.isCancelled {
                 status = after
-                if let failure = after.failure, after.state == failed.message, problem == failed {
+                if let failure = after.failure, Self.describes(failed.message, state: after.state),
+                   problem == failed {
+                    problem?.message = after.state
                     problem?.detail = failure.detail
                     problem?.failure = failure
                 }
@@ -265,7 +271,11 @@ public final class ModelsModel {
             return
         }
         guard generation == self.generation, !Task.isCancelled else { return }
-        // Whatever the feed pushed while the request was out is older than its answer.
+        // Whatever the feed pushed while the request was out is older than its answer — but
+        // may have been the load ending just after the Mac stopped waiting. The Mac pushes a
+        // status only when it changes, so nothing would say it again: when a frame was
+        // dropped, the Mac is asked straight away rather than after a wait.
+        var askNow = pendingFrame != nil
         pendingFrame = nil
         status = answer
 
@@ -278,13 +288,18 @@ public final class ModelsModel {
                 message: latest.state.isEmpty ? "Loading…" : latest.state, fraction: nil
             )
             let every = min(eventsLive ? pollWithEvents : pollWithoutEvents, deadline - ContinuousClock.now)
-            var next = await nextFrame(within: every)
+            var next = askNow ? nil : await nextFrame(within: every)
+            askNow = false
             guard generation == self.generation, !Task.isCancelled else { return }
-            if next == nil, ContinuousClock.now < deadline,
-               case .success(let asked) = await Self.attempt({ try await transport.status() }) {
+            if next == nil, ContinuousClock.now < deadline {
+                let asked = await Self.attempt { try await transport.status() }
+                // Checked whichever way it came back: a poll cancelled by a re-pair returns as
+                // a failure, and the loop must not go round again to write the old load's job.
                 guard generation == self.generation, !Task.isCancelled else { return }
-                status = asked
-                next = asked
+                if case .success(let reading) = asked {
+                    status = reading
+                    next = reading
+                }
             }
             guard let next else { continue }
             latest = next
@@ -508,6 +523,13 @@ public final class ModelsModel {
         _ call: @Sendable () async throws -> T
     ) async -> Result<T, any Error> {
         do { return .success(try await call()) } catch { return .failure(error) }
+    }
+
+    /// Whether an error the Mac answered a load with is about the failure its status now
+    /// shows. A load that fails before the Mac stops waiting is answered 400 "The model
+    /// failed to load: <the status line>", so the line is matched at the end.
+    static func describes(_ error: String, state: String) -> Bool {
+        !state.isEmpty && (error == state || error.hasSuffix(": " + state))
     }
 
     private static func describe(_ error: any Error) -> String {

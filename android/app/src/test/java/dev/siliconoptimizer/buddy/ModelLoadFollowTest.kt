@@ -347,6 +347,28 @@ class ModelLoadFollowTest {
     }
 
     @Test
+    fun `a load that ended while the answer was out is read at once, not after a wait`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        // The load finished just after the Mac stopped waiting: its answer says "loading",
+        // the frame saying "loaded" arrived first, and the Mac will not push it again.
+        val mac = SlowMac(loading, loaded).apply { gate = CompletableDeferred() }
+        model.eventsLive = true
+        try {
+            model.load(id, transport = mac)
+            runCurrent()
+            model.statusChanged(loaded)
+            runCurrent()
+            mac.gate!!.complete(Unit)
+            runCurrent()
+            assertNull("not ten seconds of 'Loading…' for a model that is in", model.job)
+            assertTrue(model.isLoaded(id))
+            assertNull(model.problem)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
     fun `following is bounded, and says so when the Mac never did`() = runTest(dispatcher) {
         val model = ModelsViewModel()
         val mac = SlowMac(loading)

@@ -3,7 +3,9 @@ import SwiftUI
 /// Everything the Mac can run: on its disk, in the catalog, or in the cloud.
 public struct ModelsView: View {
     @Environment(AppModel.self) private var app
-    @State private var model = ModelsModel()
+    /// Held at the root, so what it is following outlives this screen on an iPad, where
+    /// leaving Models takes the screen away.
+    @Environment(ModelsModel.self) private var model
     @State private var detail: ControlAPI.CatalogModel?
     /// The runtime's log, when someone asked to see it.
     @State private var log: RuntimeLog?
@@ -40,17 +42,8 @@ public struct ModelsView: View {
             .padding(.vertical, 8)
             .background(Theme.canvas)
         }
+        // A re-pair, and the Mac's pushed status, reach the model at the root.
         .task { await model.refresh(using: app.transport) }
-        .onChange(of: app.connectionGeneration) { _, _ in
-            model.reset()
-            Task { await model.refresh(using: app.transport) }
-        }
-        // What the Mac pushes is what the list shows, and a load this screen started is
-        // followed by it: `POST /load` may answer "still loading" and carry on.
-        .onChange(of: app.events.status) { _, pushed in
-            if let pushed { model.statusChanged(pushed) }
-        }
-        .onChange(of: app.events.isLive, initial: true) { _, live in model.eventsLive = live }
         .sheet(item: $detail) { entry in
             NavigationStack {
                 CatalogDetailView(entry: entry, canControl: app.canControl) { quantization in
