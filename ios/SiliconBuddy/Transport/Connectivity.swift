@@ -7,8 +7,9 @@ import Foundation
 public enum Reachability: Sendable, Equatable {
     case unknown
     case checking
-    /// The Mac answered and took the token. The version is the app's, from `/health`.
-    case ready(version: String, loadedModel: String?)
+    /// The Mac answered and took the token. The version is the Mac app's, as
+    /// `Health.appVersionLabel` reads it, and nil when the Mac did not say.
+    case ready(version: String?, loadedModel: String?)
     /// `/health` answered but `/status` came back 401.
     case unauthorized
     /// Something is at that address, nothing is on that port.
@@ -40,12 +41,16 @@ public enum Reachability: Sendable, Equatable {
         case .unknown: "No Mac paired yet."
         case .checking: "Talking to the Mac…"
         case .ready(let version, let model):
-            model.map { "Silicon Optimizer \(version) — \($0)" } ?? "Silicon Optimizer \(version)"
+            model.map { "\(Self.appName(version)) — \($0)" } ?? Self.appName(version)
         case .unauthorized: "The Mac refused this device's token. Pair again."
         case .appNotRunning: "The Mac is awake but Silicon Optimizer is closed."
         case .unreachable(let host): "Nothing answered at \(host). Is Tailscale on?"
         case .failed(let message): message
         }
+    }
+
+    private static func appName(_ version: String?) -> String {
+        version.map { "Silicon Optimizer \($0)" } ?? "Silicon Optimizer"
     }
 
     /// The SF Symbol the connection row shows.
@@ -74,9 +79,9 @@ public struct ConnectivityProbe: Sendable {
     }
 
     public func check() async -> Reachability {
-        let version: String
+        let version: String?
         do {
-            version = try await transport.health().version
+            version = try await transport.health().appVersionLabel
         } catch let error as TransportError {
             switch error {
             case .appNotRunning: return .appNotRunning
@@ -84,7 +89,7 @@ public struct ConnectivityProbe: Sendable {
             case .timedOut: return .unreachable("the Mac")
             case .cancelled: return .unknown
             // A Mac old enough to lack /health still proves it is listening.
-            case .routeUnavailable: return await authorizedCheck(version: "unknown")
+            case .routeUnavailable: return await authorizedCheck(version: nil)
             default: return .failed(error.localizedDescription)
             }
         } catch {
@@ -93,7 +98,7 @@ public struct ConnectivityProbe: Sendable {
         return await authorizedCheck(version: version)
     }
 
-    private func authorizedCheck(version: String) async -> Reachability {
+    private func authorizedCheck(version: String?) async -> Reachability {
         do {
             let status = try await transport.status()
             return .ready(version: version, loadedModel: status.loadedModelName ?? status.state)

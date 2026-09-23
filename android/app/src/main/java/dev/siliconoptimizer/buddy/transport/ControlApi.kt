@@ -390,9 +390,36 @@ data class NodeAdvertisement(
 @Serializable
 data class ErrorResponse(val error: String)
 
-/** `GET /health`, the one unauthenticated route. */
+/**
+ * `GET /health`, the one unauthenticated route.
+ *
+ * `appVersion` and `appBuild` are the Mac app's own CFBundleShortVersionString and
+ * CFBundleVersion. A Mac from before them sends only `version`, which it wrote as a
+ * literal "0.1.0" whatever it was (OGZamasu/silicon-optimizer#81); a newer one repeats
+ * `appVersion` there for the clients that read nothing else.
+ */
 @Serializable
-data class Health(val status: String, val version: String)
+data class Health(
+    val status: String,
+    val version: String? = null,
+    val appVersion: String? = null,
+    val appBuild: String? = null,
+) {
+    /**
+     * What the phone calls the Mac's version: "0.5.0 (157)" from a Mac that says both,
+     * the old `version` from one that says neither, null from one that says nothing.
+     * Only a named app version brings its build along — a build number beside the old
+     * literal would dress it up as something it isn't.
+     */
+    val appVersionLabel: String?
+        get() {
+            appVersion?.trim()?.takeIf { it.isNotEmpty() }?.let { named ->
+                val build = appBuild?.trim()?.takeIf { it.isNotEmpty() && it != named }
+                return if (build != null) "$named ($build)" else named
+            }
+            return version?.trim()?.takeIf { it.isNotEmpty() }
+        }
+}
 
 /** `POST /install` and `POST /unload` both answer `{"status": "…"}`. */
 @Serializable
