@@ -295,6 +295,86 @@ class RenderCancelTest {
         assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
     }
 
+    // MARK: - A re-pair while a verb is out
+
+    @Test
+    fun `a cancel answered after a re-pair does not land on the new Mac's queue`() = runTest(dispatcher) {
+        val old = QueueMac(view(item()))
+        opened(old)
+        model.cancelRender(CLIP, old)
+        advanceUntilIdle()
+        assertEquals(setOf(CLIP), model.cancelling)
+
+        // Paired with another Mac while the old one's node decides.
+        model.reset()
+        val other = QueueMac(view(item(status = "pending", canCancel = false).copy(id = "4D00-0001")))
+        opened(other)
+        old.answer.complete(view(item(status = "cancelled", canCancel = false, cancelState = "confirmed")))
+        advanceUntilIdle()
+        assertEquals("the new Mac's queue stands", listOf("4D00-0001"), model.queue.jobs.map { it.id })
+        assertTrue(model.cancelling.isEmpty())
+        assertNull(model.error)
+
+        // A refusal from the old Mac is not said on the new one either.
+        model.control(VideoQueueControlRequest.PAUSE, transport = old.also { it.answer = CompletableDeferred() })
+        advanceUntilIdle()
+        model.reset()
+        opened(other)
+        old.answer.completeExceptionally(TransportError.BadRequest("That queue item no longer exists."))
+        advanceUntilIdle()
+        assertNull(model.error)
+    }
+
+    // MARK: - A clip reconnected from somewhere else
+
+    @Test
+    fun `a clip reconnected from the Mac's own window renders again here, once the queue says so`() = runTest(dispatcher) {
+        // Stopped following on the Mac: failed, with its node's receipt.
+        val mac = QueueMac(view(item(status = "failed", canCancel = true)))
+        opened(mac)
+        assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
+
+        // Reconnected on the Mac: the stream says rendering. Not taken on its word…
+        mac.queue = view(item(status = "rendering", canCancel = true))
+        model.apply(progress("running", 0.3), transport = mac)
+        assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
+        // …but on the read that leaves after it.
+        advanceUntilIdle()
+        assertEquals(JobState.Rendering, model.queue.job(CLIP)!!.state)
+
+        // And when it finishes, it is done — not stuck as failed.
+        model.apply(progress("completed", 1.0), transport = mac)
+        assertEquals(JobState.Done, model.queue.job(CLIP)!!.state)
+    }
+
+    @Test
+    fun `a failed clip that finishes is done, even with no reconnect seen`() = runTest(dispatcher) {
+        val mac = QueueMac(view(item(status = "failed", canCancel = false)))
+        opened(mac)
+        model.apply(progress("completed", 1.0), transport = mac)
+        assertEquals(JobState.Done, model.queue.job(CLIP)!!.state)
+    }
+
+    @Test
+    fun `a reconnect that fails again while the read is out stays failed`() = runTest(dispatcher) {
+        val mac = QueueMac(view(item(status = "failed", canCancel = false)))
+        opened(mac)
+        // Rendering again — and the read that would confirm it is held on the wire, answered
+        // with the queue as it was when it arrived.
+        mac.queue = view(item(status = "rendering", canCancel = false))
+        mac.gate = CompletableDeferred()
+        model.apply(progress("running", 0.1), transport = mac)
+        advanceUntilIdle()
+        // It failed again before that answer came back.
+        model.apply(progress("failed", null), transport = mac)
+        mac.gate!!.complete(Unit)
+        mac.queue = view(item(status = "failed", canCancel = false))
+        runCurrent()
+        assertEquals("the older answer does not reopen it", JobState.Failed, model.queue.job(CLIP)!!.state)
+        advanceUntilIdle()
+        assertEquals(JobState.Failed, model.queue.job(CLIP)!!.state)
+    }
+
     @Test
     fun `a Mac from before cancel offers it on nothing`() = runTest(dispatcher) {
         val mac = QueueMac(view(item(canCancel = null)))

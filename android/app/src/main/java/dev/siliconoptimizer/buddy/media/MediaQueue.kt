@@ -239,11 +239,18 @@ internal fun cancelNeedsTheQueue(before: MediaJob?, after: MediaJob?): Boolean {
  * older than the event that overtook it. Both would otherwise walk a finished clip
  * backwards into "rendering" and leave it there for good, because nothing after it
  * would say otherwise. So an ending is final: only being queued again — which is what a
- * retry is — moves a row out of it.
+ * retry is — moves a row out of it, and a failure may still become a finished clip.
+ * Rendering again after a failure — a reconnect — is not taken from a word that may be
+ * stale; the view model confirms it with a read (see `MediaViewModel.apply`).
  */
 internal fun mayMove(from: JobState?, to: JobState): Boolean = when {
     from == null -> true
     !from.isTerminal -> true
+    // A failed clip can still finish: one the Mac stopped following keeps its node's job,
+    // and reconnecting to it — from the Mac's own window, say — brings the file home. The
+    // Mac never retries or reopens a finished clip, so "completed" is never a stale word
+    // for one that is failed now.
+    from == JobState.Failed && to == JobState.Done -> true
     else -> to == JobState.Queued
 }
 
@@ -285,17 +292,22 @@ data class QueueState(
      * "rendering" and the failure it causes may reach the phone first. That answer is
      * the older of the two, and takes the ordinary rule like any other read.
      */
-    fun applying(view: VideoQueueView, answering: Answering? = null): QueueState {
+    fun applying(view: VideoQueueView, answering: Answering? = null): QueueState =
+        applying(view, listOfNotNull(answering))
+
+    /** The same, with the answers it carries for several clips at once. */
+    fun applying(view: VideoQueueView, answers: Collection<Answering>): QueueState {
         val known = jobs.associateBy { it.id }
         val fromQueue = view.items.map { item ->
             val existing = known[item.id]
             val incoming = JobState.of(item.status)
             val fresh = MediaJob.of(item, view.activeID, existing?.fraction)
+            val answer = answers.firstOrNull { it.id == item.id }
             when {
                 existing == null -> fresh
                 // A snapshot older than what the stream already said. Its prompt, its
                 // settings and its reason are still worth having; its state is not.
-                answering?.overrides(existing) != true && !mayMove(existing.state, incoming) -> fresh.copy(
+                answer?.overrides(existing) != true && !mayMove(existing.state, incoming) -> fresh.copy(
                     state = existing.state,
                     statusWord = existing.statusWord,
                     fraction = existing.fraction,

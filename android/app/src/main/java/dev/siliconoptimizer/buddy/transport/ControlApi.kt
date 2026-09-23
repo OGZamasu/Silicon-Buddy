@@ -54,8 +54,43 @@ data class Status(
      * show; this is what lies behind it.
      */
     val failure: LoadFailure? = null,
+    /**
+     * Loads this Mac stopped before they finished — an unload part-way, or another load
+     * started meanwhile. Newest first, at most four, one per model; absent when there are
+     * none, and on a Mac from before it said so. A new load of a model clears its entry, so
+     * one for the model this phone has just asked for is that load's ending.
+     */
+    val interruptedLoads: List<LoadInterruption>? = null,
 ) {
     val hasLoadedModel: Boolean get() = loadedModelID != null
+
+    /** How the Mac stopped a load of [modelID], when it did. */
+    fun interruption(modelID: String): LoadInterruption? =
+        interruptedLoads?.firstOrNull { sameModel(it.modelID, modelID) }
+
+    companion object {
+        /** An installed id carries its quantization ("model@Q4_K_M"); a status may use either. */
+        fun sameModel(a: String, b: String): Boolean =
+            a == b || a.startsWith("$b@") || b.startsWith("$a@")
+    }
+}
+
+/** A load the Mac stopped before it finished. Not a fault: somebody changed their mind. */
+@Serializable
+data class LoadInterruption(
+    /** As `loadedModelID` spells it. */
+    val modelID: String,
+    /** `cancelled` for an unload, `replaced` for another load. Kept as text: it may grow. */
+    val reason: String,
+    /** The model whose load took over, when it was replaced. */
+    val replacedBy: String? = null,
+    /** ISO 8601, in the Mac's own offset. */
+    val at: String,
+) {
+    enum class Kind { Cancelled, Replaced }
+
+    /** The Mac's rule: a reason this app does not know reads as `cancelled`. */
+    val kind: Kind get() = if (reason == "replaced") Kind.Replaced else Kind.Cancelled
 }
 
 /**
@@ -80,6 +115,11 @@ data class LoadFailure(
     val wasReplaced: Boolean = false,
     /** ISO 8601, in the Mac's own offset. */
     val at: String,
+    /**
+     * Whose load it was, as `loadedModelID` spells it. Absent from an older Mac. A failure
+     * naming another model is somebody else's load, not the one being followed.
+     */
+    val modelID: String? = null,
 ) {
     enum class Reason(val wire: String) {
         Exited("exited"), Killed("killed"), Replaced("replaced"), Cancelled("cancelled"),

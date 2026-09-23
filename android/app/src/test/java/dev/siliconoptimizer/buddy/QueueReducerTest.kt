@@ -273,6 +273,20 @@ class QueueReducerTest {
         assertEquals(0.1, state.job("9C2F-0001")!!.fraction!!, 0.0001)
     }
 
+    /** A failed clip keeps its node's job, and a reconnect can still bring the file home. */
+    @Test
+    fun `a failed clip that finishes is done, from the stream or the queue`() {
+        val failed = QueueState.empty.applying(view(item(status = "failed")))
+        assertEquals(JobState.Done, failed.applying(job(status = "completed", mediaID = "bWVkaWE")).job("9C2F-0001")!!.state)
+        assertEquals(JobState.Done, failed.applying(view(item(status = "completed"))).job("9C2F-0001")!!.state)
+        // Running again is not taken on an event's or a stale read's word alone.
+        assertEquals(JobState.Failed, failed.applying(job(status = "rendering")).job("9C2F-0001")!!.state)
+        assertEquals(JobState.Failed, failed.applying(view(item(status = "rendering"))).job("9C2F-0001")!!.state)
+        // Stopped and done stay what they were.
+        val stopped = QueueState.empty.applying(view(item(status = "cancelled")))
+        assertEquals(JobState.Stopped, stopped.applying(job(status = "completed")).job("9C2F-0001")!!.state)
+    }
+
     @Test
     fun `an ending is left only by being queued again`() {
         val done = QueueState.empty
