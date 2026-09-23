@@ -209,7 +209,18 @@ cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/
 # rules R8 cannot see, the native libraries and the 30 MB APK budget; --connected adds the
 # instrumented tests on $ANDROID_SERIAL, --ios the iOS suite.
 scripts/ci-android.sh
+
+# The instrumented tests pair with a stand-in Mac on this machine and fetch real model
+# files from it: fetch the pinned models once (1.44 GB, checked by SHA-256, kept out of
+# git), start it, and run them on an arm64 emulator, which reaches it at 10.0.2.2:8916.
+tools/standin/fetch-models.sh
+tools/standin/standin.sh start
+ANDROID_SERIAL=emulator-5554 scripts/ci-android.sh --connected
+tools/standin/standin.sh stop
 ```
+
+`tools/standin/README.md` has the stand-in's settings, its switches and where the models
+come from; `--connected` checks that it answers before building anything.
 
 llama.cpp's CMake fetches Arm's KleidiAI sources at configure time, pinned there by version
 and checksum; an offline machine can pass `-Pbuddy.kleidiaiSource=<unpacked folder>`. The
