@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy
 
 import android.app.Application
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.siliconoptimizer.buddy.chat.ChatMessage
 import dev.siliconoptimizer.buddy.chat.ChatViewModel
 import dev.siliconoptimizer.buddy.chat.ConversationStore
@@ -234,9 +235,25 @@ class OnDeviceChatTest {
         // milliseconds on an idle machine did not get there in ten seconds on a busy one.
         // The class's own 30-second rule is still what catches a test that truly hangs.
         val deadline = System.currentTimeMillis() + 20_000
-        while (!condition()) {
+        while (!holds(condition)) {
             if (System.currentTimeMillis() > deadline) fail("never: $what")
             Thread.sleep(10)
+        }
+    }
+
+    /**
+     * [condition], read in a snapshot of its own. The view model changes its message
+     * lists on the main dispatcher while this thread polls them, and iterating a
+     * `SnapshotStateList` that changes underneath throws (`IndexOutOfBoundsException`,
+     * `ConcurrentModificationException`) instead of answering. A read-only snapshot sees
+     * one consistent state; the next poll sees the next.
+     */
+    private fun holds(condition: () -> Boolean): Boolean {
+        val snapshot = Snapshot.takeSnapshot()
+        try {
+            return snapshot.enter(condition)
+        } finally {
+            snapshot.dispose()
         }
     }
 
