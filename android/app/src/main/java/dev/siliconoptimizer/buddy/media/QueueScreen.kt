@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -197,7 +198,7 @@ private fun JobCard(
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Pill(
-                job.state.label,
+                job.stateLabel,
                 filled = job.state != JobState.Queued,
                 tint = when (job.state) {
                     JobState.Failed, JobState.Stopped -> MaterialTheme.colorScheme.error
@@ -355,24 +356,32 @@ private fun JobCard(
                     }
                 }
             }
-            // Only while the Mac still offers it: a clip that finished while this was
-            // being read has nothing left to cancel.
+            // A dialog rather than a line under the buttons: on a running clip the Stop
+            // following note sits between them, and a warning below the fold is one a
+            // person never reads. Only while the Mac still offers it: a clip that
+            // finished meanwhile has nothing left to cancel.
             VideoQueueControlRequest.CANCEL -> if (job.offersCancelRender(canControl)) {
-                Text(
-                    "This asks the node to stop the render. The GPU work it has done is " +
-                        "thrown away and nothing is published for this take; rendering it " +
-                        "again starts from the beginning.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
+                AlertDialog(
+                    onDismissRequest = { onAsk(VideoQueueControlRequest.CANCEL) },
+                    title = { Text("Cancel this render?") },
+                    text = {
+                        Text(
+                            "This asks the node to stop rendering ${job.title}. The GPU work " +
+                                "it has done is thrown away and nothing is published for this " +
+                                "take; rendering it again starts from the beginning.",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { onAction(VideoQueueControlRequest.CANCEL, true) }) {
+                            Text("Cancel it")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { onAsk(VideoQueueControlRequest.CANCEL) }) {
+                            Text("Keep rendering")
+                        }
+                    },
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { onAction(VideoQueueControlRequest.CANCEL, true) }) {
-                        Text("Cancel it")
-                    }
-                    TextButton(onClick = { onAsk(VideoQueueControlRequest.CANCEL) }) {
-                        Text("Keep rendering")
-                    }
-                }
             }
             VideoQueueControlRequest.REMOVE -> {
                 Text(

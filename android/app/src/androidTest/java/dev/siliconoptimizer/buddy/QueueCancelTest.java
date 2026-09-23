@@ -69,8 +69,7 @@ public class QueueCancelTest {
                 PACKAGE, "android.permission.POST_NOTIFICATIONS");
         }
         mac = new FakeMac();
-        // The cancellable clip first, so its card — and the warning it opens — sits in the
-        // middle of the screen rather than under the tab bar.
+        // The cancellable clip first, so both cards are on screen without scrolling.
         mac.videoQueue = queue(null,
             clip(CANCELLABLE, "Alfama steps", "failed", true, null),
             clip(FOLLOWED, "Tram at dawn", "rendering", false, null));

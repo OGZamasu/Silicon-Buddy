@@ -143,6 +143,10 @@ data class MediaJob(
 
     val canStopFollowing: Boolean get() = isQueued && isActive && state.isRunning
 
+    /** The pill: a stop the node confirmed as a cancel says so, rather than just "Stopped". */
+    val stateLabel: String
+        get() = if (state == JobState.Stopped && cancel == CancelState.Confirmed) "Cancelled" else state.label
+
     /** Offered only where the Mac said so, on a row the video queue holds. */
     val canCancelRender: Boolean get() = isQueued && canCancel
 

@@ -150,6 +150,8 @@ class QueueReducerTest {
         assertTrue(stopped.job("9C2F-0001")!!.canRetry)
         assertTrue(stopped.job("9C2F-0001")!!.canRemove)
         assertFalse(stopped.job("9C2F-0001")!!.canStopFollowing)
+        assertEquals("a cancelled status is a cancel the node confirmed", "Cancelled", stopped.job("9C2F-0001")!!.stateLabel)
+        assertEquals("Stopped", running.applying(job(status = "stopped")).job("9C2F-0001")!!.stateLabel)
     }
 
     @Test
@@ -455,6 +457,7 @@ class QueueReducerTest {
             view(item(status = "cancelled").copy(cancelState = "confirmed", cancelDetail = "Cancelled; the renderer was stopped.")),
         ).job("9C2F-0001")!!
         assertEquals(JobState.Stopped, confirmed.state)
+        assertEquals("Cancelled", confirmed.stateLabel)
         assertTrue(confirmed.cancel!!.note.startsWith("Cancelled on the node"))
     }
 
