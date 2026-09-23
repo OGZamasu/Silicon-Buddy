@@ -5,6 +5,8 @@ public struct ModelsView: View {
     @Environment(AppModel.self) private var app
     @State private var model = ModelsModel()
     @State private var detail: ControlAPI.CatalogModel?
+    /// The runtime's log, when someone asked to see it.
+    @State private var log: RuntimeLog?
 
     public init() {}
 
@@ -43,6 +45,12 @@ public struct ModelsView: View {
             model.reset()
             Task { await model.refresh(using: app.transport) }
         }
+        // What the Mac pushes is what the list shows, and a load this screen started is
+        // followed by it: `POST /load` may answer "still loading" and carry on.
+        .onChange(of: app.events.status) { _, pushed in
+            if let pushed { model.statusChanged(pushed) }
+        }
+        .onChange(of: app.events.isLive, initial: true) { _, live in model.eventsLive = live }
         .sheet(item: $detail) { entry in
             NavigationStack {
                 CatalogDetailView(entry: entry, canControl: app.canControl) { quantization in
@@ -52,12 +60,25 @@ public struct ModelsView: View {
             }
         }
         .alert(
-            "Something went wrong",
-            isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.clearError() } })
-        ) {
+            model.problem?.title ?? "Something went wrong",
+            isPresented: Binding(get: { model.problem != nil }, set: { if !$0 { model.clearError() } }),
+            presenting: model.problem
+        ) { problem in
+            // Held here, not read back from the model: putting the alert away clears it.
+            if let operation = problem.retry, app.isPaired {
+                Button("Retry") {
+                    Task { await model.perform(operation, using: app.transport) }
+                }
+            }
+            if let text = problem.detail {
+                Button("Show Log") { log = RuntimeLog(text: text) }
+            }
             Button("OK", role: .cancel) { model.clearError() }
-        } message: {
-            Text(model.error ?? "")
+        } message: { problem in
+            Text(problem.message)
+        }
+        .sheet(item: $log) { log in
+            NavigationStack { RuntimeLogView(log: log.text) }
         }
         .overlay {
             if model.installed.isEmpty, model.catalog.isEmpty, !model.isLoading {
@@ -96,6 +117,11 @@ public struct ModelsView: View {
                         .disabled(model.job != nil)
                     }
                 }
+            }
+        }
+        if let failure = model.standingFailure {
+            Section {
+                LastLoadFailedRow(state: model.status?.state ?? "", failure: failure)
             }
         }
         Section {
@@ -157,6 +183,74 @@ public struct ModelsView: View {
                 }
             }
         }
+    }
+}
+
+/// The runtime's own words, for the sheet a Show Log opens.
+struct RuntimeLog: Identifiable {
+    let id = UUID()
+    let text: String
+}
+
+struct RuntimeLogView: View {
+    let log: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScrollView {
+            Text(log)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .navigationTitle("Runtime log")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+/// The Mac's last load failed and nothing else on screen is saying so — it failed on the
+/// Mac itself, or this phone came back to it later. The sentence first; the runtime's own
+/// log only when asked for, and never for a device the Mac does not show its logs to.
+struct LastLoadFailedRow: View {
+    let state: String
+    let failure: ControlAPI.LoadFailure
+
+    private var title: String {
+        switch failure.kind {
+        case .replaced: "The last load was replaced"
+        case .cancelled: "The last load was cancelled"
+        default: "The last load didn't finish"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(state)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let facts = failure.facts {
+                Text(facts)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if let detail = failure.detail {
+                DisclosureGroup("Runtime log") {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

@@ -27,9 +27,9 @@ import java.util.concurrent.TimeUnit;
  * It speaks the little of the control API the Agents tab needs: pairing, health, status,
  * the event stream with `agent` frames, the two sessions, and answering the approvals Codex
  * is holding — one, or two when a test needs to tell them apart. And the little the Models
- * tab needs: one model on disk, and loading and unloading it — each of which a test can make
- * fail. Everything else is the Mac's 404, which the app already treats as a route this Mac
- * does not have.
+ * tab needs: one model on disk, loading and unloading it, and `status` frames — each of
+ * which a test can make fail, or make slow. Everything else is the Mac's 404, which the app
+ * already treats as a route this Mac does not have.
  */
 final class FakeMac implements Closeable {
 
@@ -56,6 +56,7 @@ final class FakeMac implements Closeable {
 
     static final String DRIVE_GONE = "The model drive is disconnected.";
     static final String IDLE = "{\"state\":\"Not loaded\",\"expertStreaming\":false}";
+    static final String LOADING = "{\"state\":\"Loading weights… 42%\",\"expertStreaming\":false}";
     static final String LOADED = "{\"state\":\"Ready\",\"loadedModelID\":\"test-model@Q4_K_M\","
         + "\"loadedModelName\":\"Test Model\",\"contextLength\":4096,\"expertStreaming\":false}";
     private static final String INSTALLED = "[{\"id\":\"test-model@Q4_K_M\",\"name\":\"Test Model\","
@@ -66,6 +67,8 @@ final class FakeMac implements Closeable {
     volatile boolean installedFails;
     /** `POST /load` answers 503 while this is set. */
     volatile boolean loadFails;
+    /** `POST /load` answers "still loading" while this is set, as a slow load does. */
+    volatile boolean loadIsSlow;
     /** What `GET /status` says; null for the Agents tests' plain "Ready". */
     volatile String status;
 
@@ -170,6 +173,15 @@ final class FakeMac implements Closeable {
         for (BlockingQueue<String> stream : streams) stream.add(frame);
     }
 
+    /** The Mac's status changed: said to `GET /status` and pushed to every stream. */
+    void publishStatus(String json) {
+        status = json;
+        for (BlockingQueue<String> stream : streams) stream.add(STATUS_FRAME + json);
+    }
+
+    /** Marks a queued frame as a `status` one; everything else on the queue is `agent`. */
+    private static final String STATUS_FRAME = "status:";
+
     /**
      * The phone answered: the card comes down on every screen, the first approval's command
      * runs, and once nothing is held the turn ends.
@@ -267,6 +279,10 @@ final class FakeMac implements Closeable {
             } else if (method.equals("POST") && path.equals("/load")) {
                 if (loadFails) {
                     reply(output, 503, "{\"error\":\"" + DRIVE_GONE + "\"}");
+                } else if (loadIsSlow) {
+                    // The Mac's patience ran out: the live status, and the load carries on.
+                    status = LOADING;
+                    reply(output, 200, LOADING);
                 } else {
                     status = LOADED;
                     reply(output, 200, LOADED);
@@ -341,7 +357,10 @@ final class FakeMac implements Closeable {
             while (running) {
                 String frame = queue.poll(500, TimeUnit.MILLISECONDS);
                 if (frame != null) {
-                    output.write(("event: agent\ndata: " + frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    String sse = frame.startsWith(STATUS_FRAME)
+                        ? "event: status\ndata: " + frame.substring(STATUS_FRAME.length())
+                        : "event: agent\ndata: " + frame;
+                    output.write((sse + "\n\n").getBytes(StandardCharsets.UTF_8));
                     output.flush();
                 }
                 if (System.currentTimeMillis() - lastBeat > 5000) {

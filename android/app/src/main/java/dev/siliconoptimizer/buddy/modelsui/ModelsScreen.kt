@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material3.Button
@@ -38,16 +40,25 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.siliconoptimizer.buddy.AppState
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.ui.Format
 import dev.siliconoptimizer.buddy.ui.EmptyState
 import dev.siliconoptimizer.buddy.ui.Pill
@@ -168,6 +179,9 @@ fun ModelsScreen(
                             HorizontalDivider()
                         }
                     }
+                    model.standingFailure?.let { failure ->
+                        item { LastLoadFailed(model.status?.state.orEmpty(), failure) }
+                    }
                     // Nothing arrived, which is not the same as an empty disk: saying "Your
                     // model library… explore the Catalog" then would be false.
                     val listMissing = model.installedFailed && model.installed.isEmpty()
@@ -272,7 +286,8 @@ private fun SectionHeader(text: String) {
 
 /**
  * Why the last thing asked of the Mac did not happen: announced as it appears, put away
- * by hand, and with Retry only where asking again could help.
+ * by hand, with the Mac's log behind a tap when it sent one, and Retry only where asking
+ * again could help.
  */
 @Composable
 private fun ProblemBanner(
@@ -281,15 +296,29 @@ private fun ProblemBanner(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val content = MaterialTheme.colorScheme.onErrorContainer
+    val container = if (problem.isFault) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    val content = if (problem.isFault) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    var showLog by rememberSaveable(problem.detail) { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(16.dp))
+            .background(container, RoundedCornerShape(16.dp))
             .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = content)
+            Icon(
+                if (problem.isFault) Icons.Filled.ErrorOutline else Icons.Filled.Info,
+                contentDescription = null,
+                tint = content,
+            )
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -304,11 +333,74 @@ private fun ProblemBanner(
                 Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = content)
             }
         }
-        onRetry?.let {
-            TextButton(onClick = it, modifier = Modifier.padding(start = 22.dp)) {
-                Text("Retry", color = content)
+        if (problem.detail != null || onRetry != null) {
+            Row(modifier = Modifier.padding(start = 22.dp)) {
+                problem.detail?.let {
+                    LogToggle(showLog, content) { showLog = !showLog }
+                }
+                onRetry?.let {
+                    TextButton(onClick = it) { Text("Retry", color = content) }
+                }
             }
         }
+        if (showLog) problem.detail?.let { LogText(it, content) }
+    }
+}
+
+/**
+ * The Mac's last load failed, and nothing else on screen is saying so — it failed on the
+ * Mac itself, or this phone came back to it later. The sentence first; the runtime's own
+ * log only when asked for, and never for a device the Mac does not show its logs to.
+ */
+@Composable
+private fun LastLoadFailed(state: String, failure: LoadFailure) {
+    var showLog by rememberSaveable(failure.at) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            when (failure.kind) {
+                LoadFailure.Reason.Replaced -> "The last load was replaced"
+                LoadFailure.Reason.Cancelled -> "The last load was cancelled"
+                else -> "The last load didn't finish"
+            },
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(state, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        failure.facts?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+        }
+        failure.detail?.let { log ->
+            LogToggle(showLog, MaterialTheme.colorScheme.primary) { showLog = !showLog }
+            if (showLog) LogText(log, MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun LogToggle(expanded: Boolean, color: Color, onToggle: () -> Unit) {
+    TextButton(
+        onClick = onToggle,
+        modifier = Modifier.semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+    ) { Text(if (expanded) "Hide log" else "Show log", color = color) }
+}
+
+/** The runtime's own words, as it wrote them: fixed-width, and selectable to copy. */
+@Composable
+private fun LogText(log: String, color: Color) {
+    SelectionContainer {
+        Text(
+            log,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = color,
+            modifier = Modifier.fillMaxWidth().padding(end = 12.dp, bottom = 8.dp),
+        )
     }
 }
 

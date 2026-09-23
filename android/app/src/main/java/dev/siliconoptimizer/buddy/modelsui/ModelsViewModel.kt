@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.TransportError
@@ -17,8 +18,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** The model list: what is on the Mac's disk, what the catalog offers, and the cloud. */
 class ModelsViewModel : ViewModel() {
@@ -45,14 +48,47 @@ class ModelsViewModel : ViewModel() {
     }
 
     /**
-     * What went wrong, said once: a heading, the one line to read first, and what Retry
-     * would do when retrying could help.
+     * What went wrong, said once: a heading, the one line to read first, the Mac's log
+     * behind a tap when there is one, and what Retry would do when retrying could help.
      */
     data class Problem(
         val title: String,
         val message: String,
+        val detail: String? = null,
         val retry: Operation? = null,
+        /** False for an ending nobody got wrong — another load taking the Mac, say. */
+        val isFault: Boolean = true,
+        /** The Mac's own account this was built from, when it was. */
+        val failure: LoadFailure? = null,
     )
+
+    /** How a load this screen started has ended, read from one status. */
+    enum class LoadOutcome {
+        Pending, Loaded, Failed, Replaced, Cancelled;
+
+        companion object {
+            fun of(status: Status, modelID: String): LoadOutcome {
+                val loaded = status.loadedModelID
+                val failure = status.failure
+                return when {
+                    loaded != null && sameModel(loaded, modelID) -> Loaded
+                    failure != null -> when (failure.kind) {
+                        LoadFailure.Reason.Replaced -> Replaced
+                        LoadFailure.Reason.Cancelled -> Cancelled
+                        else -> Failed
+                    }
+                    // Nothing is resident while a load runs, so another model resident
+                    // now is one somebody asked for instead.
+                    loaded != null -> Replaced
+                    else -> Pending
+                }
+            }
+
+            /** An installed id carries its quantization ("model@Q4_K_M"); a status may use either. */
+            fun sameModel(a: String, b: String): Boolean =
+                a == b || a.startsWith("$b@") || b.startsWith("$a@")
+        }
+    }
 
     var installed by mutableStateOf<List<InstalledModel>>(emptyList())
         private set
@@ -85,12 +121,22 @@ class ModelsViewModel : ViewModel() {
     var section by mutableStateOf(Section.Installed)
 
     /**
+     * Set from the event feed. While it is live a load is followed by the Mac's own status
+     * frames, with a slow poll behind them in case one is missed; without it, by polling.
+     */
+    var eventsLive = false
+
+    /**
      * Everything this list asks one Mac, so a re-pair can call all of it off at once: a
-     * load on its way, an install being polled, a refresh on its way back. None of it may
-     * land on the next Mac's screen.
+     * load being followed, an install being polled, a refresh on its way back. None of it
+     * may land on the next Mac's screen.
      */
     private var mac = newScope()
     private var poller: Job? = null
+    private var loader: Job? = null
+
+    /** Status frames pushed while a load is being followed; only the newest matters. */
+    private val frames = Channel<Status>(Channel.CONFLATED)
 
     private fun newScope() =
         CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
@@ -139,6 +185,12 @@ class ModelsViewModel : ViewModel() {
         }
     }
 
+    /** A status frame from the event feed: the list shows it, and a load being followed hears it. */
+    fun statusChanged(pushed: Status) {
+        status = pushed
+        frames.trySend(pushed)
+    }
+
     // MARK: - Filtering
 
     val filteredInstalled: List<InstalledModel>
@@ -163,10 +215,15 @@ class ModelsViewModel : ViewModel() {
 
     fun isLoaded(id: String): Boolean {
         val loaded = status?.loadedModelID ?: return false
-        // An installed id carries its quantization ("model@Q4_K_M"); the status may
-        // report either spelling.
-        return loaded == id || loaded.startsWith("$id@") || id.startsWith("$loaded@")
+        return LoadOutcome.sameModel(loaded, id)
     }
+
+    /**
+     * The Mac's last failed load, when nothing on screen is already saying so. A device
+     * paired for chat is sent it without the log, and is shown it that way.
+     */
+    val standingFailure: LoadFailure?
+        get() = status?.failure?.takeIf { job == null && problem?.failure != it }
 
     private fun nameOf(id: String): String =
         installed.firstOrNull { it.id == id }?.name
@@ -175,22 +232,85 @@ class ModelsViewModel : ViewModel() {
 
     // MARK: - Operations
 
+    /**
+     * Loads a model and stays with it until it has an ending.
+     *
+     * `POST /load` answers after 25 seconds whether or not the load is done: a slow one
+     * comes back as the live, still-loading status and carries on on the Mac. So the
+     * answer is only the first reading. The load is followed through the status frames the
+     * event feed pushes, polled for when there is no feed or a frame seems to be missing,
+     * until the model is resident, the Mac says how it failed, another load took its
+     * place — or the Mac's own ten-minute limit has passed with nothing said.
+     */
     fun load(modelID: String, quantization: String? = null, transport: ControlTransport?) {
         if (transport == null) return
         problem = null
-        mac.launch {
+        loader?.cancel()
+        loader = mac.launch {
+            val name = nameOf(modelID)
+            val retry = Operation.Load(modelID, quantization)
             job = ModelJob(modelID, "load", "Loading…")
-            try {
-                status = transport.load(LoadRequest(modelID, quantization))
-                job = null
-                refresh(transport)
+            val answer = try {
+                transport.load(LoadRequest(modelID, quantization))
             } catch (error: TransportError) {
                 job = null
-                problem = Problem(
-                    "Couldn't load ${nameOf(modelID)}", error.message.orEmpty(),
-                    retry = Operation.Load(modelID, quantization),
+                val failed = Problem("Couldn't load $name", error.message.orEmpty(), retry = retry)
+                problem = failed
+                // A load the Mac tried and lost has its log on /status, next to the same
+                // sentence this error carries.
+                attempt { transport.status() }.getOrNull()?.let { after ->
+                    status = after
+                    val failure = after.failure
+                    if (failure != null && after.state == error.message && problem == failed) {
+                        problem = failed.copy(detail = failure.detail, failure = failure)
+                    }
+                }
+                return@launch
+            }
+            // Whatever the feed pushed while the request was out is older than its answer.
+            while (frames.tryReceive().isSuccess) Unit
+            status = answer
+
+            var latest = answer
+            val outcome = withTimeoutOrNull(FOLLOW_LIMIT_MS) {
+                var outcome = LoadOutcome.of(latest, modelID)
+                while (outcome == LoadOutcome.Pending) {
+                    job = ModelJob(modelID, "load", latest.state.ifBlank { "Loading…" })
+                    val every = if (eventsLive) POLL_WITH_EVENTS_MS else POLL_WITHOUT_EVENTS_MS
+                    val next = withTimeoutOrNull(every) { frames.receive() }
+                        ?: attempt { transport.status() }.getOrNull()?.also { status = it }
+                        ?: continue
+                    latest = next
+                    outcome = LoadOutcome.of(next, modelID)
+                }
+                outcome
+            }
+            job = null
+            val failure = latest.failure
+            problem = when (outcome) {
+                LoadOutcome.Loaded -> null
+                LoadOutcome.Failed -> Problem(
+                    "Couldn't load $name", latest.state, failure?.detail, retry, failure = failure,
+                )
+                LoadOutcome.Replaced -> Problem(
+                    "$name wasn't loaded",
+                    if (failure != null) latest.state
+                    else "The Mac loaded ${latest.loadedModelName ?: latest.loadedModelID} instead.",
+                    failure?.detail, isFault = false, failure = failure,
+                )
+                LoadOutcome.Cancelled -> Problem(
+                    "$name wasn't loaded", latest.state, failure?.detail,
+                    isFault = false, failure = failure,
+                )
+                LoadOutcome.Pending, null -> Problem(
+                    "Still loading $name",
+                    "The Mac hasn't said how this load ended. Refresh to ask it again.",
+                    retry = Operation.Refresh, isFault = false,
                 )
             }
+            // Not after running out of time: the status has just been read, and a refresh
+            // that succeeded would clear the one thing there is to say.
+            if (outcome != null) refresh(transport)
         }
     }
 
@@ -298,6 +418,8 @@ class ModelsViewModel : ViewModel() {
         mac.cancel()
         mac = newScope()
         poller = null
+        loader = null
+        while (frames.tryReceive().isSuccess) Unit
         job = null
         installed = emptyList()
         catalog = emptyList()
@@ -314,5 +436,19 @@ class ModelsViewModel : ViewModel() {
         Result.success(call())
     } catch (error: TransportError) {
         Result.failure(error)
+    }
+
+    companion object {
+        /** Without an event feed, how often a load is asked about. */
+        const val POLL_WITHOUT_EVENTS_MS = 2_000L
+
+        /** With one, how long to wait for a frame before asking anyway. */
+        const val POLL_WITH_EVENTS_MS = 10_000L
+
+        /**
+         * How long a load is followed. The Mac gives a runtime ten minutes to answer and
+         * then says it timed out; a little over that, and the Mac has had its say.
+         */
+        const val FOLLOW_LIMIT_MS = 11 * 60_000L
     }
 }

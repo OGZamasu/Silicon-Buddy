@@ -22,9 +22,67 @@
     "loadedModelName" : "Qwen3-Coder 30B A3B",
     "state" : "running"
   },
+  "responseVariants" : {
+    "after a failed load" : {
+      "expertStreaming" : false,
+      "failure" : {
+        "at" : "2026-09-19T11:04:38Z",
+        "detail" : "load_tensors: loading model tensors\nloaded multimodal model, 'mmproj-Q8_0.gguf'",
+        "reason" : "killed",
+        "runtime" : "llama.cpp",
+        "signal" : 9,
+        "wasReplaced" : false
+      },
+      "state" : "llama-server was killed (signal 9) after 8 seconds, which usually means the system reclaimed its memory."
+    },
+    "after a load that never answered" : {
+      "expertStreaming" : false,
+      "failure" : {
+        "at" : "2026-09-19T11:04:38Z",
+        "detail" : "llama_context: constructing llama_context",
+        "reason" : "timedOut",
+        "runtime" : "llama.cpp",
+        "wasReplaced" : false
+      },
+      "state" : "llama-server never answered in 10 minutes."
+    },
+    "after a load that was cancelled" : {
+      "expertStreaming" : false,
+      "failure" : {
+        "at" : "2026-09-19T11:04:38Z",
+        "reason" : "cancelled",
+        "runtime" : "llama.cpp",
+        "signal" : 15,
+        "wasReplaced" : false
+      },
+      "state" : "llama-server was stopped by an unload before it finished loading."
+    },
+    "after a load that was replaced" : {
+      "expertStreaming" : false,
+      "failure" : {
+        "at" : "2026-09-19T11:04:38Z",
+        "reason" : "replaced",
+        "runtime" : "llama.cpp",
+        "signal" : 15,
+        "wasReplaced" : true
+      },
+      "state" : "llama-server was replaced by another load (Qwen3-Coder 30B)."
+    },
+    "as a chat-scope device or a peer sees it" : {
+      "expertStreaming" : false,
+      "failure" : {
+        "at" : "2026-09-19T11:04:38Z",
+        "reason" : "killed",
+        "runtime" : "llama.cpp",
+        "signal" : 9,
+        "wasReplaced" : false
+      },
+      "state" : "llama-server was killed (signal 9) after 8 seconds, which usually means the system reclaimed its memory."
+    }
+  },
   "scopes" : [
     "full",
     "chat"
   ],
-  "summary" : "What is loaded, at what settings, how fast it last ran."
+  "summary" : "What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap."
 }

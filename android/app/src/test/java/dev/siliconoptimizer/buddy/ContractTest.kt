@@ -30,6 +30,7 @@ import dev.siliconoptimizer.buddy.transport.ImageResponse
 import dev.siliconoptimizer.buddy.transport.InstalledModel
 import dev.siliconoptimizer.buddy.transport.JevView
 import dev.siliconoptimizer.buddy.transport.JobProgress
+import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.MeshModel
 import dev.siliconoptimizer.buddy.transport.MeshPlan
@@ -114,6 +115,9 @@ class ContractTest {
                 val (event, variant) = part.removePrefix("eventVariants.").split(".", limit = 2)
                 ((fields["eventVariants"] as JsonObject).getValue(event) as JsonObject).getValue(variant)
             }
+            // `responseVariants.still loading`: another answer the same route can give.
+            part.startsWith("responseVariants.") ->
+                (fields["responseVariants"] as JsonObject).getValue(part.removePrefix("responseVariants."))
             // `errorVariants.409.still screening`: one more refusal a status can carry.
             part.startsWith("errorVariants.") -> {
                 val (status, label) = part.removePrefix("errorVariants.").split(".", limit = 2)
@@ -219,6 +223,15 @@ class ContractTest {
     @Test fun loadAndInstall() {
         roundTrip<LoadRequest>("POST__load", "request")
         roundTrip<Status>("POST__load")
+        // A load slower than the request's patience: the live status, nothing resident yet,
+        // and nothing claimed to have failed — the load carries on on the Mac.
+        val stillLoading = roundTrip<Status>("POST__load", "responseVariants.still loading")
+        assertNull(stillLoading.loadedModelID)
+        assertNull(stillLoading.failure)
+        // A second load while one runs is refused, and the phone is told it as a conflict.
+        val refusal = TransportError.from(409, part("POST__load", "errors.409").toString(), "/load")
+        assertTrue(refusal is TransportError.Conflict)
+        assertTrue(refusal!!.message!!.contains("Nothing was changed"))
         roundTrip<LoadRequest>("POST__install", "request")
         roundTrip<StatusMessage>("POST__install")
         roundTrip<StatusMessage>("POST__unload")
@@ -297,7 +310,10 @@ class ContractTest {
         assertFalse(qwen.recommended.thinking)
         assertEquals(2.5, qwen.measured!!.secondsToFirstWord300, 1e-9)
         assertNull("not measured is not claimed", qwen.measured!!.sustainedTokensPerSecond)
-        val gemma = list.models.single { !it.isDefault }
+        // The Mac lists more than one alternative now; each is found by its id.
+        val gemma = list.models.single { it.id == "gemma-4-e2b-q4_0" }
+        assertFalse(gemma.isDefault)
+        assertEquals("only one default", 1, list.models.count { it.isDefault })
         assertTrue(gemma.slowerOnPhone)
         assertEquals(4_700_000_000L, gemma.recommended.minFreeMemoryBytes)
         assertEquals(7.5, gemma.measured!!.sustainedTokensPerSecond!!, 1e-9)
@@ -952,14 +968,61 @@ class ContractTest {
         assertEquals(0, (message["images"] as JsonArray).size)
     }
 
+    // MARK: - A failed load
+
+    /** Every ending the Mac documents on `GET /status`, decoded and re-encoded whole. */
+    @Test fun everyFailedLoadTheMacDocumentsRoundTrips() {
+        val variants = (fixture("GET__status")["responseVariants"] as JsonObject).keys
+        val decoded = variants.associateWith { roundTrip<Status>("GET__status", "responseVariants.$it") }
+        assertTrue("the export documents the endings", decoded.size >= 5)
+        decoded.values.forEach { status ->
+            val failure = assertNotNullAnd(status.failure)
+            assertFalse("state stays one line", status.state.contains('\n'))
+            assertNull(status.loadedModelID)
+            assertTrue(failure.at.isNotBlank())
+        }
+
+        val killed = decoded.getValue("after a failed load").failure!!
+        assertEquals(LoadFailure.Reason.Killed, killed.kind)
+        assertEquals(9, killed.signal)
+        assertTrue("the log is the detail, not the sentence", killed.detail!!.contains("load_tensors"))
+        assertEquals("llama.cpp · signal 9", killed.facts)
+
+        val replaced = decoded.getValue("after a load that was replaced").failure!!
+        assertTrue(replaced.wasReplaced)
+        assertEquals(LoadFailure.Reason.Replaced, replaced.kind)
+        assertEquals(LoadFailure.Reason.Cancelled, decoded.getValue("after a load that was cancelled").failure!!.kind)
+        assertEquals(LoadFailure.Reason.TimedOut, decoded.getValue("after a load that never answered").failure!!.kind)
+
+        // A device paired for chat is told the same failure without the runtime's log.
+        val withheld = decoded.getValue("as a chat-scope device or a peer sees it")
+        assertNull(withheld.failure!!.detail)
+        assertEquals(decoded.getValue("after a failed load").state, withheld.state)
+    }
+
+    @Test
+    fun `a failure reason this app does not know reads as exited`() {
+        val status = json.decodeFromString<Status>(
+            """{"state":"The runtime ran out of cheese.","expertStreaming":false,
+               "failure":{"reason":"outOfCheese","wasReplaced":false,"at":"2026-09-19T11:04:38Z"}}""",
+        )
+        assertEquals(LoadFailure.Reason.Exited, status.failure!!.kind)
+        assertNull(status.failure!!.detail)
+        assertNull("nothing to say about how it ended", status.failure!!.facts)
+    }
+
+    private fun <T : Any> assertNotNullAnd(value: T?): T {
+        assertNotNull(value)
+        return value!!
+    }
+
     // MARK: - Forgiving where the Mac says it may be
 
     @Test
     fun `a status from an older Mac still decodes`() {
-        assertFalse(
-            json.decodeFromString<Status>("""{"state":"Not loaded","expertStreaming":false}""")
-                .hasLoadedModel,
-        )
+        val status = json.decodeFromString<Status>("""{"state":"Not loaded","expertStreaming":false}""")
+        assertFalse(status.hasLoadedModel)
+        assertNull("a Mac from before failures were structured sends none", status.failure)
     }
 
     @Test

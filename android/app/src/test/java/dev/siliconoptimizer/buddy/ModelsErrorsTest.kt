@@ -3,6 +3,7 @@ package dev.siliconoptimizer.buddy
 import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.InstalledModel
+import dev.siliconoptimizer.buddy.transport.LoadFailure
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.TransportError
@@ -241,6 +242,36 @@ class ModelsErrorsTest {
             model.refresh(mac)
             runCurrent()
             assertEquals("The model drive is disconnected.", model.error)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `a load the Mac lost carries its log from the status`() = runTest(dispatcher) {
+        val model = ModelsViewModel()
+        val sentence = "llama-server was killed (signal 9) after 8 seconds, which usually means " +
+            "the system reclaimed its memory."
+        val mac = FlakyMac().apply {
+            loadError = TransportError.Server(500, sentence)
+            state = Status(
+                sentence,
+                failure = LoadFailure(
+                    reason = "killed", detail = "load_tensors: loading model tensors",
+                    runtime = "llama.cpp", signal = 9, at = "2026-09-19T11:04:38Z",
+                ),
+            )
+        }
+        try {
+            model.load(onDisk.id, transport = mac)
+            runCurrent()
+            assertEquals(sentence, model.error)
+            assertEquals("load_tensors: loading model tensors", model.problem?.detail)
+            assertNull("the banner already says it; the list does not say it twice", model.standingFailure)
+
+            // Put away, the Mac's standing failure is still the Mac's state, and is shown as such.
+            model.clearError()
+            assertEquals("killed", model.standingFailure?.reason)
         } finally {
             model.reset()
         }

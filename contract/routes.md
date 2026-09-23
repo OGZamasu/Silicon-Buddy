@@ -114,6 +114,44 @@ the nearest value that model supports. `GET /video/models` carries
 lane, so a picker never has to offer a size or a field the renderer would
 quietly ignore.
 
+## Loading a model, and what a failed load says
+
+`POST /load` is not a request the Mac abandons when the caller goes away. The
+load is started, detached from the request, and runs to its end whatever
+happens to the connection — a phone that locks its screen, a client that times
+out, a tab that closes. The request only *watches* it: if it finishes within 25
+seconds the answer is the load's own status, exactly as before; if it is still
+going, the answer is the live status instead — the same shape, with `state`
+carrying the stage line and `loadedModelID` still null. Follow it with
+`GET /status`, or on `/events`.
+
+**One load at a time on this route.** A second `POST /load` while one is
+running is a 409 naming the model already loading and how long it has been
+going, and nothing is changed: obeying it would mean killing a load the owner
+asked for, possibly minutes into reading a 30 GB file, and the first load would
+then fail in a way that looked like the model's fault. `POST /unload` stops the
+load in flight if that is really what is wanted. The Mac's own window is not
+held by this route and can still start a load that replaces one; the load that
+loses says so (`failure.wasReplaced`) rather than reporting a fault.
+
+**A failed load.** `state` is one sentence — "llama-server stopped on its own
+after 8 seconds (exit 1)", "…was killed (signal 9), which usually means the
+system reclaimed its memory", "…was replaced by another load", "…never
+answered in 10 minutes" — and it is meant to be shown as it is. Beside it,
+`failure` carries the same failure's facts: `reason` (`exited`, `killed`,
+`replaced`, `cancelled`, `timedOut`, `launchFailed`, `notInstalled` — treat an
+unknown one as `exited`), `detail` (the tail of the runtime's log, at most 20
+lines: put it behind a tap, never in the line a person reads first), `runtime`,
+`exitStatus`, `signal`, `wasReplaced` and `at`. The key is **absent** unless a
+load has failed, so a client written before it existed reads what it always
+did.
+
+`detail` is the only part of this that is scoped. It is the runtime's raw log,
+and on a Mac that log names files — so a device paired for **chat**, and the
+swarm, are answered the whole failure *without* it, on `GET /status` and in the
+`status` frame on `/events` alike. Absolute paths inside it are reduced to the
+file's own name before it leaves the Mac at all, for everyone.
+
 ## Agent sessions
 
 `/agent/sessions` mirrors the Mac's Chat tab: one session per engine — `codex`
@@ -247,14 +285,14 @@ is a 404. Full scope only, and the swarm secret is refused with its own sentence
 | `GET` | `/health` | none | Unauthenticated, so a client can tell a dead app from a bad token. |
 | `GET` | `/profile` | device | What this Mac is, and how much of it a model may have. |
 | `GET` | `/metrics` | device | Memory, swap, GPU and CPU right now. |
-| `GET` | `/status` | device | What is loaded, at what settings, how fast it last ran. |
+| `GET` | `/status` | device | What is loaded, at what settings, how fast it last ran. `state` is one line for a person; when a load has failed, `failure` carries the same failure's facts — show `state`, keep `failure.detail` behind a tap. |
 | `GET` | `/installed` | device | The models on this Mac's disk. |
 | `GET` | `/catalog` | device | The catalogue, each entry judged against this Mac. |
 | `GET` | `/recommend` | device | The strongest model this machine can actually run. |
 | `POST` | `/recommend` | device | The best model for a described job, with the runners-up and why. Asks Jev, so it costs the owner money and takes full control. |
 | `POST` | `/plan` | device | Will this fit at this context, and what would you change? |
 | `POST` | `/install` | device | Download a model. Progress arrives on /events. |
-| `POST` | `/load` | device | Load a model into memory. |
+| `POST` | `/load` | device | Load a model into memory. The load belongs to the Mac once it has been asked for: it is not cancelled if this request goes away. A load still running after 25 seconds answers with the live status instead of holding the connection — follow it with GET /status. |
 | `POST` | `/unload` | device | Free the loaded model. |
 | `POST` | `/chat` | device | Ask the loaded model and wait for the whole answer. |
 | `POST` | `/decide` | device | Typed probabilistic decisions, in the TypeSafe/Jev shape. |

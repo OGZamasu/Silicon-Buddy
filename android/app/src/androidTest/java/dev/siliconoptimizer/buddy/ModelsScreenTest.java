@@ -27,19 +27,24 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /**
- * The Models tab on the minified release build, when the Mac says no (#12).
+ * The Models tab on the minified release build, when the Mac says no (#12) and when a load
+ * outlives its request (#13).
  *
  * Driven from the outside, through the accessibility tree, like {@link AgentsScreenTest}:
  * nothing here names an app class, because R8 renames them. What it proves is what a person
  * holding the phone would see — the Mac's own sentence on screen, a dismissal that takes it
  * away, a retry that works leaving nothing stale behind, a list that failed to arrive not
- * passed off as an empty library.
+ * passed off as an empty library, and a slow load followed to the failure the Mac pushed,
+ * with its log behind a tap.
  */
 @RunWith(AndroidJUnit4.class)
 public class ModelsScreenTest {
 
     private static final long WAIT = 20_000;
     private static final String PACKAGE = "dev.siliconoptimizer.buddy";
+    private static final String KILLED = "llama-server was killed (signal 9) after 8 seconds, "
+        + "which usually means the system reclaimed its memory.";
+    private static final String LOG = "load_tensors: loading model tensors";
 
     private UiDevice device;
     private Context context;
@@ -161,6 +166,32 @@ public class ModelsScreenTest {
         assertTrue("the retry loaded it", onScreen("Unload"));
         assertTrue("and the old failure is gone", goneFromScreen(FakeMac.DRIVE_GONE));
         assertEquals("one load per press: two refused, one retried", 3, loads());
+    }
+
+    @Test
+    public void aSlowLoadIsFollowedToTheFailureTheMacPushed() {
+        pair();
+        openModels();
+        assertTrue(onScreen("Test Model"));
+
+        mac.loadIsSlow = true;
+        tap("Load");
+        assertTrue("the answer said 'still loading', and the row says so",
+            onScreen("Loading weights… 42%"));
+        SystemClock.sleep(1_000);
+        assertTrue("still following, not finished", device.hasObject(showing("Loading weights… 42%")));
+
+        mac.publishStatus("{\"state\":\"" + KILLED + "\",\"expertStreaming\":false,"
+            + "\"failure\":{\"reason\":\"killed\",\"detail\":\"" + LOG + "\",\"runtime\":\"llama.cpp\","
+            + "\"signal\":9,\"wasReplaced\":false,\"at\":\"2026-09-19T11:04:38Z\"}}");
+        assertTrue("the pushed failure ends the load, sentence first", onScreen(KILLED));
+        assertTrue(onScreen("Couldn't load Test Model"));
+        assertFalse("the log waits behind a tap", device.hasObject(showing(LOG)));
+
+        tap("Show log");
+        assertTrue("and is there when asked for", onScreen(LOG));
+        assertTrue(onScreen("Hide log"));
+        assertEquals("the Mac was asked once; the rest was followed", 1, loads());
     }
 
     private static boolean waitFor(java.util.concurrent.Callable<Boolean> condition) {
