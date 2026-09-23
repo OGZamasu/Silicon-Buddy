@@ -108,8 +108,8 @@ class PairingExchange(private val scope: CoroutineScope) {
         if (state is State.Working) return false
         state = State.Working(invite)
         scope.launch {
-            // The scope is AppState's, and it ends when the activity finishes — Back out of
-            // the app while the Mac thinks. A request cut off there is as likely to have been
+            // The app's scope is the process's, but whoever owns the scope, ending it must
+            // not end this: a request cut off after it was sent is as likely to have been
             // answered as one cut off by a closing sheet, so it is not cut off.
             withContext(NonCancellable) {
                 state = try {
