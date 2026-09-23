@@ -1,11 +1,13 @@
 package dev.siliconoptimizer.buddy;
 
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -23,7 +25,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /**
- * Pairing a phone whose camera is refused (#17), on the minified release build.
+ * Pairing a phone whose camera is refused (#17), and a pairing link that is read only once,
+ * on the minified release build.
  *
  * The fallback used to send a phone to the Mac's control.json token, which the Mac takes
  * only on its own loopback — so over the tailnet it could never work. Now the refusal lands
@@ -126,6 +129,49 @@ public class ManualPairingTest {
             device.wait(Until.gone(By.text("Pairing code")), WAIT));
         assertNotNull("Settings names the Mac the code paired with",
             device.wait(Until.findObject(By.text("Test Mac")), WAIT));
+    }
+
+    /**
+     * A link is read once. The critic's case: pair through a link, then change the display
+     * density (or the font size) — which recreates the activity with the intent it was
+     * opened with — and "Pair with this Mac?" came back with the code already spent.
+     */
+    @Test
+    public void aSpentLinkIsNotOfferedAgainWhenTheActivityIsRecreated() throws Exception {
+        Intent link = new Intent(Intent.ACTION_VIEW,
+            Uri.parse("siliconbuddy://pair?host=127.0.0.1&port=" + mac.port() + "&code=654321"))
+            .setPackage(PACKAGE)
+            // A fresh task, so the link is the intent the activity is created with.
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        context.startActivity(link);
+        UiObject2 confirm = device.wait(Until.findObject(By.text(Pattern.compile("Pair|Replace this Mac…"))), WAIT);
+        assertNotNull("the pairing confirmation never appeared", confirm);
+        boolean replacing = confirm.getText().startsWith("Replace");
+        confirm.click();
+        if (replacing) {
+            UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
+            assertNotNull(replace);
+            replace.click();
+        }
+        assertTrue("the link never reached /buddy/pair", waitFor(() -> mac.saw("POST", "/buddy/pair")));
+        assertTrue("the confirmation stays up after pairing",
+            device.wait(Until.gone(By.text("Pair with this Mac?")), WAIT));
+
+        String before = device.executeShellCommand("wm density");
+        java.util.regex.Matcher physical = Pattern.compile("Physical density: (\\d+)").matcher(before);
+        java.util.regex.Matcher override = Pattern.compile("Override density: (\\d+)").matcher(before);
+        assertTrue(before, physical.find());
+        int current = override.find() ? Integer.parseInt(override.group(1)) : Integer.parseInt(physical.group(1));
+        try {
+            device.executeShellCommand("wm density " + (current + 60));
+            device.waitForIdle();
+            assertNull("a recreated activity offered the spent code again",
+                device.wait(Until.findObject(By.text("Pair with this Mac?")), 5_000));
+            assertNull(device.findObject(By.text("Code 654 321")));
+        } finally {
+            device.executeShellCommand(before.contains("Override density:")
+                ? "wm density " + current : "wm density reset");
+        }
     }
 
     /** The keyboard can sit over the button; Back closes it, and only when it is up. */

@@ -125,7 +125,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        arriving.value = read(intent)
+        if (arrivesFresh(restored = savedInstanceState != null, intent?.flags ?: 0)) {
+            arriving.value = read(intent)
+        }
         setContent {
             SiliconBuddyTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -230,6 +232,18 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /**
+         * Whether the intent `onCreate` is handed is arriving now, rather than being handed
+         * back. An activity recreated for a new font size or display density, or after its
+         * process died, gets the intent it was first opened with again, and so does one
+         * reopened from Recents. Read a second time, a pairing link asks to pair with a
+         * code already spent — and when it pairs, to replace the Mac it just paired with.
+         * What was read the first time lives on where it went: an invite still waiting is
+         * in `AppState`, which outlives the activity.
+         */
+        fun arrivesFresh(restored: Boolean, flags: Int): Boolean =
+            !restored && (flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
+
         /** Which screen a notification wants open. */
         const val EXTRA_OPEN = "dev.siliconoptimizer.buddy.OPEN"
         const val OPEN_QUEUE = "queue"
