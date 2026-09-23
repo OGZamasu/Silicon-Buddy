@@ -228,3 +228,14 @@ native part is arm64 only: a build for another ABI carries no llama.cpp, and the
 the phone's own model is not available.
 
 The generated `ios/SiliconBuddy.xcodeproj` is not committed: `project.yml` is the source.
+
+## Licence
+
+MIT, the same as [Silicon Optimizer](https://github.com/OGZamasu/silicon-optimizer) and
+[silicon-node](https://github.com/OGZamasu/silicon-node).
+
+`third_party/llama.cpp` is a submodule and stays under its own MIT licence. KleidiAI, which
+llama.cpp's CMake fetches at configure time, is Apache-2.0. Models the phone downloads carry
+their own terms — the picker shows each one before the download starts.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get a build running.
