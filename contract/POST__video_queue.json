@@ -31,6 +31,7 @@
     "items" : [
       {
         "batchID" : "9C2F",
+        "canCancel" : false,
         "h3Steps" : 30,
         "h3Turbo" : false,
         "id" : "9C2F-0001",
@@ -87,6 +88,43 @@
         "status" : "failed",
         "title" : "Lisbon",
         "uncertainSubmission" : true,
+        "variation" : 1
+      },
+      {
+        "batchID" : "9C2F",
+        "canCancel" : false,
+        "cancelDetail" : "Cancelled; the renderer was stopped.",
+        "cancelState" : "confirmed",
+        "id" : "9C2F-0004",
+        "modelID" : "ltx2-distilled",
+        "nodeJobID" : "job-1190",
+        "outputDirectory" : "\/Users\/you\/Movies\/Silicon\/Lisbon",
+        "prompt" : "The tram bell, close up",
+        "resolution" : "720p",
+        "scene" : 4,
+        "seconds" : 5,
+        "seed" : 424245,
+        "status" : "cancelled",
+        "title" : "Lisbon",
+        "uncertainSubmission" : false,
+        "variation" : 1
+      },
+      {
+        "batchID" : "9C2F",
+        "canCancel" : true,
+        "error" : "Stopped following. The node may still be rendering; use Reconnect \/ download to retrieve the same job, or check the node before rendering again.",
+        "id" : "9C2F-0005",
+        "modelID" : "ltx2-distilled",
+        "nodeJobID" : "job-1191",
+        "outputDirectory" : "\/Users\/you\/Movies\/Silicon\/Lisbon",
+        "prompt" : "Laundry lines over the Alfama steps",
+        "resolution" : "720p",
+        "scene" : 5,
+        "seconds" : 5,
+        "seed" : 424246,
+        "status" : "failed",
+        "title" : "Lisbon",
+        "uncertainSubmission" : false,
         "variation" : 1
       }
     ],

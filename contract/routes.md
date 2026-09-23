@@ -92,16 +92,21 @@ asks one node now, and is the only place the adapter riding on its loaded GGUF
 appears. The Mac's credential for that node goes out in a header and is never
 in the answer. Full scope only.
 
-`POST /video/queue/control` takes one of six verbs, and the fixture has an
+`POST /video/queue/control` takes one of seven verbs, and the fixture has an
 example of each. `pause` and `resume` and `clear_finished` take no `id`;
-`retry`, `remove` and `stop_following` need one. There is no `cancel`: a clip
-already handed to a node keeps rendering there, and `stop_following` says what
-actually happens — this Mac stops following it and the queue pauses.
+`retry`, `remove`, `stop_following` and `cancel` need one. `stop_following`
+says what actually happens — this Mac stops following the clip and the queue
+pauses, while the node may keep rendering it. `cancel` asks the clip's node to
+stop that one render, and applies only where the item's `canCancel` is true:
+its node advertises job cancellation for the lane. The item's `cancelState`
+then says how it went — `requested`, `confirmed` (and the status becomes
+`cancelled`), `completed` (it finished first and the clip is kept), `failed`,
+`unsupported` or `unknown` — and no answer ever resubmits the clip.
 `confirmNewRender` matters on `retry` alone. A failed clip the Mac can
 reconnect to is reconnected; one whose submission is uncertain is refused until
 the caller passes `confirmNewRender: true`, which is the caller saying it has
 checked the node and accepts that a second render may start. A verb that is not
-one of the six is a 400 saying exactly which six there are.
+one of the seven is a 400 saying exactly which seven there are.
 
 Two constants the phone should stop guessing. A batch is at most 20 variations
 per prompt, at most 200 unfinished clips at once and at most 2,000 items of
@@ -322,7 +327,7 @@ is a 404. Full scope only, and the swarm secret is refused with its own sentence
 | `GET` | `/video/models` | device | The video models, and which machine can run each. |
 | `GET` | `/video/queue` | device | The render queue and what is running. |
 | `POST` | `/video/queue` | device | Add prompts to the queue without holding a connection. |
-| `POST` | `/video/queue/control` | device | One of six verbs on the queue: pause, resume, retry, remove, stop_following, clear_finished. There is no cancel. |
+| `POST` | `/video/queue/control` | device | One of seven verbs on the queue: pause, resume, retry, remove, stop_following, cancel, clear_finished. cancel applies where canCancel is true. |
 | `POST` | `/video/generate` | device | Render one clip and wait for it. At most eight of these at once. |
 | `GET` | `/media/{id}` | device | The file itself. Answers bytes, not JSON: the content type of the result, `Accept-Ranges: bytes`, an `ETag`, 206 for a `Range` and 304 for a matching `If-None-Match`. A chat-only device may fetch preview images but not the renders themselves. |
 | `POST` | `/uploads` | device | Send a picture or a short clip, and get back the two ids that let a render start from it. Raw bytes or multipart; at most 24 MiB; kept for seven days. |
