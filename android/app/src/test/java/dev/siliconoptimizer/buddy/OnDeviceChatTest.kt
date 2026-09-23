@@ -221,11 +221,10 @@ class OnDeviceChatTest {
 
     @After
     fun tearDown() {
-        // The conversation stores read and write on Dispatchers.IO and come back to Main.
-        // Resetting Main with one of those still in the air turns it into an uncaught
-        // exception that kotlinx-coroutines-test reports against whichever test runs next,
-        // in whichever class — so the writes are given their moment to land first.
-        Thread.sleep(100)
+        // The conversation stores read and write on Dispatchers.IO and come back to Main;
+        // one still in the air at `resetMain` fails whichever test runs next. See
+        // `stopForTest`.
+        chat.stopForTest()
         Dispatchers.resetMain()
     }
 

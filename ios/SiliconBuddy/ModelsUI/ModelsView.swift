@@ -328,7 +328,7 @@ struct CatalogDetailView: View {
                         Pill(capability, tint: .blue, filled: true)
                     }
                 }
-                HStack {
+                StatRow {
                     Stat("Parameters", entry.parameters)
                     if let active = entry.activeParameters { Stat("Active", active) }
                     Stat("Context", "\(entry.maxContext / 1024)K")
@@ -351,7 +351,7 @@ struct CatalogDetailView: View {
             if let recommendation = entry.recommendation {
                 Section("What this Mac would do") {
                     Text(recommendation.rationale).font(.callout)
-                    HStack {
+                    StatRow {
                         Stat("Verdict", recommendation.plan.verdict,
                              tint: recommendation.plan.verdict.verdictTint)
                         Stat("Download", Format.bytes(recommendation.downloadBytes))

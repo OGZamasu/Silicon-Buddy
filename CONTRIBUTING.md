@@ -50,16 +50,19 @@ red cross on your PR right now says nothing about your change. Until that is fix
 
 Two suites could never run there, and are run locally before a merge either way:
 
-- the **instrumented** tests, which need an arm64 device or emulator. The on-device model
-  ones also need a stand-in Mac on the host, reached at `10.0.2.2:8916`, which is not in
-  this repository yet (#15): from a fresh clone those fail in setup, not on your change.
+- the **instrumented** tests, which need an arm64 device or emulator, and the stand-in Mac
+  in `tools/standin/` running on the same machine — the emulator reaches it at
+  `10.0.2.2:8916`. Fetch its pinned models once and start it:
+  `tools/standin/fetch-models.sh && tools/standin/standin.sh start`.
+  [`tools/standin/README.md`](tools/standin/README.md) has its settings, including another
+  port when 8916 is taken (and `BUDDY_STANDIN` to tell the tests).
 - the **iOS** suite, which needs Xcode
 
 `scripts/ci-android.sh` runs the same checks the workflow does, and takes `--connected`
-(instrumented tests on `$ANDROID_SERIAL`) and `--ios` (which also wants `IOS_DERIVED_DATA`,
-a folder with a few gigabytes free for the build, and runs on `IOS_DESTINATION`, the iPad
-mini above unless you say otherwise). It exits non-zero on the first failure, so it chains
-onto a merge with `&&`.
+(instrumented tests on `$ANDROID_SERIAL`, once it has checked that the stand-in answers)
+and `--ios` (which also wants `IOS_DERIVED_DATA`, a folder with a few gigabytes free for
+the build, and runs on `IOS_DESTINATION`, the iPad mini above unless you say otherwise).
+It exits non-zero on the first failure, so it chains onto a merge with `&&`.
 
 ## The contract is generated
 
