@@ -74,6 +74,37 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     func node() async throws -> ControlAPI.NodeAdvertisement { try nodeResult.get() }
     func videoModels() async throws -> [ControlAPI.VideoModel] { [] }
     func imageModels() async throws -> [ControlAPI.ImageModel] { [] }
+
+    /// What `GET /video/queue` answers; a control verb answers `controlResult`, which by
+    /// default is the queue as it stands.
+    var videoQueueResult: Result<ControlAPI.VideoQueueView, Error> =
+        .failure(TransportError.routeUnavailable("/video/queue"))
+    var controlResult: Result<ControlAPI.VideoQueueView, Error>?
+    /// Held until the test lets it go, as a node deciding about a cancel is.
+    var controlDelay: Duration?
+    private(set) var videoQueueReads = 0
+    private(set) var sentControls: [ControlAPI.VideoQueueControl] = []
+
+    /// How long `GET /video/queue` takes to answer; the answer is the queue as it was asked.
+    var videoQueueDelay: Duration?
+
+    func videoQueue() async throws -> ControlAPI.VideoQueueView {
+        videoQueueReads += 1
+        let answer = videoQueueResult
+        if let videoQueueDelay {
+            await Task.detached { try? await Task.sleep(for: videoQueueDelay) }.value
+        }
+        return try answer.get()
+    }
+    func controlVideoQueue(
+        _ request: ControlAPI.VideoQueueControl
+    ) async throws -> ControlAPI.VideoQueueView {
+        sentControls.append(request)
+        if let controlDelay {
+            await Task.detached { try? await Task.sleep(for: controlDelay) }.value
+        }
+        return try (controlResult ?? videoQueueResult).get()
+    }
     func load(_ request: ControlAPI.LoadRequest) async throws -> ControlAPI.Status {
         loads += 1
         if let loadDelay {

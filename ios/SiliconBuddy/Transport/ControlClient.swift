@@ -16,6 +16,8 @@ public protocol ControlTransport: Sendable {
     func node() async throws -> ControlAPI.NodeAdvertisement
     func videoModels() async throws -> [ControlAPI.VideoModel]
     func imageModels() async throws -> [ControlAPI.ImageModel]
+    func videoQueue() async throws -> ControlAPI.VideoQueueView
+    func controlVideoQueue(_ request: ControlAPI.VideoQueueControl) async throws -> ControlAPI.VideoQueueView
     func load(_ request: ControlAPI.LoadRequest) async throws -> ControlAPI.Status
     func install(_ request: ControlAPI.LoadRequest) async throws -> String
     func unload() async throws
@@ -163,6 +165,23 @@ public struct ControlClient: ControlTransport {
 
     public func imageModels() async throws -> [ControlAPI.ImageModel] {
         try await get([ControlAPI.ImageModel].self, "/image/models", timeout: 45)
+    }
+
+    public func videoQueue() async throws -> ControlAPI.VideoQueueView {
+        try await get(ControlAPI.VideoQueueView.self, "/video/queue", timeout: 20)
+    }
+
+    /// How long a `cancel` may take to be answered: the Mac gives the clip's node 60
+    /// seconds to answer it, and then answers the phone.
+    static let cancelTimeout: TimeInterval = 75
+
+    public func controlVideoQueue(
+        _ request: ControlAPI.VideoQueueControl
+    ) async throws -> ControlAPI.VideoQueueView {
+        try await post(
+            ControlAPI.VideoQueueView.self, "/video/queue/control", body: request,
+            timeout: request.action == ControlAPI.VideoQueueControl.cancel ? Self.cancelTimeout : 30
+        )
     }
 
     public func load(_ request: ControlAPI.LoadRequest) async throws -> ControlAPI.Status {

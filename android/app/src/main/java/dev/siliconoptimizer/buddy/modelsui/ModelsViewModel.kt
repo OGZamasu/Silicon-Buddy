@@ -9,6 +9,7 @@ import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.ControlTransport
 import dev.siliconoptimizer.buddy.transport.InstalledModel
 import dev.siliconoptimizer.buddy.transport.LoadFailure
+import dev.siliconoptimizer.buddy.transport.LoadInterruption
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.Status
 import dev.siliconoptimizer.buddy.transport.TransportError
@@ -62,7 +63,15 @@ class ModelsViewModel : ViewModel() {
         val failure: LoadFailure? = null,
     )
 
-    /** How a load this screen started has ended, read from one status. */
+    /**
+     * How a load this screen started has ended, read from one status.
+     *
+     * In the Mac's order: the model resident; the Mac saying it stopped this load
+     * (`interruptedLoads`, which a new load of the model clears, so an entry is this
+     * load's); a failure that is this load's — `failure.modelID` names it, or is absent on
+     * a Mac from before it did; a failure of another model, which means the Mac went on to
+     * a load that was not this one; another model resident.
+     */
     enum class LoadOutcome {
         Pending, Loaded, Failed, Replaced, Cancelled;
 
@@ -70,13 +79,20 @@ class ModelsViewModel : ViewModel() {
             fun of(status: Status, modelID: String): LoadOutcome {
                 val loaded = status.loadedModelID
                 val failure = status.failure
+                val stopped = status.interruption(modelID)
                 return when {
                     loaded != null && sameModel(loaded, modelID) -> Loaded
-                    failure != null -> when (failure.kind) {
+                    stopped != null -> when (stopped.kind) {
+                        LoadInterruption.Kind.Replaced -> Replaced
+                        LoadInterruption.Kind.Cancelled -> Cancelled
+                    }
+                    failure != null && failure.isAbout(modelID) -> when (failure.kind) {
                         LoadFailure.Reason.Replaced -> Replaced
                         LoadFailure.Reason.Cancelled -> Cancelled
                         else -> Failed
                     }
+                    // Somebody else's load failed: this one is no longer the Mac's.
+                    failure != null -> Replaced
                     // Nothing is resident while a load runs, so another model resident
                     // now is one somebody asked for instead.
                     loaded != null -> Replaced
@@ -84,10 +100,32 @@ class ModelsViewModel : ViewModel() {
                 }
             }
 
-            /** An installed id carries its quantization ("model@Q4_K_M"); a status may use either. */
-            fun sameModel(a: String, b: String): Boolean =
-                a == b || a.startsWith("$b@") || b.startsWith("$a@")
+            fun sameModel(a: String, b: String): Boolean = Status.sameModel(a, b)
+
+            /** A failure without a model id is from a Mac that did not say, and is taken as ours. */
+            private fun LoadFailure.isAbout(id: String): Boolean =
+                modelID == null || sameModel(modelID, id)
         }
+    }
+
+    /**
+     * The one line for a load that ended without being this phone's fault, in the words of
+     * how it ended — never a retry: asking again would only undo what somebody else chose.
+     */
+    private fun notLoaded(status: Status, modelID: String, name: String): Problem {
+        val stopped = status.interruption(modelID)
+        val failure = status.failure?.takeIf { it.modelID == null || LoadOutcome.sameModel(it.modelID, modelID) }
+        val message = when {
+            stopped?.kind == LoadInterruption.Kind.Replaced ->
+                "Replaced by ${stopped.replacedBy?.let(::nameOf) ?: "another load"} before it finished loading."
+            stopped != null -> "Stopped by an unload before it finished loading."
+            failure != null -> status.state
+            status.loadedModelID != null ->
+                "The Mac loaded ${status.loadedModelName ?: status.loadedModelID} instead."
+            else -> status.failure?.modelID?.let { "The Mac went on to load ${nameOf(it)} instead." }
+                ?: "Another load took the Mac before this one finished."
+        }
+        return Problem("$name wasn't loaded", message, failure?.detail, isFault = false, failure = failure)
     }
 
     var installed by mutableStateOf<List<InstalledModel>>(emptyList())
@@ -256,15 +294,25 @@ class ModelsViewModel : ViewModel() {
                 job = null
                 val failed = Problem("Couldn't load $name", error.message.orEmpty(), retry = retry)
                 problem = failed
-                // A load the Mac tried and lost inside its patience is a 400 whose sentence
-                // ends with the status line, and /status has the log beside that line. Said
-                // once, as the line itself: the heading already says the load failed, and
-                // the failure it names is then not said again in the list.
                 attempt { transport.status() }.getOrNull()?.let { after ->
                     status = after
                     val failure = after.failure
-                    if (failure != null && describes(error.message, after.state) && problem == failed) {
-                        problem = failed.copy(message = after.state, detail = failure.detail, failure = failure)
+                    when {
+                        // A 409 for a load another load or an unload stopped inside the Mac's
+                        // patience: its sentence says which, and the status lists it. An
+                        // ending somebody chose, not a fault, and nothing to retry.
+                        error is TransportError.Conflict && after.interruption(modelID) != null ->
+                            if (problem == failed) {
+                                problem = failed.copy(
+                                    title = "$name wasn't loaded", retry = null, isFault = false,
+                                )
+                            }
+                        // A load the Mac tried and lost inside its patience is a 400 whose
+                        // sentence ends with the status line, and /status has the log beside
+                        // that line. Said once, as the line itself: the heading already says
+                        // the load failed, and the failure it names is then not said again.
+                        failure != null && describes(error.message, after.state) && problem == failed ->
+                            problem = failed.copy(message = after.state, detail = failure.detail, failure = failure)
                     }
                 }
                 return@launch
@@ -301,16 +349,7 @@ class ModelsViewModel : ViewModel() {
                 LoadOutcome.Failed -> Problem(
                     "Couldn't load $name", latest.state, failure?.detail, retry, failure = failure,
                 )
-                LoadOutcome.Replaced -> Problem(
-                    "$name wasn't loaded",
-                    if (failure != null) latest.state
-                    else "The Mac loaded ${latest.loadedModelName ?: latest.loadedModelID} instead.",
-                    failure?.detail, isFault = false, failure = failure,
-                )
-                LoadOutcome.Cancelled -> Problem(
-                    "$name wasn't loaded", latest.state, failure?.detail,
-                    isFault = false, failure = failure,
-                )
+                LoadOutcome.Replaced, LoadOutcome.Cancelled -> notLoaded(latest, modelID, name)
                 LoadOutcome.Pending, null -> Problem(
                     "Still loading $name",
                     "The Mac hasn't said how this load ended. Refresh to ask it again.",

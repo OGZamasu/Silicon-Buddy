@@ -171,6 +171,10 @@ public enum ControlAPI {
         public var weightsBytes: Int64
         public var expertsBytes: Int64
         public var kvCacheBytes: Int64
+        /// A hybrid model's fixed linear-attention state, already counted in
+        /// `residentBytes`. Absent for a model whose every block keeps a KV cache, and on
+        /// an older Mac.
+        public var recurrentStateBytes: Int64?
         public var computeBytes: Int64
         public var streamedFromDiskBytes: Int64
         public var suggestions: [Suggestion]
@@ -178,8 +182,9 @@ public enum ControlAPI {
 
         public init(
             verdict: String, residentBytes: Int64, budgetBytes: Int64, weightsBytes: Int64,
-            expertsBytes: Int64, kvCacheBytes: Int64, computeBytes: Int64,
-            streamedFromDiskBytes: Int64, suggestions: [Suggestion], notes: [String]
+            expertsBytes: Int64, kvCacheBytes: Int64, recurrentStateBytes: Int64? = nil,
+            computeBytes: Int64, streamedFromDiskBytes: Int64, suggestions: [Suggestion],
+            notes: [String]
         ) {
             self.verdict = verdict
             self.residentBytes = residentBytes
@@ -187,6 +192,7 @@ public enum ControlAPI {
             self.weightsBytes = weightsBytes
             self.expertsBytes = expertsBytes
             self.kvCacheBytes = kvCacheBytes
+            self.recurrentStateBytes = recurrentStateBytes
             self.computeBytes = computeBytes
             self.streamedFromDiskBytes = streamedFromDiskBytes
             self.suggestions = suggestions
@@ -241,12 +247,18 @@ public enum ControlAPI {
         /// loading or loaded, and on a Mac from before it existed. `state` is still the line
         /// to show; this is what lies behind it.
         public var failure: LoadFailure?
+        /// Loads this Mac stopped before they finished — an unload part-way, or another
+        /// load started meanwhile. Newest first, at most four, one per model; absent when
+        /// there are none, and on a Mac from before it said so. A new load of a model clears
+        /// its entry, so one for the model this phone has just asked for is that load's
+        /// ending.
+        public var interruptedLoads: [LoadInterruption]?
 
         public init(
             state: String, loadedModelID: String? = nil, loadedModelName: String? = nil,
             contextLength: Int? = nil, expertStreaming: Bool = false,
             lastGenerationTokensPerSecond: Double? = nil, activity: String? = nil,
-            failure: LoadFailure? = nil
+            failure: LoadFailure? = nil, interruptedLoads: [LoadInterruption]? = nil
         ) {
             self.state = state
             self.loadedModelID = loadedModelID
@@ -256,10 +268,45 @@ public enum ControlAPI {
             self.lastGenerationTokensPerSecond = lastGenerationTokensPerSecond
             self.activity = activity
             self.failure = failure
+            self.interruptedLoads = interruptedLoads
         }
 
         /// True when a language model is resident and ready to answer.
         public var hasLoadedModel: Bool { loadedModelID != nil }
+
+        /// How the Mac stopped a load of `modelID`, when it did.
+        public func interruption(of modelID: String) -> LoadInterruption? {
+            interruptedLoads?.first { Self.sameModel($0.modelID, modelID) }
+        }
+
+        /// An installed id carries its quantization ("model@Q4_K_M"); a status may use either.
+        public static func sameModel(_ a: String, _ b: String) -> Bool {
+            a == b || a.hasPrefix(b + "@") || b.hasPrefix(a + "@")
+        }
+    }
+
+    /// A load the Mac stopped before it finished. Not a fault: somebody changed their mind.
+    public struct LoadInterruption: Codable, Sendable, Equatable {
+        public enum Kind: Sendable { case cancelled, replaced }
+
+        /// As `loadedModelID` spells it.
+        public var modelID: String
+        /// `cancelled` for an unload, `replaced` for another load. Kept as text: it may grow.
+        public var reason: String
+        /// The model whose load took over, when it was replaced.
+        public var replacedBy: String?
+        /// ISO 8601, in the Mac's own offset.
+        public var at: String
+
+        public init(modelID: String, reason: String, replacedBy: String? = nil, at: String) {
+            self.modelID = modelID
+            self.reason = reason
+            self.replacedBy = replacedBy
+            self.at = at
+        }
+
+        /// The Mac's rule: a reason this app does not know reads as `cancelled`.
+        public var kind: Kind { reason == "replaced" ? .replaced : .cancelled }
     }
 
     /// The facts behind a failed load. The sentence is not here: it is `Status.state`, and
@@ -285,10 +332,14 @@ public enum ControlAPI {
         public var wasReplaced: Bool
         /// ISO 8601, in the Mac's own offset.
         public var at: String
+        /// Whose load it was, as `loadedModelID` spells it. Absent from an older Mac. A
+        /// failure naming another model is somebody else's load, not the one being followed.
+        public var modelID: String?
 
         public init(
             reason: String, detail: String? = nil, runtime: String? = nil,
-            exitStatus: Int? = nil, signal: Int? = nil, wasReplaced: Bool = false, at: String
+            exitStatus: Int? = nil, signal: Int? = nil, wasReplaced: Bool = false, at: String,
+            modelID: String? = nil
         ) {
             self.reason = reason
             self.detail = detail
@@ -297,6 +348,7 @@ public enum ControlAPI {
             self.signal = signal
             self.wasReplaced = wasReplaced
             self.at = at
+            self.modelID = modelID
         }
 
         public var kind: Reason { wasReplaced ? .replaced : Reason(rawValue: reason) ?? .exited }
@@ -628,6 +680,17 @@ public enum ControlAPI {
             public var mediaURL: String?
             /// Its poster frame, which a chat-scope device may fetch too.
             public var thumbnailMediaID: String?
+            /// Set once somebody asked the clip's node to cancel its render: `sending`,
+            /// `requested`, `confirmed`, `completed` (it finished first), `failed`,
+            /// `unsupported` or `unknown`. Absent on an older Mac, and on every clip nobody
+            /// tried to cancel.
+            public var cancelState: String?
+            /// The node's own words about that cancel, when it gave any.
+            public var cancelDetail: String?
+            /// Whether `cancel` applies to this clip now — the Mac's answer, per item, and
+            /// the only one this app goes by: its node advertises job cancellation for the
+            /// lane, and the render may still be running.
+            public var canCancel: Bool?
 
             public init(
                 id: String, batchID: String, title: String, prompt: String, scene: Int,
@@ -637,7 +700,8 @@ public enum ControlAPI {
                 uncertainSubmission: Bool, h3Steps: Int? = nil,
                 negativePrompt: String? = nil, detail: String? = nil,
                 mediaID: String? = nil, mediaURL: String? = nil,
-                thumbnailMediaID: String? = nil
+                thumbnailMediaID: String? = nil, cancelState: String? = nil,
+                cancelDetail: String? = nil, canCancel: Bool? = nil
             ) {
                 self.id = id
                 self.batchID = batchID
@@ -662,6 +726,9 @@ public enum ControlAPI {
                 self.mediaID = mediaID
                 self.mediaURL = mediaURL
                 self.thumbnailMediaID = thumbnailMediaID
+                self.cancelState = cancelState
+                self.cancelDetail = cancelDetail
+                self.canCancel = canCancel
             }
         }
         public var paused: Bool
@@ -674,6 +741,34 @@ public enum ControlAPI {
             self.activeID = activeID
             self.message = message
             self.items = items
+        }
+    }
+
+    /// `POST /video/queue/control`: one of the Mac's seven verbs, and the queue it answers
+    /// with. `stop_following` lets go of a clip while its node may keep rendering it;
+    /// `cancel` asks that node to stop the one render, and applies only where the item's
+    /// `canCancel` says so. A Mac older than `cancel` answers it with a 400.
+    public struct VideoQueueControl: Codable, Sendable, Equatable {
+        public static let pause = "pause"
+        public static let resume = "resume"
+        public static let retry = "retry"
+        public static let remove = "remove"
+        public static let stopFollowing = "stop_following"
+        public static let cancel = "cancel"
+        public static let clearFinished = "clear_finished"
+
+        /// The verbs that mean nothing without an item.
+        public static let needsID: Set<String> = [retry, remove, stopFollowing, cancel]
+
+        public var action: String
+        public var id: String?
+        /// `retry` on a clip that may already have been rendered, sent deliberately.
+        public var confirmNewRender: Bool?
+
+        public init(action: String, id: String? = nil, confirmNewRender: Bool? = nil) {
+            self.action = action
+            self.id = id
+            self.confirmNewRender = confirmNewRender
         }
     }
 

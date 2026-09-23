@@ -155,7 +155,9 @@ page. Video picks a lane from `GET /video/models` (and "Auto" when `GET /jev` sa
 this Mac's media router is on), offers only the lengths that lane advertises, and
 queues takes through `POST /video/queue`; the Queue screen is driven by the `job`
 events, with the Mac's own controls — pause, resume, retry, remove, stop following,
-clear finished, each behind a confirmation where it throws work away. Image shows
+clear finished, and cancel render where the Mac marks a clip `canCancel` — each behind a
+confirmation where it throws work away. iOS has the same queue and controls as a screen
+of its own (Queue on iPhone, Render queue on iPad); the rest of Create is still to follow. Image shows
 `POST /image/plan`'s phase-by-phase memory before it renders. 3D uploads a photo
 from the phone and makes a mesh out of it. Results are saved to the phone's own
 photo library. Long renders run in a foreground service with an ongoing

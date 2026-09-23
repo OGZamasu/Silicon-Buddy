@@ -85,15 +85,26 @@ object JobNotifications {
                 ),
                 isFailure = true,
             )
-            JobState.Stopped -> JobNotice(
-                id = next.id,
-                title = "That $noun stopped",
-                body = withoutPaths(
-                    next.error
-                        ?: "The Mac is no longer following it. The node may still finish it.",
-                ),
-                isFailure = true,
-            )
+            // A cancel the node confirmed is what somebody asked for, and it is final:
+            // "may still finish it" would be untrue of it.
+            JobState.Stopped -> if (next.cancel == CancelState.Confirmed) {
+                JobNotice(
+                    id = next.id,
+                    title = "That $noun was cancelled",
+                    body = "Its node stopped the render. Nothing will be published for it.",
+                    isFailure = false,
+                )
+            } else {
+                JobNotice(
+                    id = next.id,
+                    title = "That $noun stopped",
+                    body = withoutPaths(
+                        next.error
+                            ?: "The Mac is no longer following it. The node may still finish it.",
+                    ),
+                    isFailure = true,
+                )
+            }
             else -> null
         }
     }

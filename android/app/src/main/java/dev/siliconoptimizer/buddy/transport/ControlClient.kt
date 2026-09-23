@@ -220,6 +220,12 @@ class ControlClient(
         /** A connection that lasted this long counts as having worked. */
         const val STEADY_CONNECTION_MS = 30_000L
 
+        /**
+         * How long a `cancel` may take to be answered: the Mac gives the clip's node 60
+         * seconds to answer it, and then answers the phone.
+         */
+        const val CANCEL_TIMEOUT_MS = 75_000
+
         /** The delay before opening the stream again: 1, 2, 4… seconds, capped. */
         fun reconnectDelayMillis(attempt: Int): Long =
             if (attempt <= 0) 0 else minOf(30_000L, 1000L shl (minOf(attempt, 6) - 1))
@@ -411,7 +417,15 @@ class ControlClient(
         decode(
             send(
                 "POST", "/video/queue/control",
-                body = json.encodeToString(request), readTimeoutMs = 30_000,
+                body = json.encodeToString(request),
+                // `cancel` is answered once the node has answered the Mac, which gives the
+                // node a minute; a phone that gave up sooner would call a cancel that is
+                // still on its way a failure.
+                readTimeoutMs = if (request.action == VideoQueueControlRequest.CANCEL) {
+                    CANCEL_TIMEOUT_MS
+                } else {
+                    30_000
+                },
             ),
             "/video/queue/control",
         )

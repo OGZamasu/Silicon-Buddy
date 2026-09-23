@@ -20,6 +20,16 @@
       "error" : "That request body is larger than this device may send (4194304 bytes)."
     }
   },
+  "errorVariants" : {
+    "409" : {
+      "replaced by another load before it finished" : {
+        "error" : "Bonsai 2 27B was not loaded: another load (Qwen3-Coder 30B A3B) replaced it before it finished."
+      },
+      "stopped by an unload before it finished" : {
+        "error" : "Bonsai 2 27B was not loaded: an unload stopped it before it finished loading."
+      }
+    }
+  },
   "method" : "POST",
   "path" : "\/load",
   "request" : {

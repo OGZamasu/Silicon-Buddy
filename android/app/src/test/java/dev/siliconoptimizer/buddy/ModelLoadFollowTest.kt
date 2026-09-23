@@ -5,8 +5,10 @@ import dev.siliconoptimizer.buddy.modelsui.ModelsViewModel.LoadOutcome
 import dev.siliconoptimizer.buddy.transport.CatalogModel
 import dev.siliconoptimizer.buddy.transport.InstalledModel
 import dev.siliconoptimizer.buddy.transport.LoadFailure
+import dev.siliconoptimizer.buddy.transport.LoadInterruption
 import dev.siliconoptimizer.buddy.transport.LoadRequest
 import dev.siliconoptimizer.buddy.transport.Status
+import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -50,12 +52,27 @@ class ModelLoadFollowTest {
         "the system reclaimed its memory."
     private val log = "load_tensors: loading model tensors\nloaded multimodal model, 'mmproj-Q8_0.gguf'"
 
-    private fun failed(reason: String, detail: String? = log, replaced: Boolean = false, state: String = killed) =
+    private fun failed(
+        reason: String,
+        detail: String? = log,
+        replaced: Boolean = false,
+        state: String = killed,
+        modelID: String? = null,
+    ) =
         Status(
             state,
             failure = LoadFailure(
                 reason = reason, detail = detail, runtime = "llama.cpp", signal = 9,
-                wasReplaced = replaced, at = "2026-09-19T11:04:38Z",
+                wasReplaced = replaced, at = "2026-09-19T11:04:38Z", modelID = modelID,
+            ),
+        )
+
+    /** What a Mac with `interruptedLoads` (OGZamasu/silicon-optimizer#97) says of a load it stopped. */
+    private fun stopped(reason: String, replacedBy: String? = null, state: String = "Loading weights… 42%") =
+        Status(
+            state,
+            interruptedLoads = listOf(
+                LoadInterruption(modelID = id, reason = reason, replacedBy = replacedBy, at = "2026-09-19T11:04:38Z"),
             ),
         )
 
@@ -460,6 +477,171 @@ class ModelLoadFollowTest {
         assertNull(model.job)
         assertNull("nothing was left to say it was still loading", model.problem)
         assertNull(model.status)
+    }
+
+    // MARK: - A Mac that says which loads it stopped, and whose failure it is (#97)
+
+    private fun followUntil(pushed: Status, answer: Status = loading): ModelsViewModel {
+        val model = ModelsViewModel()
+        model.eventsLive = true
+        val mac = SlowMac(answer)
+        model.refresh(mac)
+        dispatcher.scheduler.runCurrent()
+        model.load(id, transport = mac)
+        dispatcher.scheduler.runCurrent()
+        model.statusChanged(pushed)
+        dispatcher.scheduler.runCurrent()
+        return model
+    }
+
+    @Test
+    fun `a load another load replaced ends at once, says by what, and offers no retry`() = runTest(dispatcher) {
+        // The replacing load's line, and no failure at all: only `interruptedLoads` says it.
+        val model = followUntil(stopped("replaced", replacedBy = "qwen3-coder-30b"))
+        try {
+            assertNull("following ends at the Mac's word", model.job)
+            assertEquals("Test Model wasn't loaded", model.problem?.title)
+            assertEquals("Replaced by qwen3-coder-30b before it finished loading.", model.problem?.message)
+            assertFalse(model.problem!!.isFault)
+            assertNull("asking again would undo somebody's choice", model.problem?.retry)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `a load an unload stopped says so, before the failure line has even settled`() = runTest(dispatcher) {
+        val model = followUntil(stopped("cancelled", state = "Not loaded"))
+        try {
+            assertNull(model.job)
+            assertEquals("Stopped by an unload before it finished loading.", model.problem?.message)
+            assertFalse(model.problem!!.isFault)
+            assertNull(model.problem?.retry)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `another model's failure is not this load's fault`() = runTest(dispatcher) {
+        // The Mac went on to load another model, and that one failed.
+        val theirs = failed("killed", modelID = "fails-to-load@Q4_K_M")
+        assertEquals(LoadOutcome.Replaced, LoadOutcome.of(theirs, id))
+        val model = followUntil(theirs)
+        try {
+            assertNull(model.job)
+            assertEquals("Test Model wasn't loaded", model.problem?.title)
+            assertFalse("not this load's log, nor its fault", model.problem!!.isFault)
+            assertNull(model.problem?.detail)
+            assertNull(model.problem?.retry)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `this model's own failure is still a failure, with its log and a retry`() = runTest(dispatcher) {
+        val ours = failed("killed", modelID = id)
+        assertEquals(LoadOutcome.Failed, LoadOutcome.of(ours, id))
+        assertEquals("the catalogue spelling too", LoadOutcome.Failed, LoadOutcome.of(ours, "test-model"))
+        val model = followUntil(ours)
+        try {
+            assertEquals("Couldn't load Test Model", model.problem?.title)
+            assertTrue(model.problem!!.isFault)
+            assertEquals(log, model.problem?.detail)
+            assertNotNull(model.problem?.retry)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `an older Mac without either field is read as before`() {
+        // No `modelID`: the failure is taken as this load's, as it always was.
+        assertEquals(LoadOutcome.Failed, LoadOutcome.of(failed("killed"), id))
+        assertEquals(LoadOutcome.Cancelled, LoadOutcome.of(failed("cancelled"), id))
+        assertEquals(LoadOutcome.Replaced, LoadOutcome.of(failed("killed", replaced = true), id))
+        assertEquals(LoadOutcome.Pending, LoadOutcome.of(loading, id))
+        // Another model's stopped load says nothing about this one.
+        val someoneElses = Status(
+            "Loading Test Model…",
+            interruptedLoads = listOf(LoadInterruption("qwen3-coder-30b", "replaced", id, "2026-09-19T11:04:38Z")),
+        )
+        assertEquals(LoadOutcome.Pending, LoadOutcome.of(someoneElses, id))
+    }
+
+    @Test
+    fun `the same model asked for again is followed to its end, not called replaced`() = runTest(dispatcher) {
+        // A newer load of the same model: the answer is the live status, nothing is listed.
+        val model = ModelsViewModel()
+        val mac = SlowMac(weights, weights, loaded)
+        try {
+            model.load(id, transport = mac)
+            runCurrent()
+            assertEquals("load", model.job?.kind)
+            advanceTimeBy(2 * ModelsViewModel.POLL_WITHOUT_EVENTS_MS + 1)
+            runCurrent()
+            assertNull(model.job)
+            assertNull(model.problem)
+            assertTrue(model.isLoaded(id))
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `a 409 for a load that was stopped is the Mac's sentence, and not a fault`() = runTest(dispatcher) {
+        val sentence = "Test Model was not loaded: another load (Qwen3-Coder 30B A3B) replaced it before it finished."
+        val model = ModelsViewModel()
+        val mac = object : HangingTransport() {
+            var reads = 0
+            override suspend fun load(request: LoadRequest): Status = throw TransportError.Conflict(sentence)
+            override suspend fun status(): Status {
+                reads++
+                return stopped("replaced", replacedBy = "qwen3-coder-30b")
+            }
+            override suspend fun installed(): List<InstalledModel> = listOf(onDisk)
+            override suspend fun catalog(category: String?, onlyRunnable: Boolean): List<CatalogModel> = emptyList()
+        }
+        try {
+            model.refresh(mac)
+            runCurrent()
+            mac.reads = 0
+            model.load(id, transport = mac)
+            runCurrent()
+            assertNull(model.job)
+            assertEquals("Test Model wasn't loaded", model.problem?.title)
+            assertEquals(sentence, model.problem?.message)
+            assertFalse(model.problem!!.isFault)
+            assertNull(model.problem?.retry)
+            assertEquals("the status is read once, for the list", 1, mac.reads)
+        } finally {
+            model.reset()
+        }
+    }
+
+    @Test
+    fun `a 409 because another load is running is still something to retry`() = runTest(dispatcher) {
+        val busy = "This Mac is already loading bonsai-2-27b (started 12s ago), and this route runs one load " +
+            "at a time. Nothing was changed."
+        val model = ModelsViewModel()
+        val mac = object : HangingTransport() {
+            override suspend fun load(request: LoadRequest): Status = throw TransportError.Conflict(busy)
+            override suspend fun status(): Status = Status("Loading Bonsai 2 27B…")
+            override suspend fun installed(): List<InstalledModel> = listOf(onDisk)
+            override suspend fun catalog(category: String?, onlyRunnable: Boolean): List<CatalogModel> = emptyList()
+        }
+        try {
+            model.refresh(mac)
+            runCurrent()
+            model.load(id, transport = mac)
+            runCurrent()
+            assertEquals("Couldn't load Test Model", model.problem?.title)
+            assertEquals(busy, model.problem?.message)
+            assertNotNull(model.problem?.retry)
+        } finally {
+            model.reset()
+        }
     }
 
     @Test

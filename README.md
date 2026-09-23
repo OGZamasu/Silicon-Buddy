@@ -19,7 +19,7 @@ over your own tailnet. Nothing public, no relay, no account.
 - `contract/` — the control API as JSON fixtures exported by the Mac app's own
   `ContractExportTests`, plus `routes.md`. Both apps round-trip every type against these,
   so a change on the Mac fails a build here before it fails a user. Re-export with
-  `./contract/refresh.sh`.
+  `./contract/refresh.sh <a silicon-optimizer clone>`.
 - `docs/PLAN.md` — the milestones and the decisions behind them.
 
 Two native apps on purpose: they share the contract and the design, not code.
@@ -63,8 +63,12 @@ queue, an image, or a mesh from a picture the Mac already has. The queue screen 
 `GET /video/queue` and the `job` events on `/events` read together — the queue knows
 what the work is and why it failed, the events know how far along it is — and its
 buttons are the Mac's own words: pause, resume, retry, remove, stop following, clear
-finished. There is no cancel, because a clip already handed to a node keeps rendering
-there, and the Mac will not claim otherwise.
+finished, and cancel render. Cancel render is on a clip only where the Mac marks it
+`canCancel` — its node said it can stop that one job — and asks first, because the GPU
+work so far is thrown away; the clip then says what the node answered. Everywhere else a
+clip handed to a node keeps rendering there, Stop following is all there is, and the Mac
+will not claim otherwise. A phone paired for chat only sees the queue and none of this.
+The iPhone and iPad have the same queue as a screen of their own.
 
 A render takes minutes, so a request that has to be waited for runs in a foreground
 service behind an ongoing notification, and a local notification says when the work is

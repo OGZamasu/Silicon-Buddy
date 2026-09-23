@@ -6,10 +6,12 @@ public struct RootView: View {
     @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
     let models: ModelsModel
+    let queue: QueueModel
 
-    public init(chat: ChatModel, models: ModelsModel) {
+    public init(chat: ChatModel, models: ModelsModel, queue: QueueModel) {
         self.chat = chat
         self.models = models
+        self.queue = queue
     }
 
     public var body: some View {
@@ -31,6 +33,8 @@ public struct RootView: View {
             // afresh from this one.
             models.reset()
             Task { await models.refresh(using: app.transport) }
+            // The last Mac's queue, and anything still on its way to it, is not this one's.
+            queue.connect(app.connectionGeneration)
         }
         // What the Mac pushes is what the list shows, and a load it started is followed by
         // it — `POST /load` may answer "still loading" and carry on — on whichever screen.
@@ -39,6 +43,7 @@ public struct RootView: View {
         }
         .onChange(of: app.events.isLive, initial: true) { _, live in models.eventsLive = live }
         .environment(models)
+        .environment(queue)
         // Answer checks arrive after the reply they are about, on the shared event
         // stream, so they are applied wherever the chat screen happens to be.
         .onChange(of: app.events.verdicts) { _, verdicts in
@@ -54,7 +59,7 @@ struct PhoneTabs: View {
     @State private var openConversation: String?
     @State private var tab = Tab.dashboard
 
-    enum Tab: Hashable { case dashboard, models, chat, settings }
+    enum Tab: Hashable { case dashboard, models, queue, chat, settings }
 
     var body: some View {
         TabView(selection: $tab) {
@@ -69,6 +74,12 @@ struct PhoneTabs: View {
             }
             .tabItem { Label("Models", systemImage: "square.stack.3d.up") }
             .tag(Tab.models)
+
+            NavigationStack {
+                QueueView()
+            }
+            .tabItem { Label("Queue", systemImage: "film.stack") }
+            .tag(Tab.queue)
 
             NavigationStack {
                 ConversationListView(model: chat) { id in openConversation = id }
@@ -110,7 +121,7 @@ struct PadSplit: View {
     @State private var columns = NavigationSplitViewVisibility.all
 
     enum SidebarItem: Hashable {
-        case dashboard, models, settings
+        case dashboard, models, queue, settings
         case conversation(String)
     }
 
@@ -122,6 +133,8 @@ struct PadSplit: View {
                         .tag(SidebarItem.dashboard)
                     Label("Models", systemImage: "square.stack.3d.up")
                         .tag(SidebarItem.models)
+                    Label("Render queue", systemImage: "film.stack")
+                        .tag(SidebarItem.queue)
                     Label("Settings", systemImage: "gearshape")
                         .tag(SidebarItem.settings)
                 }
@@ -177,6 +190,8 @@ struct PadSplit: View {
                     DashboardView()
                 case .models:
                     ModelsView()
+                case .queue:
+                    QueueView()
                 case .settings:
                     SettingsView(chat: chat)
                 case .conversation(let id):
