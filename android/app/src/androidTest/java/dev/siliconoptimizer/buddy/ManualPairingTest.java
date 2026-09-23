@@ -83,9 +83,9 @@ public class ManualPairingTest {
 
         // The sheet opens on Scan, which asks for the camera. Once it has been refused
         // twice Android stops asking and answers "denied" at once, so the dialog may or may
-        // not be there.
+        // not be there. Its package is Google's on a Play image and AOSP's elsewhere.
         UiObject2 deny = device.wait(Until.findObject(
-            By.res("com.android.permissioncontroller", "permission_deny_button")), 5_000);
+            By.res(Pattern.compile(".*permissioncontroller:id/permission_deny_button"))), 5_000);
         if (deny != null) deny.click();
 
         assertNotNull("a refused camera says so, and where to go instead",
