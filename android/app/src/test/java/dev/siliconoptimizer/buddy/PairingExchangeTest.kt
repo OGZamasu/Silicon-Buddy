@@ -19,6 +19,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -39,6 +40,14 @@ class PairingExchangeTest {
 
     private val invite = PairingInvite("100.64.0.9", 8788, "418203")
     private val paired = ServerConfig("100.64.0.9", 8788, "device-token", macName = "Test Mac")
+
+    /**
+     * An exchange on the test's clock but outside its scope: the exchange never lets itself
+     * be cancelled, so one a failed assertion left waiting would otherwise hold the test open
+     * for ever rather than letting it fail.
+     */
+    private fun TestScope.detachedExchange() =
+        PairingExchange(CoroutineScope(StandardTestDispatcher(testScheduler) + SupervisorJob()))
 
     @Test
     fun `the Mac answers after the screen that asked has gone, and its token is kept`() = runTest {
@@ -188,7 +197,7 @@ class PairingExchangeTest {
      */
     @Test
     fun `an answer lands on the screen state that is current when it lands`() = runTest {
-        val exchange = PairingExchange(this)
+        val exchange = detachedExchange()
         val answer = CompletableDeferred<ServerConfig>()
         val landedOnAsker = mutableListOf<ServerConfig>()
         val landedOnReopened = mutableListOf<Pair<PairingInvite, ServerConfig>>()
@@ -211,7 +220,7 @@ class PairingExchangeTest {
 
     @Test
     fun `with nothing on screen, the one that asked still writes the answer down`() = runTest {
-        val exchange = PairingExchange(this)
+        val exchange = detachedExchange()
         val answer = CompletableDeferred<ServerConfig>()
         var stored: ServerConfig? = null
         val asker = PairingExchange.Lander { _, config -> stored = config }
@@ -228,7 +237,7 @@ class PairingExchangeTest {
     /** The dialog for a second link: it waits, and saying no to it is still fine. */
     @Test
     fun `a second invite waits for the one being spent`() = runTest {
-        val exchange = PairingExchange(this)
+        val exchange = detachedExchange()
         val answer = CompletableDeferred<ServerConfig>()
         val other = PairingInvite("100.64.0.10", 8788, "135790")
         assertEquals(PairingExchange.Phase.Ready, exchange.phaseOf(other))
@@ -252,7 +261,7 @@ class PairingExchangeTest {
 
     @Test
     fun `one code at a time`() = runTest {
-        val exchange = PairingExchange(this)
+        val exchange = detachedExchange()
         val answer = CompletableDeferred<ServerConfig>()
         var dialled = 0
         assertTrue(exchange.start(invite, exchange = { dialled++; answer.await() }, store = { _, _ -> }))

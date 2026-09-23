@@ -72,7 +72,14 @@ public class ManualPairingTest {
 
     @After
     public void tearDown() throws Exception {
-        mac.close();
+        // A code a failed test left with the Mac is the app's, not the test's, and the app may
+        // outlive the test: answered, it does not hold up the next test's pairing.
+        CountDownLatch held = mac != null ? mac.pairHeld : null;
+        if (held != null && held.getCount() > 0) {
+            held.countDown();
+            Thread.sleep(2_000);
+        }
+        if (mac != null) mac.close();
         // A prompt a failed test never answered would stand over every test after it.
         if (device.findObject(PROMPT) != null) {
             clickDeny();
@@ -252,16 +259,18 @@ public class ManualPairingTest {
             device.findObject(By.text("Waiting for the other pairing (127.0.0.1:" + mac.port() + ") to finish…")));
         UiObject2 notNow = device.findObject(By.text("Not now"));
         assertNotNull(notNow);
-        assertTrue("Not now is disabled while another code is spent", notNow.isEnabled());
+        assertTrue("Not now is disabled while another code is spent", takesTaps(notNow));
         UiObject2 pair = device.findObject(By.text(Pattern.compile("Pair|Replace this Mac…")));
         assertNotNull(pair);
-        assertTrue("a second code could start while the first is out", !pair.isEnabled());
+        assertTrue("a second code could start while the first is out", !takesTaps(pair));
 
         mac.pairHeld.countDown();
         assertNotNull("once the first has paired, the second asks to replace it",
             device.wait(Until.findObject(By.textStartsWith("This replaces First Mac")), WAIT));
-        UiObject2 replace = device.wait(Until.findObject(By.text("Replace this Mac…").enabled(true)), WAIT);
-        assertNotNull(replace);
+        assertTrue("and may, now that nothing else is being spent", waitFor(() -> {
+            UiObject2 replace = device.findObject(By.text("Replace this Mac…"));
+            return replace != null && takesTaps(replace);
+        }));
         device.findObject(By.text("Not now")).click();
         assertTrue(device.wait(Until.gone(By.text("Code 246 802")), WAIT));
         assertTrue("the second code was spent", mac.count("POST", "/buddy/pair") == 1);
@@ -295,6 +304,15 @@ public class ManualPairingTest {
         assertNotNull("the reopened app never showed the Mac the code paired with",
             device.wait(Until.findObject(By.text("Late Mac")), WAIT));
         assertTrue("and does not talk to it", waitFor(() -> mac.saw("GET", "/status")));
+    }
+
+    /**
+     * Whether the control labelled {@code label} takes a tap. Compose gives a button's text a
+     * node of its own, which always reads as enabled; the button is its parent.
+     */
+    private static boolean takesTaps(UiObject2 label) {
+        UiObject2 control = label.getParent();
+        return control != null && control.isEnabled();
     }
 
     /** The code form, filled with {@code code} for this test's Mac, and its Pair tapped. */
