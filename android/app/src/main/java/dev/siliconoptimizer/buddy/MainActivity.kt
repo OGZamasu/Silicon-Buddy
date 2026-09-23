@@ -93,8 +93,10 @@ import dev.siliconoptimizer.buddy.ondevice.OnDeviceNotices
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsSection
 import dev.siliconoptimizer.buddy.ondevice.PhoneModelsViewModel
 import dev.siliconoptimizer.buddy.transport.Reachability
+import dev.siliconoptimizer.buddy.pairing.MAC_TOO_OLD_FOR_CODES
 import dev.siliconoptimizer.buddy.pairing.PairingConfirmation
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
+import dev.siliconoptimizer.buddy.pairing.PairingMode
 import dev.siliconoptimizer.buddy.pairing.PairingScreen
 import dev.siliconoptimizer.buddy.reach.BuddyLink
 import dev.siliconoptimizer.buddy.reach.QuickPrompt
@@ -306,6 +308,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
         mutableStateOf(Destination.Dashboard)
     }
     var pairing by remember { mutableStateOf(false) }
+    // Set when a code met a Mac without `/buddy/pair`: the sheet opens where that Mac can
+    // still be reached from an emulator, saying why.
+    var pairingMacTooOld by remember { mutableStateOf(false) }
     var refusedLink by remember { mutableStateOf<String?>(null) }
     var openConversation by rememberSaveable { mutableStateOf<String?>(null) }
     // A new conversation on a Mac that keeps them is made *there*, which is a round trip:
@@ -823,8 +828,16 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     }
 
     if (pairing) {
-        ModalBottomSheet(onDismissRequest = { pairing = false }, sheetState = sheetState) {
-            PairingScreen(app = app, onDone = { pairing = false })
+        ModalBottomSheet(
+            onDismissRequest = { pairing = false; pairingMacTooOld = false },
+            sheetState = sheetState,
+        ) {
+            PairingScreen(
+                app = app,
+                onDone = { pairing = false; pairingMacTooOld = false },
+                startOn = if (pairingMacTooOld) PairingMode.Developer else PairingMode.Scan,
+                notice = if (pairingMacTooOld) MAC_TOO_OLD_FOR_CODES else null,
+            )
         }
     }
 
@@ -846,8 +859,9 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
             app = app,
             invite = invite,
             onDismiss = { app.pendingInvite = null; arriving.value = null },
-            onNeedsAdvanced = {
+            onMacTooOld = {
                 app.pendingInvite = null
+                pairingMacTooOld = true
                 pairing = true
             },
         )

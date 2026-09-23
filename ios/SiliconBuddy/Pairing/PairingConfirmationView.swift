@@ -121,8 +121,7 @@ public struct PairingConfirmationView: View {
                 dismiss()
             } catch let error as TransportError where error.isMissingRoute {
                 working = false
-                failure = "That Mac doesn't support pairing codes yet. "
-                    + "Use Advanced in Settings and enter its control token instead."
+                failure = PairingView.macTooOldForCodes
             } catch {
                 working = false
                 failure = error.localizedDescription

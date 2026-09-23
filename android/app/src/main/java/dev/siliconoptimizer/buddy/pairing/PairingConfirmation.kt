@@ -33,7 +33,7 @@ fun PairingConfirmation(
     app: AppState,
     invite: PairingInvite,
     onDismiss: () -> Unit,
-    onNeedsAdvanced: () -> Unit,
+    onMacTooOld: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var working by remember { mutableStateOf(false) }
@@ -51,7 +51,7 @@ fun PairingConfirmation(
             } catch (error: TransportError) {
                 working = false
                 if (error.isMissingRoute) {
-                    onNeedsAdvanced()
+                    onMacTooOld()
                 } else {
                     failure = error.message
                 }

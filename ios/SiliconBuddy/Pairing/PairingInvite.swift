@@ -2,6 +2,7 @@ import Foundation
 
 /// What the QR on the Mac's screen encodes:
 /// `siliconbuddy://pair?host=<tailnet address>&port=<port>&code=<6 digits>`.
+/// The same three things, typed in by hand, come through `typed(address:code:port:)`.
 public struct PairingInvite: Sendable, Equatable {
     public var host: String
     public var port: Int
@@ -20,6 +21,7 @@ public struct PairingInvite: Sendable, Equatable {
         case missing(String)
         case badPort(String)
         case badCode(String)
+        case noAddress
         case hostNotOnTailnet(String)
 
         public var errorDescription: String? {
@@ -32,6 +34,8 @@ public struct PairingInvite: Sendable, Equatable {
             case .badPort(let value): "\"\(value)\" isn't a port number."
             case .badCode(let value):
                 "\"\(value)\" isn't a six-digit pairing code."
+            case .noAddress:
+                "Type the Mac's address too. Silicon Optimizer shows it beside the code."
             case .hostNotOnTailnet(let host):
                 "\(host) isn't a tailnet address. " + TailnetHost.explanation
             }
@@ -79,6 +83,73 @@ public struct PairingInvite: Sendable, Equatable {
             throw ParseError.badCode(code)
         }
         return PairingInvite(host: host, port: port, code: code)
+    }
+
+    /// The Mac's Silicon Buddy listener. Fixed across launches, so a code read off the
+    /// screen needs only the address the Mac prints beside it.
+    public static let defaultPort = 8788
+
+    /// Whether pasted text is a whole pairing link rather than an address.
+    public static func isLink(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().hasPrefix("siliconbuddy:")
+    }
+
+    /// What someone types when the camera won't do: the code the Mac shows under its QR,
+    /// the address beside it, and — only if it isn't `defaultPort` — a port. A pasted
+    /// `siliconbuddy://pair?…` link in the address field is read as the link.
+    ///
+    /// Held to the same rules as a scan, because it ends at the same `/buddy/pair`. The
+    /// code may carry the space the Mac shows it with, or a dash; nothing else.
+    public static func typed(
+        address: String, code: String, port: String = ""
+    ) throws -> PairingInvite {
+        if isLink(address) { return try parse(address) }
+        var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        var portText = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        // `100.64.0.9:8788`, as the address is often written. One colon only: an IPv6
+        // address is all colons and is never split.
+        if host.filter({ $0 == ":" }).count == 1, let colon = host.firstIndex(of: ":") {
+            portText = host[host.index(after: colon)...]
+                .trimmingCharacters(in: .whitespaces)
+            host = host[..<colon].trimmingCharacters(in: .whitespaces)
+        }
+        guard !host.isEmpty else { throw ParseError.noAddress }
+        guard TailnetHost.isAllowed(host) else { throw ParseError.hostNotOnTailnet(host) }
+        let portNumber: Int
+        if portText.isEmpty {
+            portNumber = defaultPort
+        } else {
+            guard let value = Int(portText), (1...65535).contains(value) else {
+                throw ParseError.badPort(portText)
+            }
+            portNumber = value
+        }
+        let digits = code.filter { !$0.isWhitespace && $0 != "-" }
+        guard digits.count == 6, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber)
+        else {
+            throw ParseError.badCode(code.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return PairingInvite(host: host, port: portNumber, code: digits)
+    }
+
+    /// Spends the code at `POST /buddy/pair` — with no token, because the code is the
+    /// credential — and returns where and how this device talks to the Mac from now on.
+    /// However the invite arrived, this is the one way it becomes a token.
+    public func exchange(
+        deviceName: String, platform: String,
+        client: @Sendable (ServerConfig) -> any ControlTransport = { ControlClient(config: $0) }
+    ) async throws -> ServerConfig {
+        guard TailnetHost.isAllowed(host) else {
+            throw TransportError.forbidden(TailnetHost.explanation)
+        }
+        let paired = try await client(ServerConfig(host: host, port: port, token: ""))
+            .pair(code: code, deviceName: deviceName, platform: platform)
+        return ServerConfig(
+            host: host, port: paired.port, token: paired.token,
+            macName: paired.macName, deviceID: paired.deviceID,
+            scope: BuddyAPI.DeviceScope(wire: paired.scope)
+        )
     }
 
     /// The other direction, so the Mac's format has one definition in this repo too and
