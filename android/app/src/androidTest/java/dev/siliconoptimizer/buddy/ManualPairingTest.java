@@ -62,6 +62,9 @@ public class ManualPairingTest {
     @After
     public void tearDown() throws Exception {
         mac.close();
+        // A prompt a failed test never answered would stand over every test after it.
+        UiObject2 prompt = device.findObject(By.pkg(Pattern.compile(".*permissioncontroller")));
+        if (prompt != null) refuseTheCamera();
         device.pressHome();
     }
 
@@ -81,12 +84,8 @@ public class ManualPairingTest {
         assertNotNull("Settings has no pairing button", open);
         open.click();
 
-        // The sheet opens on Scan, which asks for the camera. Once it has been refused
-        // twice Android stops asking and answers "denied" at once, so the dialog may or may
-        // not be there. Its package is Google's on a Play image and AOSP's elsewhere.
-        UiObject2 deny = device.wait(Until.findObject(
-            By.res(Pattern.compile(".*permissioncontroller:id/permission_deny_button"))), 5_000);
-        if (deny != null) deny.click();
+        // The sheet opens on Scan, which asks for the camera.
+        refuseTheCamera();
 
         assertNotNull("a refused camera says so, and where to go instead",
             device.wait(Until.findObject(By.text("Camera denied. Type the code your Mac shows instead.")), WAIT));
@@ -185,10 +184,22 @@ public class ManualPairingTest {
         UiObject2 open = device.wait(Until.findObject(By.text(Pattern.compile("Pair with (a|another) Mac"))), WAIT);
         assertNotNull("Settings has no pairing button", open);
         open.click();
-        UiObject2 deny = device.wait(Until.findObject(
-            By.res(Pattern.compile(".*permissioncontroller:id/permission_deny_button"))), 5_000);
-        if (deny != null) deny.click();
+        refuseTheCamera();
         assertNotNull("the code form", device.wait(Until.findObject(By.text("Pairing code")), WAIT));
+    }
+
+    /**
+     * Answers the camera prompt with no, when there is one. The first time Android asks,
+     * the button is "Don't allow"; asked again after a no, it is the don't-ask-again one,
+     * with another id; and once refused twice Android stops asking and answers "denied" at
+     * once, so there may be no prompt at all. Left unanswered, the prompt stays over the
+     * app for every test after this one. Its package is Google's on a Play image and
+     * AOSP's elsewhere.
+     */
+    private void refuseTheCamera() {
+        UiObject2 deny = device.wait(Until.findObject(By.res(Pattern.compile(
+            ".*permissioncontroller:id/permission_deny(_and_dont_ask_again)?_button"))), 5_000);
+        if (deny != null) deny.click();
     }
 
     /**
