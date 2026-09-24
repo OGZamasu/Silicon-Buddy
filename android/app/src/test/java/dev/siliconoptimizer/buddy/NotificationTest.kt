@@ -299,6 +299,61 @@ class NotificationTest {
         assertEquals("Your image is ready", announcer.notices(running, done).single().title)
     }
 
+    // MARK: - Renders first seen already over
+
+    private fun render(status: String, id: String = "image-6F1C2A40-0000-4000-8000-000000000001") =
+        JobProgress(id = id, kind = "image", status = status, title = "FLUX.2 klein")
+
+    /**
+     * The Mac says how its last image and mesh renders ended to every phone that opens
+     * `/events` — a cold start, or the app coming back to the screen. An ending that is the
+     * first this phone hears of a render happened while it was not looking, and was said at
+     * the time or not at all: announcing it rang "Your image is ready" for a picture made an
+     * hour ago, on every start.
+     */
+    @Test
+    fun `a render first seen already over is history, not news`() {
+        for (primedFirst in listOf(true, false)) {
+            val announcer = JobAnnouncer()
+            if (primedFirst) announcer.prime(QueueState.empty)
+            val opening = QueueState.empty.applying(render("completed"))
+            val said = announcer.notices(QueueState.empty, opening)
+            if (!primedFirst) announcer.prime(opening)
+            assertTrue("primed first: $primedFirst", said.isEmpty())
+            // Heard again in the next opening: still nothing.
+            assertTrue(announcer.notices(opening, opening.applying(render("completed"))).isEmpty())
+        }
+    }
+
+    /** One the phone watched start is still news when it ends, the same as ever. */
+    @Test
+    fun `a render seen running is announced when it ends`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running)
+        val done = running.applying(render("completed"))
+        assertEquals("Your image is ready", announcer.notices(running, done).single().title)
+    }
+
+    /**
+     * A render this phone asked for, seen running while the service held its request. The
+     * service says when it is done. The stream's word for the same ending can come much
+     * later — the app back on the screen after a minute or more — and it is still the
+     * service's render, not a second piece of news.
+     */
+    @Test
+    fun `a render the service held is left to it, however late its ending arrives`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true })
+
+        // The service's claim has lapsed by the time the ending is heard.
+        val done = running.applying(render("completed"))
+        assertTrue(announcer.notices(running, done, handledElsewhere = { false }).isEmpty())
+    }
+
     @Test
     fun `forgetting a Mac forgets what was said about its work`() {
         val announcer = JobAnnouncer()

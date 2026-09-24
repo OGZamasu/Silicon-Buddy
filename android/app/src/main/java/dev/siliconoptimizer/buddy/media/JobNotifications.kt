@@ -55,7 +55,8 @@ object JobNotifications {
      * Only the crossing into a finished state is worth an alert. A job first seen
      * already finished counts — the phone may have been asleep while the Mac worked —
      * but a repeat of the same terminal state does not, or every poll of the queue
-     * would ring.
+     * would ring. (Whether a job first seen finished is worth asking about at all is the
+     * announcer's call: for an image or a mesh it is not; see [JobAnnouncer.notices].)
      */
     fun transition(previous: MediaJob?, next: MediaJob): JobNotice? {
         if (!next.state.isTerminal) return null
@@ -138,6 +139,14 @@ class JobAnnouncer {
     private val announced = mutableMapOf<String, JobState>()
     private var primed = false
 
+    /**
+     * Renders seen running while the service held this phone's request of their kind: the
+     * service's to announce, whenever their ending reaches the stream. The kind-wide claim
+     * it makes lapses a minute after the request answers, and the app can come back to the
+     * screen long after that — to hear the ending again, in the Mac's opening frames.
+     */
+    private val claimed = mutableSetOf<String>()
+
     /** True once a queue has been read; nothing is announced before that. */
     val isPrimed: Boolean get() = primed
 
@@ -174,20 +183,32 @@ class JobAnnouncer {
             if (!job.state.isTerminal) {
                 // Queued again, or rendering again: the next ending is news.
                 announced.remove(job.id)
+                if (handledElsewhere(job)) claimed += job.id
                 continue
             }
             if (announced[job.id] == job.state) continue
             announced[job.id] = job.state
-            if (handledElsewhere(job)) continue
-            JobNotifications.transition(previous.job(job.id), job)?.let { notices.add(it) }
+            if (job.id in claimed || handledElsewhere(job)) continue
+            val before = previous.job(job.id)
+            // An image or a mesh is a `job` event and nothing else, and the Mac tells every
+            // phone that opens `/events` how its last few ended. One whose first word here is
+            // its ending finished while this phone was not looking — before a cold start, or
+            // while the app was away — and was said then or not at all. A clip is different:
+            // the video queue this phone was primed from is the history, and a clip first
+            // seen finished after that is one that finished between two readings.
+            if (before == null && !job.isQueued) continue
+            JobNotifications.transition(before, job)?.let { notices.add(it) }
         }
         // A clip the Mac has forgotten cannot be announced again either way.
-        announced.keys.retainAll(next.jobs.map { it.id }.toSet())
+        val present = next.jobs.map { it.id }.toSet()
+        announced.keys.retainAll(present)
+        claimed.retainAll(present)
         return notices
     }
 
     fun forget() {
         announced.clear()
+        claimed.clear()
         primed = false
     }
 }
