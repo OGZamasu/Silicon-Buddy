@@ -11,13 +11,8 @@ public struct PairingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
-    #if targetEnvironment(simulator)
-    @State private var mode: Mode = .developer
-    @State private var developerHost = "127.0.0.1"
-    #else
-    @State private var mode: Mode = .scan
-    @State private var developerHost = ""
-    #endif
+    @State private var mode: Mode = PairingView.opening().mode
+    @State private var developerHost = PairingView.opening().developerHost
     @State private var cameraState: QRScannerView.CameraState = .scanning
     @State private var host = ""
     @State private var code = ""
@@ -42,6 +37,24 @@ public struct PairingView: View {
         static func offered(local: Bool = TailnetHost.allowsLocal) -> [Mode] {
             local ? allCases : allCases.filter { $0 != .developer }
         }
+    }
+
+    /// Where the sheet opens. The Simulator has no camera and shares the Mac's loopback, so
+    /// there a build that offers Developer opens on it with 127.0.0.1 filled in. Everywhere
+    /// else — a Release build in the Simulator included, which has no Developer form — Scan.
+    static func opening(
+        simulator: Bool = runsInSimulator, local: Bool = TailnetHost.allowsLocal
+    ) -> (mode: Mode, developerHost: String) {
+        simulator && Mode.offered(local: local).contains(.developer)
+            ? (.developer, "127.0.0.1") : (.scan, "")
+    }
+
+    static var runsInSimulator: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        false
+        #endif
     }
 
     /// Why the Developer form will not send the Mac's control token to `host`, if it will

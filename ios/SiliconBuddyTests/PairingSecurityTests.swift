@@ -84,6 +84,27 @@ final class PairingSecurityTests: XCTestCase {
         XCTAssertEqual(PairingView.Mode.offered(local: true), [.scan, .code, .developer])
     }
 
+    /// The Simulator's DEBUG build opens on Developer with loopback filled in. A Release
+    /// build — in the Simulator too — has no Developer form, so it never opens on one.
+    func testTheSheetOpensOnlyOnAFormThisBuildOffers() {
+        for simulator in [true, false] {
+            for local in [true, false] {
+                let opening = PairingView.opening(simulator: simulator, local: local)
+                XCTAssertTrue(
+                    PairingView.Mode.offered(local: local).contains(opening.mode),
+                    "simulator \(simulator), local \(local) opens on \(opening.mode)"
+                )
+            }
+        }
+        let simulatorDebug = PairingView.opening(simulator: true, local: true)
+        XCTAssertEqual(simulatorDebug.mode, .developer)
+        XCTAssertEqual(simulatorDebug.developerHost, "127.0.0.1")
+        let simulatorRelease = PairingView.opening(simulator: true, local: false)
+        XCTAssertEqual(simulatorRelease.mode, .scan)
+        XCTAssertEqual(simulatorRelease.developerHost, "")
+        XCTAssertEqual(PairingView.opening(simulator: false, local: true).mode, .scan)
+    }
+
     func testAnAddressIsParsedNotScannedForDigits() {
         XCTAssertFalse(TailnetHost.isAllowed("100.064.0.1"), "No octal-looking octets")
         XCTAssertFalse(TailnetHost.isAllowed("100.64.0"), "Three parts is not an address")
