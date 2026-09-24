@@ -241,8 +241,9 @@ public struct ControlClient: ControlTransport {
     public func sendMessage(
         conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
-        // A 404 here is about the conversation, not the route: only a Mac that listed
-        // its conversations is asked this, so it serves them. Reported as a missing route
+        // A 404 here is about the conversation, not the route: only a Mac that serves
+        // `/conversations` is asked this — it listed them, or has just made one — and the
+        // Mac shipped these routes together. Reported as a missing route
         // it would mean "this Mac keeps no conversations", and one deleted thread would
         // move every conversation onto the phone.
         chatEventStream(

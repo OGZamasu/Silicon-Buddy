@@ -141,6 +141,10 @@ public enum OneShotAsk {
             }
         } catch let error as TransportError where error.isMissingRoute {
             return nil
+        } catch TransportError.notFound where !sawAnything {
+            // The conversation this ask made a moment ago is gone already. Nothing is
+            // written yet, so the plain route can still answer.
+            return nil
         } catch let error as TransportError {
             // Given up on — Siri or Shortcuts stopped waiting, the sheet was closed — the
             // socket closed under the read, and that failure is the cancellation's.

@@ -89,6 +89,33 @@ final class OneShotAskTests: XCTestCase {
         XCTAssertEqual(transport.chatCallCount, 0)
     }
 
+    /// The conversation an ask has just made can be gone by the time its message arrives
+    /// (deleted on the Mac in between). That is a 404 about the conversation, and the
+    /// question still has the plain route.
+    func testAConversationGoneBeforeItsMessageFallsBackToThePlainStream() async throws {
+        let mac = try LoopbackServer()
+        defer { mac.stop() }
+        mac.reply(
+            "/conversations", 200,
+            #"{"id":"C1","title":"Shared","updatedAt":"2026-09-18T09:41:12Z","messageCount":0}"#
+        )
+        mac.reply("/conversations/C1/messages", 404, #"{"error":"No conversation with id C1."}"#)
+        mac.events("/chat/stream", """
+        event: token
+        data: {"text":"From the plain stream."}
+
+        event: finished
+        data: {"promptTokens":1,"generatedTokens":4,"tokensPerSecond":10}
+
+        """)
+        let client = ControlClient(
+            config: ServerConfig(host: "127.0.0.1", port: mac.port, token: "device-token")
+        )
+        let outcome = try await OneShotAsk.send(message: "Why?", using: client, defaults: defaults)
+        XCTAssertEqual(outcome.answer, "From the plain stream.")
+        XCTAssertFalse(outcome.storedOnMac)
+    }
+
     func testAMacWithoutStreamingIsAskedOnPlainChat() async throws {
         let transport = StubTransport()
         transport.chatResult = .success(
