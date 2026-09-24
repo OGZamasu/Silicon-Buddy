@@ -5,10 +5,17 @@ final class TransportErrorTests: XCTestCase {
 
     // MARK: - URLSession failures
 
-    func testConnectionRefusedMeansTheAppIsNotRunning() {
-        // The Mac answered the SYN with a RST: the machine is up, the port is closed.
+    func testConnectionRefusedDoesNotProveTheAppIsClosed() {
+        // A wrong port and a closed app produce the same transport error.
         let error = URLError(.cannotConnectToHost)
         XCTAssertEqual(TransportError.from(urlError: error), .appNotRunning)
+        XCTAssertTrue(TransportError.appNotRunning.errorDescription!.contains("address and port"))
+        // The advice a paired iPhone gets too, where the app being closed is the likely
+        // cause and neither the Simulator nor control.json means anything.
+        XCTAssertEqual(
+            TransportError.appNotRunning.recoverySuggestion,
+            "Open Silicon Optimizer and check the address and port."
+        )
     }
 
     func testTimeoutIsItsOwnThing() {

@@ -4,7 +4,7 @@ package dev.siliconoptimizer.buddy.transport
  * What a reachability probe found.
  *
  * Three failures, three different fixes, and the app says which one it is instead of
- * spinning: the tailnet is off, the Mac app is closed, or this device is no longer
+ * spinning: the tailnet is off, nothing is listening at the selected port, or this device is no longer
  * paired.
  */
 sealed interface Reachability {
@@ -36,7 +36,7 @@ sealed interface Reachability {
             is Checking -> "Checking…"
             is Ready -> "Connected"
             is Unauthorized -> "Not paired"
-            is AppNotRunning -> "App not running"
+            is AppNotRunning -> "Connection refused"
             is Unreachable -> "Unreachable"
             is Failed -> "Error"
         }
@@ -50,7 +50,7 @@ sealed interface Reachability {
                 loadedModel?.let { "$app — $it" } ?: app
             }
             is Unauthorized -> "The Mac refused this device's token. Pair again."
-            is AppNotRunning -> "The Mac is awake but Silicon Optimizer is closed."
+            is AppNotRunning -> TransportError.AppNotRunning.message.orEmpty()
             is Unreachable -> "Nothing answered at $host. Is Tailscale on?"
             is Failed -> reason
         }
@@ -60,7 +60,7 @@ sealed interface Reachability {
  * Probes a Mac in the order that separates the three failures.
  *
  * `/health` is deliberately unauthenticated on the Mac exactly so a client can tell
- * "app not running" from "bad token" — this is the client half of that bargain.
+ * "nothing listening" from "bad token" — this is the client half of that bargain.
  */
 class ConnectivityProbe(private val transport: ControlTransport) {
 

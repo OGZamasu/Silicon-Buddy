@@ -3,7 +3,8 @@ import Foundation
 /// What a reachability probe found.
 ///
 /// Three failures, three different fixes, and the app says which one it is instead of
-/// spinning: the tailnet is off, the Mac app is closed, or this device is no longer paired.
+/// spinning: the tailnet is off, nothing is listening at that address and port, or this
+/// device is no longer paired.
 public enum Reachability: Sendable, Equatable {
     case unknown
     case checking
@@ -30,7 +31,7 @@ public enum Reachability: Sendable, Equatable {
         case .checking: "Checking…"
         case .ready: "Connected"
         case .unauthorized: "Not paired"
-        case .appNotRunning: "App not running"
+        case .appNotRunning: "Connection refused"
         case .unreachable: "Unreachable"
         case .failed: "Error"
         }
@@ -43,7 +44,7 @@ public enum Reachability: Sendable, Equatable {
         case .ready(let version, let model):
             model.map { "\(Self.appName(version)) — \($0)" } ?? Self.appName(version)
         case .unauthorized: "The Mac refused this device's token. Pair again."
-        case .appNotRunning: "The Mac is awake but Silicon Optimizer is closed."
+        case .appNotRunning: TransportError.appNotRunning.errorDescription ?? "Connection refused"
         case .unreachable(let host): "Nothing answered at \(host). Is Tailscale on?"
         case .failed(let message): message
         }
@@ -70,7 +71,7 @@ public enum Reachability: Sendable, Equatable {
 /// Probes a Mac in the order that separates the three failures.
 ///
 /// `/health` is deliberately unauthenticated on the Mac exactly so a client can tell
-/// "app not running" from "bad token" — this is the client half of that bargain.
+/// "connection refused" from "bad token" — this is the client half of that bargain.
 public struct ConnectivityProbe: Sendable {
     private let transport: any ControlTransport
 

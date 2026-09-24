@@ -11,7 +11,7 @@ import java.net.UnknownHostException
  * Why a call to the Mac did not answer.
  *
  * The distinctions here are the ones a person can act on. "Unreachable" means turn
- * Tailscale on; "the app isn't running" means open Silicon Optimizer; "unauthorized"
+ * Tailscale on; "connection refused" means check the app, address and port; "unauthorized"
  * means pair again. Collapsing those into one "network error" would make the app
  * useless exactly when something is wrong.
  */
@@ -22,7 +22,7 @@ sealed class TransportError(message: String) : Exception(message) {
 
     /** The address answered but nothing is listening on the port. */
     data object AppNotRunning :
-        TransportError("The Mac answered, but Silicon Optimizer isn't running on it.")
+        TransportError("Nothing is listening at this address and port. Open Silicon Optimizer and check the address and port.")
 
     data object TimedOut : TransportError("The Mac took too long to answer.")
 
@@ -152,7 +152,7 @@ sealed class TransportError(message: String) : Exception(message) {
     val recovery: String?
         get() = when (this) {
             is Unreachable -> "Open Tailscale, then pull to refresh."
-            is AppNotRunning -> "Open Silicon Optimizer on the Mac."
+            is AppNotRunning -> "Open Silicon Optimizer and check the address and port."
             is Unauthorized -> "Settings, Silicon Buddy, Pair a device."
             is Forbidden -> "Pair again from the Mac with full control."
             is Conflict -> "Wait for the answer, or start another conversation."
@@ -172,8 +172,8 @@ sealed class TransportError(message: String) : Exception(message) {
          * Maps what the socket layer says.
          *
          * [ConnectException] is the interesting one: the connection was actively
-         * refused, which means the host is there and the port is not — the Mac is awake
-         * and the app is closed.
+         * refused, which means nothing accepted the connection at that address and port.
+         * The app may be closed, or the selected address or port may be wrong.
          */
         fun from(error: IOException, host: String): TransportError = when (error) {
             is SocketTimeoutException -> TimedOut

@@ -84,6 +84,39 @@ final class PairingSecurityTests: XCTestCase {
         XCTAssertEqual(PairingView.Mode.offered(local: true), [.scan, .code, .developer])
     }
 
+    /// The Simulator's DEBUG build opens on Developer with loopback filled in. A Release
+    /// build — in the Simulator too — has no Developer form, so it never opens on one.
+    func testTheSheetOpensOnlyOnAFormThisBuildOffers() {
+        for simulator in [true, false] {
+            for local in [true, false] {
+                let opening = PairingView.opening(simulator: simulator, local: local)
+                XCTAssertTrue(
+                    PairingView.Mode.offered(local: local).contains(opening.mode),
+                    "simulator \(simulator), local \(local) opens on \(opening.mode)"
+                )
+            }
+        }
+        let simulatorDebug = PairingView.opening(simulator: true, local: true)
+        XCTAssertEqual(simulatorDebug.mode, .developer)
+        XCTAssertEqual(simulatorDebug.developerHost, "127.0.0.1")
+        let simulatorRelease = PairingView.opening(simulator: true, local: false)
+        XCTAssertEqual(simulatorRelease.mode, .scan)
+        XCTAssertEqual(simulatorRelease.developerHost, "")
+        XCTAssertEqual(PairingView.opening(simulator: false, local: true).mode, .scan)
+    }
+
+    /// The note under Enter code's address names Developer, so it is shown only where
+    /// Developer is.
+    func testACodeTypedWithALocalAddressIsPointedAtTheTailnetOnlyWhereDeveloperIsOffered() {
+        for address in ["127.0.0.1", "localhost", "::1", "10.0.2.2", "127.0.0.1:8788"] {
+            XCTAssertNotNil(PairingView.codeAddressHint(address, local: true), address)
+            XCTAssertNil(PairingView.codeAddressHint(address, local: false), address)
+        }
+        for address in ["100.64.0.9", "100.64.0.9:8788", "fd7a:115c:a1e0::9", "", "evil.example.com"] {
+            XCTAssertNil(PairingView.codeAddressHint(address, local: true), address)
+        }
+    }
+
     func testAnAddressIsParsedNotScannedForDigits() {
         XCTAssertFalse(TailnetHost.isAllowed("100.064.0.1"), "No octal-looking octets")
         XCTAssertFalse(TailnetHost.isAllowed("100.64.0"), "Three parts is not an address")

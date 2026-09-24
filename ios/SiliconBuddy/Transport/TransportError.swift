@@ -3,14 +3,13 @@ import Foundation
 /// Why a call to the Mac did not answer.
 ///
 /// The distinctions here are the ones a person can act on. "Unreachable" means turn
-/// Tailscale on; "the app is not running" means open Silicon Optimizer; "unauthorized"
+/// Tailscale on; "connection refused" means check the listener and port; "unauthorized"
 /// means pair again. Collapsing those into one "network error" would make the app
 /// useless exactly when something is wrong.
 public enum TransportError: Error, Equatable, Sendable {
     /// Nothing at that address answered: wrong host, tailnet down, Mac asleep.
     case unreachable(String)
-    /// The address answered but nothing is listening on the port: the Mac is up,
-    /// Silicon Optimizer is not.
+    /// The connection was refused. The app may be closed, or the address/port may be wrong.
     case appNotRunning
     /// The request took too long to get anywhere.
     case timedOut
@@ -62,7 +61,7 @@ extension TransportError: LocalizedError {
         case .unreachable(let host):
             "Can't reach \(host). Check that Tailscale is on and the Mac is awake."
         case .appNotRunning:
-            "The Mac answered, but Silicon Optimizer isn't running on it."
+            "Nothing is listening at this address and port. Open Silicon Optimizer and check the address and port."
         case .timedOut:
             "The Mac took too long to answer."
         case .unauthorized:
@@ -107,7 +106,7 @@ extension TransportError: LocalizedError {
     public var recoverySuggestion: String? {
         switch self {
         case .unreachable: "Open Tailscale, then pull to refresh."
-        case .appNotRunning: "Open Silicon Optimizer on the Mac."
+        case .appNotRunning: "Open Silicon Optimizer and check the address and port."
         case .unauthorized: "Settings → Silicon Buddy → Pair a device."
         case .forbidden: "Pair again from the Mac with full control."
         case .conflict: "Wait for the answer, or start another conversation."
@@ -146,8 +145,7 @@ extension TransportError {
     /// Maps what URLSession and the server say into the vocabulary above.
     ///
     /// `NSURLErrorCannotConnectToHost` is the interesting one: the TCP connection was
-    /// actively refused, which means the host is there and the port is not — the Mac is
-    /// awake and the app is closed.
+    /// refused. That alone cannot distinguish a closed app from the wrong address or port.
     public static func from(urlError error: URLError) -> TransportError {
         switch error.code {
         case .cancelled:

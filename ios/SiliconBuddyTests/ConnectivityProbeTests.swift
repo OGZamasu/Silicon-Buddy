@@ -18,12 +18,14 @@ final class ConnectivityProbeTests: XCTestCase {
         XCTAssertTrue(result.isReady)
     }
 
-    func testTheMacIsAwakeButTheAppIsClosed() async {
+    func testARefusedConnectionAsksForTheAddressAndPort() async {
         let transport = StubTransport()
         transport.healthResult = .failure(TransportError.appNotRunning)
         let result = await ConnectivityProbe(transport: transport).check()
         XCTAssertEqual(result, .appNotRunning)
-        XCTAssertEqual(result.headline, "App not running")
+        XCTAssertEqual(result.headline, "Connection refused")
+        XCTAssertTrue(result.detail.contains("address and port"))
+        XCTAssertFalse(result.detail.contains("is closed"))
     }
 
     func testTheTailnetIsDown() async {
