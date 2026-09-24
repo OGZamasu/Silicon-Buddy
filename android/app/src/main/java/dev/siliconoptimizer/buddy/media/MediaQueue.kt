@@ -271,8 +271,9 @@ data class QueueState(
     val jobs: List<MediaJob> = emptyList(),
     /**
      * Finished renders taken off this list — cleared, or past [MAX_FINISHED_RENDERS] —
-     * newest last. The Mac tells every phone that opens `/events` how its last renders
-     * ended, and one of those endings is not a reason to put a row back.
+     * newest last, by ids that name one render each. The Mac tells every phone that opens
+     * `/events` how its last renders ended, and one of those endings is not a reason to put
+     * a row back.
      */
     val cleared: List<String> = emptyList(),
 ) {
@@ -435,7 +436,10 @@ data class QueueState(
         if (ids.isEmpty()) return this
         return copy(
             jobs = jobs.filterNot { it.id in ids },
-            cleared = (cleared.filterNot { it in ids } + ids).takeLast(MAX_CLEARED),
+            // Only an id that is one render's: `image-<job>`, a clip's `9C2F-0001`. A Mac from
+            // before per-render ids calls every image render `image`, and remembering that
+            // would hide the next one first heard of as its ending.
+            cleared = (cleared.filterNot { it in ids } + ids.filter { '-' in it }).takeLast(MAX_CLEARED),
         )
     }
 

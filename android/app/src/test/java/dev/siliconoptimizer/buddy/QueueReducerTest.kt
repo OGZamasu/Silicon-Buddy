@@ -225,6 +225,22 @@ class QueueReducerTest {
         assertEquals(1, state.applying(render(2, "running")).jobs.size)
     }
 
+    /**
+     * A Mac from before per-render ids names every image render `image` and every mesh `mesh`.
+     * There a cleared id is not one render but all of them, and remembering it hid the next
+     * render first heard of as its ending — one that failed at once, or ran while the stream
+     * was reconnecting. Only an id of its own is remembered.
+     */
+    @Test
+    fun `a new render under a cleared fixed id is still listed`() {
+        val fixed = { status: String -> job(id = "image", status = status, kind = "image", title = "FLUX") }
+        val cleared = QueueState.empty.applying(fixed("running")).applying(fixed("completed")).clearingFinishedRenders()
+
+        val next = cleared.applying(fixed("failed"))
+
+        assertEquals("a new render was hidden because an old one under the same id was cleared", 1, next.jobs.size)
+    }
+
     /** And whether anybody clears them or not, there is a ceiling: the oldest go first. */
     @Test
     fun `finished renders are capped, oldest first, and running ones never`() {
