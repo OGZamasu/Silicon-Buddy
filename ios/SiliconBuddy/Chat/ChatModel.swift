@@ -22,6 +22,10 @@ public final class ChatModel {
     /// means. The composer is closed rather than letting a send be refused.
     public private(set) var isConversationBusy = false
     private var askedAboutConversations = false
+    /// Conversations this device keeps although the Mac keeps the rest: ones the Mac
+    /// answered 404 about. Started here before the Mac said it keeps conversations — a
+    /// widget's "Ask" on a cold start — or deleted on the Mac while open here.
+    private var keptHere: Set<String> = []
 
     public var draft = ""
     public var attachments: [ChatAttachment] = []
@@ -43,7 +47,9 @@ public final class ChatModel {
     public private(set) var sendingSince: Date?
 
     private let store: ConversationStore
-    private var sendTask: Task<Void, Never>?
+    /// The reply being written. Readable by tests, which need to know when a stopped
+    /// send has finished unwinding — `isSending` goes false the moment Stop is tapped.
+    private(set) var sendTask: Task<Void, Never>?
 
     public init(store: ConversationStore = ConversationStore()) {
         self.store = store
@@ -53,18 +59,39 @@ public final class ChatModel {
 
     public func loadConversations(using transport: (any ControlTransport)?) async {
         if let transport, usesRemoteConversations || !askedAboutConversations {
-            askedAboutConversations = true
             do {
-                conversations = try await transport.conversations()
+                let remote = try await transport.conversations()
                 usesRemoteConversations = true
+                askedAboutConversations = true
+                // What this device keeps and the Mac does not — started while the Mac was
+                // out of reach, or answered 404 about — is listed, and kept here. Including
+                // after a restart, when nothing else remembers it: left off the list, it
+                // would be as good as lost. (A conversation the Mac keeps is never saved
+                // here, so the store holds only the device's own.)
+                let here = await store.all()
+                    .filter { stored in !remote.contains { $0.id == stored.id } }
+                keptHere.formUnion(here.map(\.id))
+                conversations = here.map(\.summary) + remote
+                if let current, keptHere.contains(current.id),
+                   !conversations.contains(where: { $0.id == current.id }) {
+                    conversations.insert(current.summary, at: 0)
+                }
                 return
             } catch let failure as TransportError where failure.isMissingRoute {
                 // This Mac has no /conversations at all; the device keeps them.
                 usesRemoteConversations = false
+                askedAboutConversations = true
             } catch {
+                // Given up on — a send replaced while it refreshed the list, a screen that
+                // went away — is not a failure, and nothing here is this caller's any more.
+                if Task.isCancelled || error is CancellationError
+                    || (error as? TransportError) == .cancelled { return }
                 // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still owns
                 // these conversations — moving them to the device over a bad minute
-                // would fork the transcript, and nothing would merge it back.
+                // would fork the transcript, and nothing would merge it back. Nor is it
+                // an answer: the question stays open, and is put again the next time
+                // anything loads the list. Taking it as "no" left a phone that launched
+                // before Tailscale was up device-only for the whole session.
                 self.error = (error as? TransportError)?.localizedDescription
                     ?? error.localizedDescription
                 if usesRemoteConversations { return }
@@ -76,6 +103,13 @@ public final class ChatModel {
         if let current, !conversations.contains(where: { $0.id == current.id }) {
             conversations.insert(current.summary, at: 0)
         }
+    }
+
+    /// Asks the Mac whether it keeps conversations, if it has never answered — when the app
+    /// comes back to the front, or `/events` reconnects. Once it has answered, nothing.
+    public func askAboutConversationsIfUnanswered(using transport: (any ControlTransport)?) async {
+        guard transport != nil, !askedAboutConversations else { return }
+        await loadConversations(using: transport)
     }
 
     public func newConversation(using transport: (any ControlTransport)?) async {
@@ -102,7 +136,7 @@ public final class ChatModel {
     }
 
     public func open(id: String, using transport: (any ControlTransport)?) async {
-        if usesRemoteConversations, let transport {
+        if usesRemoteConversations, !keptHere.contains(id), let transport {
             do {
                 let detail = try await transport.conversation(id: id)
                 current = Conversation(
@@ -164,6 +198,9 @@ public final class ChatModel {
         let images = attachments.map(\.dataURL)
         draft = ""
         attachments = []
+        // A send still in flight — a question spoken while the last answer is arriving —
+        // ends first, so the reply streaming after this is only ever the new one.
+        stopSending()
 
         var conversation = current ?? Conversation()
         conversation.messages.append(
@@ -178,13 +215,23 @@ public final class ChatModel {
         isConversationBusy = false
         error = nil
 
-        sendTask?.cancel()
         sendTask = Task { [weak self] in
             await self?.run(replyTo: placeholder.id, using: transport)
+            // Stopped or replaced: whoever did that closed this reply, and what is sending
+            // now is theirs. Ending it here would open the composer under the new answer.
+            guard !Task.isCancelled else { return }
             self?.isSending = false
             self?.sendingSince = nil
             self?.noteLastExchange(question: text)
         }
+    }
+
+    /// Ends the send in flight, if there is one: its reply is closed as stopped and its
+    /// task stops where it is (`run` checks for that after every wait).
+    private func stopSending() {
+        if isSending { finishStreamingMessage(failure: "Stopped.") }
+        sendTask?.cancel()
+        sendTask = nil
     }
 
     /// Adds a picture, or says why it cannot be added. The cap is the Mac's.
@@ -213,6 +260,12 @@ public final class ChatModel {
     private enum StreamOutcome {
         case answered
         case missingRoute
+        /// A Mac that keeps conversations, and not this one (404 on the conversation).
+        case noSuchConversation
+        /// The route answered and closed without a word: a Mac that quit or gave up before
+        /// its first token. Worth trying the next route for this reply — and no evidence at
+        /// all about which routes the Mac has.
+        case silent
         /// The Mac is already answering in this conversation (409).
         case busy(String)
         case failed(String)
@@ -230,13 +283,18 @@ public final class ChatModel {
 
         if usesStreaming {
             // First choice: the conversation route, so the Mac keeps the transcript.
-            if usesRemoteConversations, let id = current?.id, let last = history.last {
-                switch await consume(
+            if usesRemoteConversations, let id = current?.id, !keptHere.contains(id),
+               let last = history.last {
+                let outcome = await consume(
                     transport.sendMessage(
                         conversationID: id, message: last, maxTokens: maxTokens
                     ),
                     into: messageID
-                ) {
+                )
+                // Stopped or replaced, this send ends where it is: its reply is already
+                // closed, and "the streaming reply" from here on is the next send's.
+                guard !Task.isCancelled else { return }
+                switch outcome {
                 case .answered:
                     finishStreamingMessage(failure: nil)
                     await persist(using: transport)
@@ -244,6 +302,16 @@ public final class ChatModel {
                 case .missingRoute:
                     // Only this route is missing. Plain streaming may still be there.
                     usesRemoteConversations = false
+                case .noSuchConversation:
+                    // This Mac keeps conversations and has never heard of this one. It
+                    // goes as plain history instead and this device keeps the
+                    // transcript; the Mac goes on keeping every other one.
+                    keptHere.insert(id)
+                case .silent:
+                    // Plain streaming next. The Mac listed its conversations a moment ago,
+                    // so its silence says nothing about whether it keeps them, and reading
+                    // it as "it keeps none" moved every one of them onto the phone.
+                    break
                 case .busy(let message):
                     // The Mac is still answering the previous message in this
                     // conversation. Sending it again would only be refused again.
@@ -263,13 +331,18 @@ public final class ChatModel {
             }
 
             // Second: streaming without a stored conversation.
-            switch await consume(transport.chatStream(request), into: messageID) {
+            let outcome = await consume(transport.chatStream(request), into: messageID)
+            guard !Task.isCancelled else { return }
+            switch outcome {
             case .answered:
                 finishStreamingMessage(failure: nil)
                 await persist(using: transport)
                 return
-            case .missingRoute:
+            case .missingRoute, .noSuchConversation:
                 usesStreaming = false
+            case .silent:
+                // One request, one answer, for this reply only: the route is there.
+                break
             case .busy(let message):
                 finishStreamingMessage(failure: message)
                 error = message
@@ -300,11 +373,14 @@ public final class ChatModel {
                 message.failure = Self.truncationNote(for: message, limit: maxTokens)
             }
         } catch {
+            // The failure of a request that was given up on is the cancellation's.
+            guard !Task.isCancelled else { return }
             let description = (error as? TransportError)?.localizedDescription
                 ?? error.localizedDescription
             finishStreamingMessage(failure: description)
             self.error = description
         }
+        guard !Task.isCancelled else { return }
         await persist(using: transport)
     }
 
@@ -312,8 +388,8 @@ public final class ChatModel {
     private func consume(
         _ stream: AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error>, into messageID: String
     ) async -> StreamOutcome {
+        var sawAnything = false
         do {
-            var sawAnything = false
             for try await event in stream {
                 sawAnything = true
                 apply(event, to: messageID)
@@ -323,12 +399,20 @@ public final class ChatModel {
                 // finished answer waiting for a check it can get from `/events` instead.
                 if case .finished = event { return .answered }
             }
+            // Stop ends this loop exactly the way an empty stream does: a stream returns
+            // nil to a consumer that was cancelled rather than throwing. Read as a missing
+            // route, one Stop before the first token turned the Mac's conversations and
+            // its streaming off for the rest of the session.
+            if Task.isCancelled { return .stopped }
             // A stream that ends without one event is not an answer; try the next thing.
-            return sawAnything ? .answered : .missingRoute
+            return sawAnything ? .answered : .silent
         } catch let error as TransportError where error.isMissingRoute {
             return .missingRoute
         } catch let error as TransportError where error == .cancelled {
             return .stopped
+        } catch TransportError.notFound where !sawAnything {
+            // Nothing is written into the reply yet, so the next route can still fill it.
+            return .noSuchConversation
         } catch let error as TransportError {
             if case .conflict(let message) = error { return .busy(message) }
             return .failed(error.localizedDescription)
@@ -418,8 +502,13 @@ public final class ChatModel {
         current = conversation
     }
 
+    /// Saves the open conversation, or reads the Mac's list when the Mac keeps it.
+    ///
+    /// A send that was stopped or replaced saves nothing: the conversation is the next
+    /// send's by then, and it saves it itself.
     private func persist(using transport: (any ControlTransport)? = nil) async {
-        if usesRemoteConversations {
+        guard !Task.isCancelled else { return }
+        if usesRemoteConversations, !keptHere.contains(current?.id ?? "") {
             // The Mac keeps the transcript, so the list it publishes is the one worth
             // showing: the title and the count are its answers, not ours.
             await loadConversations(using: transport)
@@ -427,7 +516,16 @@ public final class ChatModel {
         }
         guard let conversation = current else { return }
         let saved = await store.save(conversation)
-        current = saved
+        // Replaced while the store was written: `current` holds the next question and its
+        // reply now, and this snapshot is from before them.
+        guard !Task.isCancelled else { return }
+        // Only what saving added — the title, the date — goes back into `current`. The
+        // messages in `saved` are the snapshot that was written, and whatever arrived
+        // during the write (an answer check, say) would be written over.
+        if current?.id == saved.id {
+            current?.title = saved.title
+            current?.updatedAt = saved.updatedAt
+        }
         if let index = conversations.firstIndex(where: { $0.id == saved.id }) {
             conversations[index] = saved.summary
         } else {
@@ -489,6 +587,7 @@ public final class ChatModel {
         usesStreaming = true
         usesRemoteConversations = false
         askedAboutConversations = false
+        keptHere = []
         conversations = []
         current = nil
         error = nil
@@ -497,7 +596,10 @@ public final class ChatModel {
     /// Where the transcript came from, said plainly in the UI so nobody wonders why
     /// their Mac does not show the same list.
     public var storageNote: String {
-        usesRemoteConversations
+        if usesRemoteConversations, let current, keptHere.contains(current.id) {
+            return "Kept on this device — the Mac doesn't have this conversation."
+        }
+        return usesRemoteConversations
             ? "Synced with the Mac."
             : "Kept on this device — the Mac doesn't store conversations yet."
     }

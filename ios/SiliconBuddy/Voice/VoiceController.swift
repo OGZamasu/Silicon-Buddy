@@ -63,6 +63,18 @@ public final class VoiceController: NSObject {
         perform(session.apply(.pressed))
     }
 
+    /// The button went down before this app may listen: ask, and listen to nothing.
+    ///
+    /// Answering the system's question is a tap somewhere else, so by the time it is
+    /// answered the finger that pressed is gone. This press was the question; the next
+    /// one listens. Returns the problem to show, when there is one.
+    public func askForPermission() async -> String? {
+        perform(session.apply(.pressedWithoutPermission))
+        await requestPermissions()
+        perform(session.apply(.permissionAnswered(permissionProblem)))
+        return permissionProblem
+    }
+
     public func release() {
         perform(session.apply(.released))
     }

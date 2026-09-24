@@ -43,6 +43,38 @@ final class VoiceSessionTests: XCTestCase {
         XCTAssertEqual(session.apply(.released), [.stopListening, .send("hello there")])
     }
 
+    // MARK: - The first press
+
+    /// The first press asks for permission, and answering is a tap on the system's sheet:
+    /// the finger is off the button by the time the answer comes. Opening the microphone
+    /// then recorded a room nobody was talking to and sent it to the Mac.
+    func testThePressThatAskedForPermissionNeverListens() {
+        var session = VoiceSession()
+        XCTAssertEqual(session.apply(.pressedWithoutPermission), [])
+        XCTAssertEqual(session.state, .askingPermission)
+        XCTAssertEqual(session.apply(.released), [], "The sheet took the finger")
+        XCTAssertEqual(session.apply(.pressed), [], "Nothing listens while the question is up")
+        XCTAssertEqual(session.apply(.permissionAnswered(nil)), [])
+        XCTAssertEqual(session.state, .idle)
+        // The next press is the one that listens.
+        XCTAssertEqual(session.apply(.pressed), [.startListening])
+    }
+
+    func testARefusedPermissionIsSaidAndOpensNothing() {
+        var session = VoiceSession()
+        session.apply(.pressedWithoutPermission)
+        XCTAssertEqual(session.apply(.permissionAnswered("Turn it on in Settings.")), [])
+        XCTAssertEqual(session.state, .failed("Turn it on in Settings."))
+    }
+
+    func testLeavingTheScreenWhileItAsksOpensNothingWhenTheAnswerComes() {
+        var session = VoiceSession()
+        session.apply(.pressedWithoutPermission)
+        XCTAssertEqual(session.apply(.interrupted), [])
+        XCTAssertEqual(session.apply(.permissionAnswered(nil)), [])
+        XCTAssertEqual(session.state, .idle)
+    }
+
     // MARK: - Speaking the answer
 
     func testTheAnswerIsReadOutWhenTheToggleIsOn() {

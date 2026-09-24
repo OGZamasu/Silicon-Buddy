@@ -101,7 +101,8 @@ enum SharedItemReader {
     enum Loaded: Sendable {
         case text(String)
         case url(URL)
-        case data(Data)
+        /// A picture, already made small enough to send.
+        case picture(ChatAttachment)
     }
 
     static func payload(from items: [NSExtensionItem]) async -> SharePayload {
@@ -109,9 +110,7 @@ enum SharedItemReader {
         for item in items {
             for provider in item.attachments ?? [] {
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
-                   case .data(let data)? = await load(provider, as: UTType.image.identifier),
-                   let image = UIImage(data: data),
-                   let attachment = ImagePreparation.attachment(from: image) {
+                   case .picture(let attachment)? = await load(provider, as: UTType.image.identifier) {
                     found.append(.image(attachment.jpeg))
                     continue
                 }
@@ -149,20 +148,29 @@ enum SharedItemReader {
 
     /// Runs on whatever queue `NSItemProvider` chose, and is the boundary: everything
     /// past it is `Sendable`.
+    ///
+    /// A picture is made small here, from its file or its bytes, and is never decoded
+    /// at full size: a 48-megapixel photo is 195 MB as a bitmap, and a share extension
+    /// that holds one is killed.
     nonisolated private static func narrow(_ value: Any?, wanting identifier: String) -> Loaded? {
         let wantsImage = UTType(identifier)?.conforms(to: .image) ?? false
         switch value {
         case let url as URL:
             // A picture arrives as a file URL as often as it arrives as bytes.
-            if wantsImage, let data = try? Data(contentsOf: url) { return .data(data) }
+            if wantsImage, let picture = url.isFileURL
+                ? ImagePreparation.attachment(contentsOf: url)
+                : (try? Data(contentsOf: url)).flatMap({ ImagePreparation.attachment(fromData: $0) }) {
+                return .picture(picture)
+            }
             return .url(url)
         case let text as String:
             return .text(text)
         case let data as Data:
-            if wantsImage { return .data(data) }
+            if wantsImage { return ImagePreparation.attachment(fromData: data).map(Loaded.picture) }
             return String(data: data, encoding: .utf8).map(Loaded.text)
         case let image as UIImage:
-            return image.jpegData(compressionQuality: 0.95).map(Loaded.data)
+            // Already decoded by whoever shared it; all that is left is to shrink it.
+            return ImagePreparation.attachment(from: image).map(Loaded.picture)
         case let attributed as NSAttributedString:
             return .text(attributed.string)
         default:
