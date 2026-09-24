@@ -273,11 +273,17 @@ if $ios; then
     xcodegen generate >/dev/null
     # The suite runs the Debug build, which dials a Mac on loopback or 10.0.2.2 because it
     # is compiled with DEBUG. The build the owner installs must not be: on a phone those are
-    # any other app, and an address on whatever Wi-Fi it has joined.
+    # any other app, and an address on whatever Wi-Fi it has joined. The settings go to grep
+    # as a here-string, never through a pipe: `grep -q` stops at the first match, and under
+    # pipefail the `echo` still writing 100 KB of them dies of SIGPIPE, which turned every
+    # match into "no match" — a check that could never fail.
     release=$(xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
         -configuration Release -showBuildSettings 2>/dev/null) ||
         fail "could not read the iOS Release build settings"
-    if echo "$release" | grep -qE '^ *SWIFT_ACTIVE_COMPILATION_CONDITIONS = (.* )?DEBUG( |$)'; then
+    grep -qE '^ *PRODUCT_BUNDLE_IDENTIFIER = dev\.siliconoptimizer\.buddy$' <<<"$release" ||
+        fail "the iOS Release build settings are not the app's"
+    if grep -qE '^ *SWIFT_ACTIVE_COMPILATION_CONDITIONS = (.* )?DEBUG( |$)|^ *OTHER_SWIFT_FLAGS = (.* )?-D ?DEBUG( |$)' \
+        <<<"$release"; then
         fail "the iOS Release build is compiled with DEBUG, so it would dial loopback and 10.0.2.2"
     fi
     xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
