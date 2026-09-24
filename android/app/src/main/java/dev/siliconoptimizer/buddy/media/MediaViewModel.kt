@@ -466,6 +466,23 @@ class MediaViewModel : ViewModel() {
     }
 
     /**
+     * "Clear finished". The renders the video queue does not hold — images, meshes — are
+     * rows on this phone only, and go from here; the finished clips it does hold are the
+     * Mac's to clear, and are asked for only when there are some, from a phone allowed to.
+     */
+    fun clearFinished(
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+        canControl: Boolean = true,
+    ) {
+        val clipsOnTheMac = queue.finished.any { it.isQueued }
+        queue = queue.clearingFinishedRenders()
+        if (clipsOnTheMac && canControl) {
+            control(VideoQueueControlRequest.CLEAR_FINISHED, transport = transport, notifier = notifier)
+        }
+    }
+
+    /**
      * The Mac's answer to something this phone asked of one clip.
      *
      * It is the newest word on that clip only if nothing moved the row while the request

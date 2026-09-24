@@ -269,6 +269,12 @@ data class QueueState(
     val message: String? = null,
     val activeID: String? = null,
     val jobs: List<MediaJob> = emptyList(),
+    /**
+     * Finished renders taken off this list — cleared, or past [MAX_FINISHED_RENDERS] —
+     * newest last. The Mac tells every phone that opens `/events` how its last renders
+     * ended, and one of those endings is not a reason to put a row back.
+     */
+    val cleared: List<String> = emptyList(),
 ) {
     val running: List<MediaJob> get() = jobs.filter { !it.state.isTerminal }
     val finished: List<MediaJob> get() = jobs.filter { it.state.isTerminal }
@@ -345,6 +351,8 @@ data class QueueState(
     fun applying(event: JobProgress): QueueState {
         val state = JobState.of(event.status)
         val existing = job(event.id)
+        // An ending for a row taken off the list is the same ending again, not a new row.
+        if (existing == null && state.isTerminal && event.id in cleared) return this
         if (existing != null && !mayMove(existing.state, state)) {
             // Late progress for a clip that has already ended, or the same ending
             // twice. Neither is news, and neither may undo the ending.
@@ -403,6 +411,31 @@ data class QueueState(
         return copy(
             jobs = merged.map { it.copy(isActive = it.isQueued && it.id == active) },
             activeID = active,
+        ).trimmingFinishedRenders()
+    }
+
+    /**
+     * "Clear finished", for the rows the video queue does not hold: every image and mesh
+     * render — and any clip heard of only on the stream — that has ended. They are `job`
+     * events and nothing else, so no read of the queue ever takes them away, and they stayed
+     * for the life of the process. What is running stays; so does every clip the queue
+     * holds, which the Mac's own clear is for.
+     */
+    fun clearingFinishedRenders(): QueueState =
+        dropping(jobs.filter { !it.isQueued && it.state.isTerminal }.map { it.id }.toSet())
+
+    /** At most [MAX_FINISHED_RENDERS] finished rows the video queue does not hold; the oldest go. */
+    private fun trimmingFinishedRenders(): QueueState {
+        val finished = jobs.filter { !it.isQueued && it.state.isTerminal }
+        if (finished.size <= MAX_FINISHED_RENDERS) return this
+        return dropping(finished.take(finished.size - MAX_FINISHED_RENDERS).map { it.id }.toSet())
+    }
+
+    private fun dropping(ids: Set<String>): QueueState {
+        if (ids.isEmpty()) return this
+        return copy(
+            jobs = jobs.filterNot { it.id in ids },
+            cleared = (cleared.filterNot { it in ids } + ids).takeLast(MAX_CLEARED),
         )
     }
 
@@ -422,5 +455,15 @@ data class QueueState(
 
     companion object {
         val empty = QueueState()
+
+        /**
+         * Finished rows kept that the video queue does not hold. Room for everything one
+         * `/events` opening can carry — the Mac sends up to eight endings a queue — and a
+         * screenful more, not a list that grows for as long as the app is open.
+         */
+        const val MAX_FINISHED_RENDERS = 24
+
+        /** How many cleared ids are remembered: more than any opening can name again. */
+        private const val MAX_CLEARED = 64
     }
 }

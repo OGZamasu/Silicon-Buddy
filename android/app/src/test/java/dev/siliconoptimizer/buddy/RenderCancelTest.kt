@@ -387,6 +387,42 @@ class RenderCancelTest {
         id = CLIP, kind = "video", status = status, fraction = fraction, title = "Lisbon",
     )
 
+    // MARK: - Clear finished
+
+    private fun image(status: String) = JobProgress(
+        id = "image-6F1C2A40-0000-4000-8000-000000000001", kind = "image", status = status, title = "FLUX.2 klein",
+    )
+
+    /**
+     * An image that has finished is a row on this phone only. Clear finished takes it away
+     * — and, with no finished clip in the video queue, does not ask the Mac to clear
+     * anything. A chat-only phone may clear its own rows as well; the Mac's are not its to ask.
+     */
+    @Test
+    fun `Clear finished takes finished renders off this phone and asks the Mac only about clips`() = runTest(dispatcher) {
+        val mac = QueueMac(view(item()))
+        opened(mac)
+        model.apply(image("running"))
+        model.apply(image("completed"))
+        assertEquals(2, model.queue.jobs.size)
+
+        model.clearFinished(mac, canControl = false)
+        advanceUntilIdle()
+        assertEquals(listOf(CLIP), model.queue.jobs.map { it.id })
+        assertTrue("nothing asked of the Mac", mac.sent.isEmpty())
+
+        // With a finished clip in the queue, the Mac is asked to clear it, as before.
+        mac.queue = view(item(status = "completed"))
+        model.startFollowing(mac, live = true)
+        advanceUntilIdle()
+        model.clearFinished(mac)
+        advanceUntilIdle()
+        assertEquals(listOf(VideoQueueControlRequest(VideoQueueControlRequest.CLEAR_FINISHED)), mac.sent)
+        mac.answer.complete(VideoQueueView(paused = false, activeID = null, message = null, items = emptyList()))
+        advanceUntilIdle()
+        assertTrue(model.queue.jobs.isEmpty())
+    }
+
     private companion object {
         const val CLIP = "9C2F-0005"
     }
