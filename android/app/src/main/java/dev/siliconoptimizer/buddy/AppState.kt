@@ -19,7 +19,7 @@ import dev.siliconoptimizer.buddy.shortcuts.BuddyShortcuts
 import dev.siliconoptimizer.buddy.tile.BuddyTileService
 import dev.siliconoptimizer.buddy.widget.BuddyWidget
 import androidx.glance.appwidget.updateAll
-import dev.siliconoptimizer.buddy.transport.ConnectivityProbe
+import dev.siliconoptimizer.buddy.transport.PairedMacCheck
 import dev.siliconoptimizer.buddy.transport.DeviceScope
 import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.transport.TransportError
@@ -209,14 +209,20 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
             reachability = Reachability.Unknown
             return
         }
+        // The Mac this check asks. A re-pair or Forget while it is out makes its answer
+        // someone else's: see PairedMacCheck.
+        val asked = connectionGeneration
         viewModelScope.launch {
             reachability = Reachability.Checking
-            val result = ConnectivityProbe(client).check()
-            reachability = result
-            if (result.isReady) {
-                status = runCatching { client.status() }.getOrNull()
-                status?.let { snapshots.note(it, config?.macName) }
-            }
+            PairedMacCheck.run(
+                client,
+                stillPaired = { connectionGeneration == asked },
+                reachability = { reachability = it },
+                status = { answered ->
+                    status = answered
+                    answered?.let { snapshots.note(it, config?.macName) }
+                },
+            )
         }
     }
 
