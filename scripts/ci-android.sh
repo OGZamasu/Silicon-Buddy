@@ -121,6 +121,23 @@ print(f"unit tests: {tests}, failures: {failures}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 
+# --- The release build's own rules -----------------------------------------------
+# The unit tests above run on debug, which dials a stand-in Mac on this machine on purpose.
+# The build the owner installs must not, anywhere: ReleaseBuildRuleTest checks every way in
+# against the release BuildConfig, and is skipped everywhere else — so it has to have run.
+./gradlew --console=plain -q :app:testReleaseUnitTest --rerun \
+    --tests dev.siliconoptimizer.buddy.ReleaseBuildRuleTest
+python3 - "$android/app/build/test-results/testReleaseUnitTest" <<'PY'
+import glob, re, sys
+tests = failures = skipped = 0
+for path in glob.glob(sys.argv[1] + "/*.xml"):
+    head = re.search(r'<testsuite [^>]*>', open(path).read()).group(0)
+    count = lambda name: int(re.search(name + r'="(\d+)"', head).group(1))
+    tests += count("tests"); skipped += count("skipped"); failures += count("failures") + count("errors")
+print(f"release rule tests: {tests}, failures: {failures}, skipped: {skipped}")
+sys.exit(1 if failures or skipped or tests == 0 else 0)
+PY
+
 # --- What R8 kept -----------------------------------------------------------------
 # R8 cannot see an edge that goes through a name: a Glance callback, a serializer, a JNI
 # function, a method native code looks up. Lose one and the build still succeeds.
