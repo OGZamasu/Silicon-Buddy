@@ -8,15 +8,45 @@ final class PairingSecurityTests: XCTestCase {
 
     // MARK: - Which hosts exist at all
 
-    func testTheTailnetAndTheLoopbacksAreAllowed() {
+    /// A Mac on this machine: loopback, and the Android emulator's name for its host.
+    private let localHosts = [
+        "127.0.0.1", "127.1.2.3", "localhost", "::1", "[::1]",
+        "10.0.2.2",                     // the Android emulator's name for its host
+    ]
+
+    func testTheTailnetIsAllowedInEveryBuild() {
         for host in [
-            "127.0.0.1", "127.1.2.3", "localhost", "::1",
-            "10.0.2.2",                     // the Android emulator's name for its host
             "100.64.0.1", "100.100.100.100", "100.127.255.254",
             "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12:4843:cd96:625a:1",
             "[fd7a:115c:a1e0::1]",
         ] {
-            XCTAssertTrue(TailnetHost.isAllowed(host), "\(host) should be reachable")
+            XCTAssertTrue(TailnetHost.isAllowed(host, local: false), "\(host) should be reachable")
+            XCTAssertTrue(TailnetHost.isAllowed(host, local: true), "\(host) should be reachable")
+            XCTAssertFalse(TailnetHost.isLocal(host))
+        }
+    }
+
+    /// The build the owner installs dials the tailnet and nothing else. On a phone,
+    /// loopback is whichever other app is listening there, and 10.0.2.2 is an ordinary
+    /// address on whatever Wi-Fi it has joined: a pairing link naming either would hand
+    /// this device's token to a machine that is not the owner's Mac.
+    func testTheBuildTheOwnerInstallsDialsTheTailnetAndNothingElse() {
+        for host in localHosts {
+            XCTAssertTrue(TailnetHost.isLocal(host), "\(host) is this machine")
+            XCTAssertFalse(TailnetHost.isAllowed(host, local: false), "\(host) must not be dialled")
+        }
+        XCTAssertFalse(
+            TailnetHost.explanation(local: false).contains("127.0.0.1"),
+            "A build that will not dial the Simulator's Mac does not suggest it"
+        )
+    }
+
+    /// The Simulator shares the Mac's loopback, and this suite pairs with Macs there: the
+    /// DEBUG build it runs is the one that dials this machine.
+    func testTheDebugBuildDialsAMacOnThisMachine() {
+        XCTAssertTrue(TailnetHost.allowsLocal, "The tests run the DEBUG build")
+        for host in localHosts {
+            XCTAssertTrue(TailnetHost.isAllowed(host), "\(host) should be reachable here")
         }
     }
 

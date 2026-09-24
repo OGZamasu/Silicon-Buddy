@@ -70,9 +70,10 @@
 		  present, so the two cannot be combined.
 
 		  So ATS is open here and the narrowing is TailnetHost, which every request
-		  passes through and which accepts only loopback, the Android emulator's
-		  10.0.2.2, 100.64.0.0/10 and fd7a:115c:a1e0::/48. That gate is the security
-		  boundary; this key is not. See PairingSecurityTests and ControlClientTests.
+		  passes through and which accepts only 100.64.0.0/10 and fd7a:115c:a1e0::/48
+		  (and, in a DEBUG build only, loopback and the Android emulator's 10.0.2.2).
+		  That gate is the security boundary; this key is not. See PairingSecurityTests
+		  and ControlClientTests.
 		-->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>

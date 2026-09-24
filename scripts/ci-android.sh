@@ -271,6 +271,15 @@ fi
 if $ios; then
     cd "$here/ios"
     xcodegen generate >/dev/null
+    # The suite runs the Debug build, which dials a Mac on loopback or 10.0.2.2 because it
+    # is compiled with DEBUG. The build the owner installs must not be: on a phone those are
+    # any other app, and an address on whatever Wi-Fi it has joined.
+    release=$(xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
+        -configuration Release -showBuildSettings 2>/dev/null) ||
+        fail "could not read the iOS Release build settings"
+    if echo "$release" | grep -qE '^ *SWIFT_ACTIVE_COMPILATION_CONDITIONS = (.* )?DEBUG( |$)'; then
+        fail "the iOS Release build is compiled with DEBUG, so it would dial loopback and 10.0.2.2"
+    fi
     xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
         -destination "${IOS_DESTINATION:-platform=iOS Simulator,name=iPad mini (A17 Pro)}" \
         -derivedDataPath "${IOS_DERIVED_DATA:?set IOS_DERIVED_DATA to a folder on a roomy drive}" \

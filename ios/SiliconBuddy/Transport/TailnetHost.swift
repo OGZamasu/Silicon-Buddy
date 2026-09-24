@@ -12,38 +12,75 @@ import Foundation
 /// Parsed as an address, never scanned for digits: `100.64.0.1.evil.example.com`
 /// contains a tailnet address and is a name someone else controls.
 ///
-/// One name is accepted — `localhost` — because it cannot resolve anywhere but this
-/// device. No other name is, including Tailscale's own `*.ts.net`: accepting a name
-/// means trusting whatever answers for it, and the Mac advertises an address.
+/// A Mac on this machine — loopback, or 10.0.2.2, the Android emulator's name for the
+/// computer it runs on — is dialled only by a DEBUG build (`allowsLocal`), which is what
+/// the Simulator and the test suite run against a Mac or a stand-in there. There one name
+/// is accepted, `localhost`, because it cannot resolve anywhere but this device. No other
+/// name is, including Tailscale's own `*.ts.net`: accepting a name means trusting
+/// whatever answers for it, and the Mac advertises an address.
 public enum TailnetHost {
 
-    public static let explanation =
-        "Silicon Buddy only pairs over your tailnet. "
-        + "Use the Mac's Tailscale address (100.x.y.z), or 127.0.0.1 in the Simulator."
-
-    /// True for the addresses the Mac can actually be listening on.
+    /// Whether this build dials a Mac on the same machine: loopback, and 10.0.2.2.
     ///
-    /// - 127.0.0.0/8 and ::1 — the Simulator, where the Mac is the same machine.
-    /// - 10.0.2.2 — what an Android emulator calls its host's loopback.
+    /// The DEBUG build does — the Simulator shares the Mac's loopback, and the tests pair
+    /// with a stand-in there. The build the owner installs does not: on a phone, loopback
+    /// is whichever other app is listening on it, and 10.0.2.2 is an ordinary private
+    /// address on whatever Wi-Fi the phone has joined, so a pairing link naming either
+    /// would hand this device's token to somebody else's machine. The same rule as the
+    /// Android app's `LOCAL_MACS`.
+    public static var allowsLocal: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    public static var explanation: String { explanation(local: allowsLocal) }
+
+    static func explanation(local: Bool) -> String {
+        "Silicon Buddy only pairs over your tailnet. "
+            + "Use the Mac's Tailscale address (100.x.y.z)"
+            + (local ? ", or 127.0.0.1 in the Simulator." : ".")
+    }
+
+    /// True for the addresses the Mac can actually be listening on:
+    ///
     /// - 100.64.0.0/10 — Tailscale's IPv4 range (CGNAT space).
     /// - fd7a:115c:a1e0::/48 — Tailscale's IPv6 range.
-    public static func isAllowed(_ host: String) -> Bool {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-            .lowercased()
-        if trimmed == "localhost" { return true }
+    /// - and, in a build that dials one (`local`), a Mac on this machine (`isLocal`).
+    public static func isAllowed(_ host: String, local: Bool = allowsLocal) -> Bool {
+        if isLocal(host) { return local }
+        let trimmed = normalized(host)
         if let bytes = ipv4Bytes(trimmed) {
-            if bytes[0] == 127 { return true }
-            if bytes == [10, 0, 2, 2] { return true }
             return bytes[0] == 100 && (64...127).contains(bytes[1])
         }
         if let words = ipv6Groups(trimmed) {
-            // ::1
-            if words == [0, 0, 0, 0, 0, 0, 0, 1] { return true }
             // fd7a:115c:a1e0::/48
             return words[0] == 0xfd7a && words[1] == 0x115c && words[2] == 0xa1e0
         }
         return false
+    }
+
+    /// This device, or the computer an emulator runs on: `localhost`, 127.0.0.0/8, ::1
+    /// and 10.0.2.2. Whether this build may dial them at all is `allowsLocal`.
+    public static func isLocal(_ host: String) -> Bool {
+        let trimmed = normalized(host)
+        if trimmed == "localhost" { return true }
+        if let bytes = ipv4Bytes(trimmed) {
+            return bytes[0] == 127 || bytes == [10, 0, 2, 2]
+        }
+        if let words = ipv6Groups(trimmed) {
+            // ::1
+            return words == [0, 0, 0, 0, 0, 0, 0, 1]
+        }
+        return false
+    }
+
+    private static func normalized(_ host: String) -> String {
+        host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
     }
 
     /// `host` as it goes into a URL or an address line: an IPv6 literal in brackets, which
