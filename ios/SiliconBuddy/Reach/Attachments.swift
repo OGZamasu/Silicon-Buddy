@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UIKit
 
 /// What a device may send, from the Mac's own contract: 4 MiB a body, about 1.5 MB an
@@ -33,14 +34,46 @@ public enum ImagePreparation {
     public static func attachment(
         from image: UIImage, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8
     ) -> ChatAttachment? {
+        prepare(maxEdge: maxEdge, quality: quality) { resize(image, maxEdge: $0) }
+    }
+
+    /// The same, from a picture's file, without ever decoding it at full size.
+    ///
+    /// `UIImage(data:)` and a redraw hold the whole bitmap first: 98 MB for a 24-megapixel
+    /// photo, 195 MB for a 48-megapixel one — more than a share extension may use, so the
+    /// system killed the sheet mid-share. ImageIO decodes straight to the size asked for,
+    /// honouring the photo's orientation on the way.
+    public static func attachment(
+        fromData data: Data, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8
+    ) -> ChatAttachment? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return nil
+        }
+        return prepare(maxEdge: maxEdge, quality: quality) { thumbnail(of: source, maxEdge: $0) }
+    }
+
+    /// The same, read from a file rather than from bytes already in memory.
+    public static func attachment(
+        contentsOf url: URL, maxEdge: CGFloat = 1024, quality: CGFloat = 0.8
+    ) -> ChatAttachment? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return nil
+        }
+        return prepare(maxEdge: maxEdge, quality: quality) { thumbnail(of: source, maxEdge: $0) }
+    }
+
+    private static func prepare(
+        maxEdge: CGFloat, quality: CGFloat, render: (CGFloat) -> UIImage?
+    ) -> ChatAttachment? {
         var edge = maxEdge
         var compression = quality
         // Four tries at most: a 12-megapixel photo of a page of text can still beat the
         // Mac's per-image limit at 1024px, and a picture that is refused on arrival is
         // worse than one that was made smaller before it left.
         for _ in 0..<4 {
-            let scaled = resize(image, maxEdge: edge)
-            guard let data = scaled.jpegData(compressionQuality: compression) else { return nil }
+            guard let data = render(edge)?.jpegData(compressionQuality: compression) else {
+                return nil
+            }
             if data.count <= SendLimits.maximumImageBytes {
                 return ChatAttachment(jpeg: data)
             }
@@ -51,10 +84,28 @@ public enum ImagePreparation {
         // Handing back an oversized one made `attach` refuse it a moment later with a
         // different message, and left `ShareNormaliser` to drop it silently — a picture
         // that vanished between being chosen and being sent.
-        guard let last = resize(image, maxEdge: edge).jpegData(compressionQuality: 0.4),
+        guard let last = render(edge)?.jpegData(compressionQuality: 0.4),
               last.count <= SendLimits.maximumImageBytes
         else { return nil }
         return ChatAttachment(jpeg: last)
+    }
+
+    /// Don't keep a decoded copy of the full picture around for later.
+    private static var sourceOptions: CFDictionary {
+        [kCGImageSourceShouldCache: false] as CFDictionary
+    }
+
+    /// The picture at no more than `maxEdge` on its long side, decoded at that size.
+    static func thumbnail(of source: CGImageSource, maxEdge: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxEdge)),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: image)
     }
 
     static func resize(_ image: UIImage, maxEdge: CGFloat) -> UIImage {
