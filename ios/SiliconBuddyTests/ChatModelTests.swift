@@ -191,6 +191,72 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(model.storageNote, "Synced with the Mac.")
     }
 
+    /// A question asked while the last answer is still arriving — push-to-talk stays live
+    /// while the Mac answers. The new send replaces the old one, and nothing of the old
+    /// one's ending may land on the new reply.
+    func testASecondQuestionWhileTheFirstIsArrivingIsNotEndedByTheFirst() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.streamHangs = true
+        model.draft = "First question"
+        model.send(using: transport)
+        let first = try XCTUnwrap(model.sendTask)
+        for _ in 0..<200 where transport.streamCallCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        model.draft = "Second question"
+        model.send(using: transport)
+        let second = try XCTUnwrap(model.sendTask)
+        await first.value
+        for _ in 0..<200 where transport.streamCallCount < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let messages = try XCTUnwrap(model.current?.messages)
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant, .user, .assistant])
+        XCTAssertEqual(messages[1].failure, "Stopped.", "The first reply is closed as stopped")
+        XCTAssertFalse(messages[1].isStreaming)
+        XCTAssertTrue(messages[3].isStreaming, "The new reply is still arriving")
+        XCTAssertNil(messages[3].failure)
+        XCTAssertTrue(model.isSending, "The composer stays closed while the new answer arrives")
+        XCTAssertNotNil(model.sendingSince)
+        XCTAssertEqual(transport.streamCallCount, 2, "The first send tries no other route")
+        XCTAssertEqual(transport.chatCallCount, 0)
+
+        model.cancel()
+        await second.value
+    }
+
+    func testTheAnswerToTheSecondQuestionIsTheOneThatLands() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.streamHangs = true
+        model.draft = "First question"
+        model.send(using: transport)
+        let first = try XCTUnwrap(model.sendTask)
+        for _ in 0..<200 where transport.streamCallCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        transport.streamHangs = false
+        transport.streamEvents = [
+            .token("Second answer."),
+            .finished(BuddyAPI.ChatMetrics(promptTokens: 8, generatedTokens: 3, tokensPerSecond: 20)),
+        ]
+        model.draft = "Second question"
+        model.send(using: transport)
+        await first.value
+        try await waitForIdle(model)
+
+        let messages = try XCTUnwrap(model.current?.messages)
+        XCTAssertEqual(messages[1].failure, "Stopped.")
+        XCTAssertEqual(messages[3].content, "Second answer.")
+        XCTAssertNil(messages[3].failure)
+        XCTAssertFalse(messages[3].isStreaming)
+        XCTAssertNil(model.error)
+    }
+
     // MARK: - A spoken question
 
     /// The chat screen stays up through a re-pair — the confirmation is a sheet over it —

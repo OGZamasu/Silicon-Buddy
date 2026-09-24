@@ -181,6 +181,9 @@ public final class ChatModel {
         let images = attachments.map(\.dataURL)
         draft = ""
         attachments = []
+        // A send still in flight — a question spoken while the last answer is arriving —
+        // ends first, so the reply streaming after this is only ever the new one.
+        stopSending()
 
         var conversation = current ?? Conversation()
         conversation.messages.append(
@@ -195,13 +198,23 @@ public final class ChatModel {
         isConversationBusy = false
         error = nil
 
-        sendTask?.cancel()
         sendTask = Task { [weak self] in
             await self?.run(replyTo: placeholder.id, using: transport)
+            // Stopped or replaced: whoever did that closed this reply, and what is sending
+            // now is theirs. Ending it here would open the composer under the new answer.
+            guard !Task.isCancelled else { return }
             self?.isSending = false
             self?.sendingSince = nil
             self?.noteLastExchange(question: text)
         }
+    }
+
+    /// Ends the send in flight, if there is one: its reply is closed as stopped and its
+    /// task stops where it is (`run` checks for that after every wait).
+    private func stopSending() {
+        if isSending { finishStreamingMessage(failure: "Stopped.") }
+        sendTask?.cancel()
+        sendTask = nil
     }
 
     /// Adds a picture, or says why it cannot be added. The cap is the Mac's.
@@ -251,12 +264,16 @@ public final class ChatModel {
             // First choice: the conversation route, so the Mac keeps the transcript.
             if usesRemoteConversations, let id = current?.id, !keptHere.contains(id),
                let last = history.last {
-                switch await consume(
+                let outcome = await consume(
                     transport.sendMessage(
                         conversationID: id, message: last, maxTokens: maxTokens
                     ),
                     into: messageID
-                ) {
+                )
+                // Stopped or replaced, this send ends where it is: its reply is already
+                // closed, and "the streaming reply" from here on is the next send's.
+                guard !Task.isCancelled else { return }
+                switch outcome {
                 case .answered:
                     finishStreamingMessage(failure: nil)
                     await persist(using: transport)
@@ -288,7 +305,9 @@ public final class ChatModel {
             }
 
             // Second: streaming without a stored conversation.
-            switch await consume(transport.chatStream(request), into: messageID) {
+            let outcome = await consume(transport.chatStream(request), into: messageID)
+            guard !Task.isCancelled else { return }
+            switch outcome {
             case .answered:
                 finishStreamingMessage(failure: nil)
                 await persist(using: transport)
@@ -325,11 +344,14 @@ public final class ChatModel {
                 message.failure = Self.truncationNote(for: message, limit: maxTokens)
             }
         } catch {
+            // The failure of a request that was given up on is the cancellation's.
+            guard !Task.isCancelled else { return }
             let description = (error as? TransportError)?.localizedDescription
                 ?? error.localizedDescription
             finishStreamingMessage(failure: description)
             self.error = description
         }
+        guard !Task.isCancelled else { return }
         await persist(using: transport)
     }
 
