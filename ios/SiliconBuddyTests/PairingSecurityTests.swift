@@ -64,6 +64,26 @@ final class PairingSecurityTests: XCTestCase {
         }
     }
 
+    // MARK: - The Mac's own control token
+
+    /// The Developer form sends the Mac's control token, which the Mac takes only on its
+    /// loopback listener. Anywhere else — a tailnet address, the emulator's 10.0.2.2 — it
+    /// is refused at best, and at worst answered by a machine that is not the Mac.
+    func testTheDeveloperFormSendsTheControlTokenOnlyToThisMachine() {
+        for host in ["100.64.0.9", "fd7a:115c:a1e0::9", "10.0.2.2", "192.168.1.10", "evil.example.com"] {
+            XCTAssertNotNil(PairingView.developerHostProblem(host), "\(host) must not get the token")
+        }
+        for host in ["127.0.0.1", "localhost", "::1", " 127.0.0.1 "] {
+            XCTAssertNil(PairingView.developerHostProblem(host), "\(host) is the Mac itself")
+        }
+    }
+
+    func testABuildThatDialsNoLocalMacSendsTheControlTokenNowhere() {
+        XCTAssertNotNil(PairingView.developerHostProblem("127.0.0.1", local: false))
+        XCTAssertEqual(PairingView.Mode.offered(local: false), [.scan, .code])
+        XCTAssertEqual(PairingView.Mode.offered(local: true), [.scan, .code, .developer])
+    }
+
     func testAnAddressIsParsedNotScannedForDigits() {
         XCTAssertFalse(TailnetHost.isAllowed("100.064.0.1"), "No octal-looking octets")
         XCTAssertFalse(TailnetHost.isAllowed("100.64.0"), "Three parts is not an address")

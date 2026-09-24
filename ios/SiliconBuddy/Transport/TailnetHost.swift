@@ -65,11 +65,14 @@ public enum TailnetHost {
     /// This device, or the computer an emulator runs on: `localhost`, 127.0.0.0/8, ::1
     /// and 10.0.2.2. Whether this build may dial them at all is `allowsLocal`.
     public static func isLocal(_ host: String) -> Bool {
+        isLoopback(host) || ipv4Bytes(normalized(host)) == [10, 0, 2, 2]
+    }
+
+    /// This device itself: `localhost`, 127.0.0.0/8 and ::1. From the Simulator, the Mac.
+    public static func isLoopback(_ host: String) -> Bool {
         let trimmed = normalized(host)
         if trimmed == "localhost" { return true }
-        if let bytes = ipv4Bytes(trimmed) {
-            return bytes[0] == 127 || bytes == [10, 0, 2, 2]
-        }
+        if let bytes = ipv4Bytes(trimmed) { return bytes[0] == 127 }
         if let words = ipv6Groups(trimmed) {
             // ::1
             return words == [0, 0, 0, 0, 0, 0, 0, 1]
