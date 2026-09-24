@@ -611,15 +611,18 @@ struct PushToTalkButton: View {
                     .onChanged { _ in
                         guard !holding else { return }
                         holding = true
-                        Task {
-                            if !voice.isAuthorized { await voice.requestPermissions() }
-                            if let problem = voice.permissionProblem {
+                        guard voice.isAuthorized else {
+                            Task {
+                                let problem = await voice.askForPermission()
+                                // The system's sheet took the touch, and a cancelled
+                                // gesture does not call onEnded: without this the button
+                                // would stay down and swallow the next press.
                                 holding = false
-                                onProblem(problem)
-                                return
+                                if let problem { onProblem(problem) }
                             }
-                            voice.press()
+                            return
                         }
+                        voice.press()
                     }
                     .onEnded { _ in
                         holding = false
