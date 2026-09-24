@@ -196,20 +196,25 @@ CPU through llama.cpp — never on its own initiative, and never without saying 
 ## Building
 
 Both apps talk to Silicon Optimizer over your tailnet, and to nothing else: every
-request is checked against `TailnetHost` first — loopback, `10.0.2.2` for the Android
-emulator, Tailscale's `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. A scanned QR or a
-`siliconbuddy://` link never pairs on its own; it names the machine and asks.
+request is checked against `TailnetHost` first — Tailscale's `100.64.0.0/10` and
+`fd7a:115c:a1e0::/48`, and, only in the builds tested against a Mac on the same machine
+(Android debug and releaseProbe, iOS Debug), loopback and `10.0.2.2` for the Android
+emulator. A scanned QR or a `siliconbuddy://` link never pairs on its own; it names the
+machine and asks.
 
 For the real Mac app, **Enter code** uses the six-digit code and the Tailscale address
-shown together in Silicon Optimizer → Settings → Silicon Buddy. Its default port is
-8788. Keep that address when using a code in a simulator too.
+shown together in Silicon Optimizer → Settings → Silicon Buddy; the port is 8788 unless
+the Mac says otherwise. Keep that address when using a code from the Simulator or the
+emulator too: a device paired with a code talks to the Mac's tailnet listener, and that
+listener is not on loopback.
 
-For a local connection from a simulator on the Mac, use **Developer** with `127.0.0.1`
-on iOS or `10.0.2.2` on Android. Copy the **port and full token** from
-`~/Library/Application Support/SiliconOptimizer/control.json` after starting the Mac
-app. The local port can change when the Mac app restarts; substituting port 8788 or
-the six-digit pairing code will not work. A refused connection means to check the
-address and port as well as whether the app is running.
+For a local connection from the iOS Simulator or the Android emulator on the Mac, those
+debug builds also have **Developer** (the release builds do not): `127.0.0.1` on iOS or
+`10.0.2.2` on Android, with the **port and full token** from
+`~/Library/Application Support/SiliconOptimizer/control.json`, copied after the Mac app
+has started. That port changes when the Mac app restarts, and neither 8788 nor the
+six-digit pairing code works in its place. A refused connection means nothing is
+listening at that address and port: check both, and that the app is running.
 
 ```
 # iOS — Xcode 26, xcodegen 2.46
