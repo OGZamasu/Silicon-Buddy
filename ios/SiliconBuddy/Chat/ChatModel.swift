@@ -63,13 +63,15 @@ public final class ChatModel {
                 let remote = try await transport.conversations()
                 usesRemoteConversations = true
                 askedAboutConversations = true
-                // The ones the Mac has never heard of are still this device's to show.
+                // What this device keeps and the Mac does not — started while the Mac was
+                // out of reach, or answered 404 about — is listed, and kept here. Including
+                // after a restart, when nothing else remembers it: left off the list, it
+                // would be as good as lost. (A conversation the Mac keeps is never saved
+                // here, so the store holds only the device's own.)
                 let here = await store.all()
-                    .filter { stored in
-                        keptHere.contains(stored.id) && !remote.contains { $0.id == stored.id }
-                    }
-                    .map(\.summary)
-                conversations = here + remote
+                    .filter { stored in !remote.contains { $0.id == stored.id } }
+                keptHere.formUnion(here.map(\.id))
+                conversations = here.map(\.summary) + remote
                 if let current, keptHere.contains(current.id),
                    !conversations.contains(where: { $0.id == current.id }) {
                     conversations.insert(current.summary, at: 0)

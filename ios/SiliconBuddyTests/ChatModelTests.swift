@@ -285,6 +285,42 @@ final class ChatModelTests: XCTestCase {
         XCTAssertNil(model.error)
     }
 
+    /// The conversation a 404 left on the phone is in the device's store. After a restart
+    /// nothing else remembers it, so it has to come back with the list — and stay the
+    /// device's, not be asked of the Mac again.
+    func testAConversationKeptHereIsStillListedAfterARestart() async throws {
+        let (model, directory) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([
+            BuddyAPI.ConversationSummary(id: "M1", title: "On the Mac", updatedAt: Date(), messageCount: 2)
+        ])
+        transport.conversationError = TransportError.notFound(
+            "That conversation isn't on your Mac any more."
+        )
+        transport.streamEvents = [.token("Kept.")]
+        await model.loadConversations(using: transport)
+        model.draft = "Hello"
+        model.send(using: transport)
+        try await waitForIdle(model)
+        let kept = try XCTUnwrap(model.current?.id)
+
+        let relaunched = ChatModel(store: ConversationStore(directory: directory))
+        await relaunched.loadConversations(using: transport)
+        XCTAssertTrue(relaunched.usesRemoteConversations)
+        XCTAssertEqual(Set(relaunched.conversations.map(\.id)), [kept, "M1"])
+
+        await relaunched.open(id: kept, using: transport)
+        XCTAssertEqual(relaunched.current?.messages.map(\.content), ["Hello", "Kept."])
+        XCTAssertTrue(relaunched.storageNote.contains("this device"))
+
+        let asked = transport.streamCallCount
+        relaunched.draft = "Again"
+        relaunched.send(using: transport)
+        try await waitForIdle(relaunched)
+        XCTAssertEqual(transport.streamCallCount, asked + 1, "Plain streaming, not the Mac's route")
+        XCTAssertTrue(relaunched.usesRemoteConversations)
+    }
+
     // MARK: - A spoken question
 
     /// The chat screen stays up through a re-pair — the confirmation is a sheet over it —
