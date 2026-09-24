@@ -87,6 +87,12 @@ object MediaJobCenter {
         val detail: String? = null,
         val warning: String? = null,
         val failed: Boolean = false,
+        /**
+         * Whether this is the Mac's answer to the request — the render, or the Mac's refusal
+         * of it — rather than the phone giving up on it: the wait running out, Stop waiting,
+         * a connection that dropped. The Mac finishes a render given up on all the same.
+         */
+        val answered: Boolean = true,
         val at: Long = System.currentTimeMillis(),
     )
 
@@ -123,6 +129,16 @@ object MediaJobCenter {
     private val claims = mutableMapOf<String, Long>()
     private const val CLAIM_GRACE_MS = 60_000L
 
+    /** By kind: how many requests the service ended without the Mac's answer. */
+    private val givenUp = mutableMapOf<String, Int>()
+
+    /**
+     * How many requests of this kind the service has given up on. A render claimed before one
+     * of them is no longer the service's to announce: see `JobAnnouncer.notices`.
+     */
+    @Synchronized
+    fun gaveUp(kind: String): Int = givenUp[kind] ?: 0
+
     /**
      * Whether this phone is waiting on a render of this kind, or just was.
      *
@@ -130,8 +146,9 @@ object MediaJobCenter {
      * own (`image-<job>`, `mesh-<job>`) that nothing in the request's answer ties to the
      * request — so the claim is by kind. Without it a render started here would be
      * announced twice: once by the stream, once by the service that held the request. A
-     * render seen running under the claim stays the service's after it lapses: see
-     * `JobAnnouncer`.
+     * render seen running under the claim stays the service's after it lapses — unless the
+     * service gives up on the request without the Mac's answer: see [gaveUp] and
+     * `JobAnnouncer`. A request given up on claims nothing.
      */
     @Synchronized
     fun isRendering(kind: String): Boolean {
@@ -152,7 +169,13 @@ object MediaJobCenter {
     internal fun ended(work: Work, outcome: Outcome) {
         _running.value = _running.value.filterNot { it.id == work.id }
         _outcomes.value = (listOf(outcome) + _outcomes.value).take(20)
-        claims[work.kind] = System.currentTimeMillis() + CLAIM_GRACE_MS
+        if (outcome.answered) {
+            claims[work.kind] = System.currentTimeMillis() + CLAIM_GRACE_MS
+        } else {
+            // Not how the render ended: its ending, when the Mac gets there, is news.
+            givenUp[work.kind] = (givenUp[work.kind] ?: 0) + 1
+            claims.remove(work.kind)
+        }
         note(work.kind, null)
     }
 
@@ -161,8 +184,19 @@ object MediaJobCenter {
         _outcomes.value = emptyList()
         _fractions.value = emptyMap()
         claims.clear()
+        givenUp.clear()
     }
 }
+
+/**
+ * Whether a request that failed this way was answered by the Mac — a refusal, a failure it
+ * reported — rather than never answered at all: nothing reached it, or the line went quiet or
+ * dropped while it worked, in which case it may well have finished the render anyway.
+ */
+internal val TransportError.isTheMacsAnswer: Boolean
+    get() = this !is TransportError.Unreachable && this !is TransportError.AppNotRunning &&
+        this !is TransportError.TimedOut && this !is TransportError.Cancelled &&
+        this !is TransportError.NotConfigured
 
 /**
  * A render, kept alive while the app is not.
@@ -301,6 +335,7 @@ class MediaJobService : Service() {
                 detail = "This phone stopped waiting after " +
                     "${RenderBudget.TOTAL_SECONDS / 60} minutes. The Mac kept going.",
                 failed = true,
+                answered = false,
             )
         } catch (cancelled: CancellationException) {
             MediaJobCenter.Outcome(
@@ -308,6 +343,7 @@ class MediaJobService : Service() {
                 headline = "Stopped waiting",
                 detail = "The Mac still has the request and may finish it.",
                 failed = true,
+                answered = false,
             )
         } catch (error: TransportError) {
             MediaJobCenter.Outcome(
@@ -315,6 +351,7 @@ class MediaJobService : Service() {
                 headline = "That ${JobNotifications.noun(work.kind)} failed",
                 detail = error.message,
                 failed = true,
+                answered = error.isTheMacsAnswer,
             )
         }
     }

@@ -194,7 +194,8 @@ class MediaViewModel : ViewModel() {
     private fun update(next: QueueState, notifier: MediaNotifier?) {
         val previous = queue
         queue = next
-        announcer.notices(previous, next, ::handledByTheService).forEach { notifier?.post(it) }
+        announcer.notices(previous, next, ::handledByTheService, MediaJobCenter::gaveUp)
+            .forEach { notifier?.post(it) }
     }
 
     /**

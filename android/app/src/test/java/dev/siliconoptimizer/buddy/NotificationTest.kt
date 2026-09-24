@@ -355,6 +355,45 @@ class NotificationTest {
     }
 
     /**
+     * The service gave up on this phone's request without the Mac's answer — its 23-minute
+     * wait ran out ("The Mac kept going"), the owner pressed Stop waiting, or the tailnet
+     * dropped mid-render. It has said its last word, and it was not how the render ended.
+     * When the Mac finishes it later, the announcer is the only thing left that can say so:
+     * the claim the render was taken under goes with the request the service gave up on.
+     */
+    @Test
+    fun `a render the service gave up on is announced when the Mac finishes it`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        var gaveUp = 0
+        val mesh = { status: String ->
+            JobProgress(id = "mesh-6F1C2A40-0000-4000-8000-000000000009", kind = "mesh", status = status, title = "Hunyuan3D")
+        }
+        val running = QueueState.empty.applying(mesh("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true }, gaveUp = { gaveUp })
+
+        gaveUp = 1 // The service ends without the Mac's answer.
+        val done = running.applying(mesh("completed"))
+        assertEquals(
+            "the Mac's finished mesh was never announced",
+            listOf("Your mesh is ready"),
+            announcer.notices(running, done, handledElsewhere = { false }, gaveUp = { gaveUp }).map { it.title },
+        )
+    }
+
+    /** One the service answered stays the service's, whatever else it gave up on of another kind. */
+    @Test
+    fun `giving up on one kind leaves the claims on another`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val gaveUp = mapOf("image" to 0, "mesh" to 1)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true }, gaveUp = { gaveUp.getValue("image") })
+        val done = running.applying(render("completed"))
+        assertTrue(announcer.notices(running, done, handledElsewhere = { false }, gaveUp = { gaveUp.getValue(it) }).isEmpty())
+    }
+
+    /**
      * This phone's own request, failing at once: the stream's first word about the render is
      * its failure. That is not left unsaid — the service that held the request posts it, from
      * the Mac's answer to the request — so the announcer leaves it to the service, as it leaves

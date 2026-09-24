@@ -144,8 +144,12 @@ class JobAnnouncer {
      * service's to announce, whenever their ending reaches the stream. The kind-wide claim
      * it makes lapses a minute after the request answers, and the app can come back to the
      * screen long after that — to hear the ending again, in the Mac's opening frames.
+     *
+     * Each with how many requests of its kind the service had given up on when it was taken
+     * (see [notices]'s `gaveUp`): one the service gave up on since has no answer coming from
+     * it, and its render's ending is news again.
      */
-    private val claimed = mutableSetOf<String>()
+    private val claimed = mutableMapOf<String, Int>()
 
     /** True once a queue has been read; nothing is announced before that. */
     val isPrimed: Boolean get() = primed
@@ -171,11 +175,17 @@ class JobAnnouncer {
      * [handledElsewhere] is for work this phone started itself through the foreground
      * service: the Mac reports it on `/events` as well, and the render should ring
      * once, from whichever of the two owns it.
+     *
+     * [gaveUp] counts, by kind, the requests the service ended without the Mac's answer —
+     * its wait ran out, the owner stopped waiting, the connection dropped. The service's
+     * last word on those was not how the render ended, so a render claimed before one of
+     * them is not left to the service any more: the Mac's ending is announced here.
      */
     fun notices(
         previous: QueueState,
         next: QueueState,
         handledElsewhere: (MediaJob) -> Boolean = { false },
+        gaveUp: (kind: String) -> Int = { 0 },
     ): List<JobNotice> {
         if (!primed) return emptyList()
         val notices = mutableListOf<JobNotice>()
@@ -183,11 +193,13 @@ class JobAnnouncer {
             if (!job.state.isTerminal) {
                 // Queued again, or rendering again: the next ending is news.
                 announced.remove(job.id)
-                if (handledElsewhere(job)) claimed += job.id
+                if (handledElsewhere(job) && job.id !in claimed) claimed[job.id] = gaveUp(job.kind)
                 continue
             }
             if (announced[job.id] == job.state) continue
             announced[job.id] = job.state
+            // Given up on since it was claimed: the service will not say how it ended.
+            claimed[job.id]?.let { since -> if (gaveUp(job.kind) > since) claimed.remove(job.id) }
             if (job.id in claimed || handledElsewhere(job)) continue
             val before = previous.job(job.id)
             // An image or a mesh is a `job` event and nothing else, and the Mac tells every
@@ -202,7 +214,7 @@ class JobAnnouncer {
         // A clip the Mac has forgotten cannot be announced again either way.
         val present = next.jobs.map { it.id }.toSet()
         announced.keys.retainAll(present)
-        claimed.retainAll(present)
+        claimed.keys.retainAll(present)
         return notices
     }
 
