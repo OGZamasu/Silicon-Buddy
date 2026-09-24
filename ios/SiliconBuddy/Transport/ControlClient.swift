@@ -239,16 +239,23 @@ public struct ControlClient: ControlTransport {
     public func sendMessage(
         conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
+        // A 404 here is about the conversation, not the route: only a Mac that listed
+        // its conversations is asked this, so it serves them. Reported as a missing route
+        // it would mean "this Mac keeps no conversations", and one deleted thread would
+        // move every conversation onto the phone.
         chatEventStream(
             path: "/conversations/\(Self.pathComponent(conversationID))/messages",
             body: BuddyAPI.NewMessageRequest(
                 content: message.content, images: message.images, maxTokens: maxTokens
-            )
+            ),
+            notFound: "That conversation isn't on your Mac any more."
         )
     }
 
+    /// `notFound`, when given, is what a 404 means on this route: a thing that is not
+    /// there rather than a route that is not.
     private func chatEventStream(
-        path: String, body: some Encodable & Sendable
+        path: String, body: some Encodable & Sendable, notFound: String? = nil
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -280,6 +287,8 @@ public struct ControlClient: ControlTransport {
                         }
                     }
                     continuation.finish()
+                } catch let error as TransportError where error.isMissingRoute && notFound != nil {
+                    continuation.finish(throwing: TransportError.notFound(notFound ?? ""))
                 } catch {
                     continuation.finish(throwing: error)
                 }

@@ -114,6 +114,27 @@ final class ControlClientTests: XCTestCase {
         }
     }
 
+    /// The same again on the route a message is sent to: only a Mac that listed its
+    /// conversations is asked it, so its 404 is about the conversation.
+    func testSendingToAConversationThatIsGoneIsNotARouteThatIsMissing() async {
+        server.reply("/conversations/C9/messages", 404, #"{"error":"No conversation with id C9."}"#)
+        do {
+            for try await _ in client.sendMessage(
+                conversationID: "C9", message: .init(role: "user", content: "hi"), maxTokens: nil
+            ) {
+                XCTFail("There should be no events")
+            }
+            XCTFail("Expected a refusal")
+        } catch let error as TransportError {
+            guard case .notFound = error else {
+                return XCTFail("Expected .notFound, got \(error)")
+            }
+            XCTAssertFalse(error.isMissingRoute)
+        } catch {
+            XCTFail("Expected a TransportError, got \(error)")
+        }
+    }
+
     func testAnIdGoesIntoThePathEncoded() async throws {
         server.reply(
             "/conversations/a%2Fb", 200,

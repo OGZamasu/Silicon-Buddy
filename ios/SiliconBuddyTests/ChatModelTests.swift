@@ -135,6 +135,62 @@ final class ChatModelTests: XCTestCase {
         XCTAssertNil(model.current)
     }
 
+    /// A widget's "Ask" on a cold start makes its conversation here before the Mac has
+    /// said it keeps them; a thread open here can be deleted on the Mac. Either way the
+    /// Mac answers 404 about that one conversation, and still keeps all the others.
+    func testAConversationTheMacHasNeverHeardOfStaysHereAndTheRestStaySynced() async throws {
+        let (model, directory) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([
+            BuddyAPI.ConversationSummary(id: "M1", title: "On the Mac", updatedAt: Date(), messageCount: 2)
+        ])
+        transport.conversationError = TransportError.notFound(
+            "That conversation isn't on your Mac any more."
+        )
+        transport.streamEvents = [.token("Answered anyway.")]
+        await model.loadConversations(using: transport)
+        XCTAssertTrue(model.usesRemoteConversations)
+
+        model.draft = "Hello"
+        model.send(using: transport)
+        try await waitForIdle(model)
+
+        XCTAssertTrue(model.usesRemoteConversations, "One unknown thread is not a Mac without conversations")
+        XCTAssertTrue(model.usesStreaming)
+        XCTAssertEqual(model.current?.messages.last?.content, "Answered anyway.")
+        XCTAssertNil(model.current?.messages.last?.failure)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(transport.streamCallCount, 2, "The conversation route, then plain streaming")
+        XCTAssertEqual(transport.lastChatRequest?.messages.last?.content, "Hello")
+        XCTAssertTrue(model.storageNote.contains("this device"))
+        let listed = Set(model.conversations.map(\.id))
+        XCTAssertTrue(listed.contains("M1"), "The Mac's conversations are still listed")
+        XCTAssertTrue(listed.contains(try XCTUnwrap(model.current?.id)), "So is this one")
+
+        // Kept here from now on: the next message goes straight to plain streaming, and
+        // the transcript is the device's.
+        model.draft = "Again"
+        model.send(using: transport)
+        try await waitForIdle(model)
+        XCTAssertEqual(transport.streamCallCount, 3)
+        XCTAssertEqual(transport.lastChatRequest?.messages.map(\.content), ["Hello", "Answered anyway.", "Again"])
+        let stored = await ConversationStore(directory: directory).conversation(id: try XCTUnwrap(model.current?.id))
+        XCTAssertEqual(stored?.messages.count, 4)
+
+        // A conversation the Mac does have still goes to the Mac.
+        transport.conversationError = nil
+        transport.conversationDetail = BuddyAPI.ConversationDetail(
+            id: "M1", title: "On the Mac", updatedAt: Date(), isGenerating: false,
+            messages: [.init(role: "user", content: "hi", createdAt: Date())]
+        )
+        await model.open(id: "M1", using: transport)
+        model.draft = "To the Mac"
+        model.send(using: transport)
+        try await waitForIdle(model)
+        XCTAssertEqual(transport.lastSentMessage?.content, "To the Mac")
+        XCTAssertEqual(model.storageNote, "Synced with the Mac.")
+    }
+
     // MARK: - What a device may send
 
     func testTooManyPicturesIsRefusedBeforeSending() {

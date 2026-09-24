@@ -22,6 +22,10 @@ public final class ChatModel {
     /// means. The composer is closed rather than letting a send be refused.
     public private(set) var isConversationBusy = false
     private var askedAboutConversations = false
+    /// Conversations this device keeps although the Mac keeps the rest: ones the Mac
+    /// answered 404 about. Started here before the Mac said it keeps conversations — a
+    /// widget's "Ask" on a cold start — or deleted on the Mac while open here.
+    private var keptHere: Set<String> = []
 
     public var draft = ""
     public var attachments: [ChatAttachment] = []
@@ -57,8 +61,19 @@ public final class ChatModel {
         if let transport, usesRemoteConversations || !askedAboutConversations {
             askedAboutConversations = true
             do {
-                conversations = try await transport.conversations()
+                let remote = try await transport.conversations()
                 usesRemoteConversations = true
+                // The ones the Mac has never heard of are still this device's to show.
+                let here = await store.all()
+                    .filter { stored in
+                        keptHere.contains(stored.id) && !remote.contains { $0.id == stored.id }
+                    }
+                    .map(\.summary)
+                conversations = here + remote
+                if let current, keptHere.contains(current.id),
+                   !conversations.contains(where: { $0.id == current.id }) {
+                    conversations.insert(current.summary, at: 0)
+                }
                 return
             } catch let failure as TransportError where failure.isMissingRoute {
                 // This Mac has no /conversations at all; the device keeps them.
@@ -104,7 +119,7 @@ public final class ChatModel {
     }
 
     public func open(id: String, using transport: (any ControlTransport)?) async {
-        if usesRemoteConversations, let transport {
+        if usesRemoteConversations, !keptHere.contains(id), let transport {
             do {
                 let detail = try await transport.conversation(id: id)
                 current = Conversation(
@@ -215,6 +230,8 @@ public final class ChatModel {
     private enum StreamOutcome {
         case answered
         case missingRoute
+        /// A Mac that keeps conversations, and not this one (404 on the conversation).
+        case noSuchConversation
         /// The Mac is already answering in this conversation (409).
         case busy(String)
         case failed(String)
@@ -232,7 +249,8 @@ public final class ChatModel {
 
         if usesStreaming {
             // First choice: the conversation route, so the Mac keeps the transcript.
-            if usesRemoteConversations, let id = current?.id, let last = history.last {
+            if usesRemoteConversations, let id = current?.id, !keptHere.contains(id),
+               let last = history.last {
                 switch await consume(
                     transport.sendMessage(
                         conversationID: id, message: last, maxTokens: maxTokens
@@ -246,6 +264,11 @@ public final class ChatModel {
                 case .missingRoute:
                     // Only this route is missing. Plain streaming may still be there.
                     usesRemoteConversations = false
+                case .noSuchConversation:
+                    // This Mac keeps conversations and has never heard of this one. It
+                    // goes as plain history instead and this device keeps the
+                    // transcript; the Mac goes on keeping every other one.
+                    keptHere.insert(id)
                 case .busy(let message):
                     // The Mac is still answering the previous message in this
                     // conversation. Sending it again would only be refused again.
@@ -270,7 +293,7 @@ public final class ChatModel {
                 finishStreamingMessage(failure: nil)
                 await persist(using: transport)
                 return
-            case .missingRoute:
+            case .missingRoute, .noSuchConversation:
                 usesStreaming = false
             case .busy(let message):
                 finishStreamingMessage(failure: message)
@@ -314,8 +337,8 @@ public final class ChatModel {
     private func consume(
         _ stream: AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error>, into messageID: String
     ) async -> StreamOutcome {
+        var sawAnything = false
         do {
-            var sawAnything = false
             for try await event in stream {
                 sawAnything = true
                 apply(event, to: messageID)
@@ -336,6 +359,9 @@ public final class ChatModel {
             return .missingRoute
         } catch let error as TransportError where error == .cancelled {
             return .stopped
+        } catch TransportError.notFound where !sawAnything {
+            // Nothing is written into the reply yet, so the next route can still fill it.
+            return .noSuchConversation
         } catch let error as TransportError {
             if case .conflict(let message) = error { return .busy(message) }
             return .failed(error.localizedDescription)
@@ -426,7 +452,7 @@ public final class ChatModel {
     }
 
     private func persist(using transport: (any ControlTransport)? = nil) async {
-        if usesRemoteConversations {
+        if usesRemoteConversations, !keptHere.contains(current?.id ?? "") {
             // The Mac keeps the transcript, so the list it publishes is the one worth
             // showing: the title and the count are its answers, not ours.
             await loadConversations(using: transport)
@@ -496,6 +522,7 @@ public final class ChatModel {
         usesStreaming = true
         usesRemoteConversations = false
         askedAboutConversations = false
+        keptHere = []
         conversations = []
         current = nil
         error = nil
@@ -504,7 +531,10 @@ public final class ChatModel {
     /// Where the transcript came from, said plainly in the UI so nobody wonders why
     /// their Mac does not show the same list.
     public var storageNote: String {
-        usesRemoteConversations
+        if usesRemoteConversations, let current, keptHere.contains(current.id) {
+            return "Kept on this device — the Mac doesn't have this conversation."
+        }
+        return usesRemoteConversations
             ? "Synced with the Mac."
             : "Kept on this device — the Mac doesn't store conversations yet."
     }
