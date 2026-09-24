@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.chat.SendLimits
+import dev.siliconoptimizer.buddy.pairing.DeveloperConnection
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.transport.DeviceScope
@@ -86,6 +87,40 @@ class PairingSecurityTest {
         assertFalse(TailnetHost.isAllowed("100.64.0.1.2"))
         assertFalse(TailnetHost.isAllowed("100.64.0.256"))
         assertFalse("A zone is an interface", TailnetHost.isAllowed("fd7a:115c:a1e0::1%wlan0"))
+    }
+
+    // MARK: - The Developer form
+
+    /**
+     * The Developer form sends the Mac's own control token — the key to everything its control
+     * API does, which the Mac accepts on its local listener and nowhere else. It used to send
+     * it to any host a pairing link could name, tailnet addresses included, and so to whoever
+     * answered there.
+     */
+    @Test
+    fun `the control token goes only to this machine`() {
+        listOf("100.64.0.9", "100.100.100.100", "fd7a:115c:a1e0::9").forEach {
+            assertEquals("$it must not be sent the control token", DeveloperConnection.LOCAL_ONLY, DeveloperConnection.problem(it, "8765"))
+        }
+        listOf("10.0.2.2", "127.0.0.1", "localhost", "::1").forEach {
+            assertNull("$it is the Mac's own listener", DeveloperConnection.problem(it, "8765", local = true))
+        }
+    }
+
+    /** And in the build the owner installs, which dials no Mac on this machine, nowhere. */
+    @Test
+    fun `a build that dials no local Mac sends the token nowhere`() {
+        listOf("10.0.2.2", "127.0.0.1", "100.64.0.9").forEach {
+            assertEquals(DeveloperConnection.LOCAL_ONLY, DeveloperConnection.problem(it, "8765", local = false))
+        }
+    }
+
+    @Test
+    fun `the form still checks its port first`() {
+        assertEquals(
+            "That port isn't a number between 1 and 65535.",
+            DeveloperConnection.problem("10.0.2.2", "70000", local = true),
+        )
     }
 
     // MARK: - What a QR may say
