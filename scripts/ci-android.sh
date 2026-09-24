@@ -154,6 +154,15 @@ probeSeeds="$android/app/build/outputs/mapping/releaseProbe/seeds.txt"
 grep -q "^dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe$" "$probeSeeds" ||
     fail "OnDeviceProbe was not kept — the instrumented tests reach the engine through it"
 
+# --- Which Macs the release dials -------------------------------------------------
+# Loopback and 10.0.2.2 are where the stand-in Mac the tests pair with lives, and only the
+# debug and releaseProbe builds dial them. The build the owner installs must not: on a
+# phone, loopback is any other app, and 10.0.2.2 is an address on whatever Wi-Fi it is on.
+release_config="$android/app/build/generated/source/buildConfig/release/dev/siliconoptimizer/buddy/BuildConfig.java"
+[ -f "$release_config" ] || fail "no BuildConfig for release — did assembleRelease run?"
+grep -q "boolean LOCAL_MACS = false;" "$release_config" ||
+    fail "the release build dials a Mac on loopback or 10.0.2.2 (LOCAL_MACS is not false)"
+
 # --- What the JNI bridge can reach ------------------------------------------------
 # llama.cpp ships an HTTP client and a Hugging Face downloader in libllama-common. The
 # bridge links that library for its chat templates and its sampling, and must not have

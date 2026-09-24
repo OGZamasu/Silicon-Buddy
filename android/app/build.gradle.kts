@@ -69,11 +69,17 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             testProguardFiles("proguard-androidTest.pro")
             signingConfigs.getByName("local").storeFile?.let { signingConfig = signingConfigs.getByName("local") }
+            // The build the owner installs dials the tailnet and nothing else: on a phone,
+            // loopback is any other app and 10.0.2.2 is an address on whatever Wi-Fi it is
+            // on. See TailnetHost.allowsLocal; scripts/ci-android.sh checks it stays false.
+            buildConfigField("boolean", "LOCAL_MACS", "false")
         }
         debug {
             // The control API is plain HTTP on a tailnet address; see
             // res/xml/network_security_config.xml for the exception this needs.
             isMinifyEnabled = false
+            // Pairs with a Mac on this machine: the stand-in, or the emulator's host.
+            buildConfigField("boolean", "LOCAL_MACS", "true")
         }
         // Release, plus one class: `OnDeviceProbe`, which the instrumented tests call by
         // name to reach the engine inside a minified build. Same R8 rules, same signing,
@@ -84,6 +90,9 @@ android {
             matchingFallbacks += "release"
             isMinifyEnabled = true
             isShrinkResources = true
+            // The one difference in behaviour: the instrumented tests pair with stand-in
+            // Macs on 127.0.0.1 and at 10.0.2.2, which the owner's build refuses to dial.
+            buildConfigField("boolean", "LOCAL_MACS", "true")
         }
     }
 
