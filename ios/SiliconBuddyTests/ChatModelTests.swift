@@ -256,6 +256,39 @@ final class ChatModelTests: XCTestCase {
         await second.value
     }
 
+    /// A finished answer's last step is reading the Mac's list again, and the send is still
+    /// "sending" while it does. A question asked then replaces it, and cancelling that read
+    /// must not leave "Cancelled." standing under the new question.
+    func testASendReplacedWhileItRereadsTheListLeavesNoErrorBehind() async throws {
+        let mac = try SlowListServer(delay: 3)
+        defer { mac.stop() }
+        let client = ControlClient(
+            config: ServerConfig(host: "127.0.0.1", port: mac.port, token: "device-token")
+        )
+        let (model, _) = makeModel()
+        await model.loadConversations(using: client)
+        XCTAssertTrue(model.usesRemoteConversations)
+
+        model.draft = "First question"
+        model.send(using: client)
+        let first = try XCTUnwrap(model.sendTask)
+        for _ in 0..<300 where mac.count("GET /conversations") < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(mac.count("GET /conversations"), 2, "The first send is reading the list")
+
+        model.draft = "Second question"
+        model.send(using: client)
+        let second = try XCTUnwrap(model.sendTask)
+        await first.value
+        XCTAssertNil(model.error, "The replaced send's cancelled read surfaced as an error")
+        XCTAssertEqual(model.current?.messages.map(\.content).prefix(3), ["First question", "A", "Second question"])
+
+        model.cancel()
+        await second.value
+        XCTAssertNil(model.error)
+    }
+
     func testTheAnswerToTheSecondQuestionIsTheOneThatLands() async throws {
         let (model, _) = makeModel()
         let transport = StubTransport()

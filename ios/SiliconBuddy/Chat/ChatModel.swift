@@ -82,6 +82,10 @@ public final class ChatModel {
                 usesRemoteConversations = false
                 askedAboutConversations = true
             } catch {
+                // Given up on — a send replaced while it refreshed the list, a screen that
+                // went away — is not a failure, and nothing here is this caller's any more.
+                if Task.isCancelled || error is CancellationError
+                    || (error as? TransportError) == .cancelled { return }
                 // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still owns
                 // these conversations — moving them to the device over a bad minute
                 // would fork the transcript, and nothing would merge it back. Nor is it
@@ -498,7 +502,12 @@ public final class ChatModel {
         current = conversation
     }
 
+    /// Saves the open conversation, or reads the Mac's list when the Mac keeps it.
+    ///
+    /// A send that was stopped or replaced saves nothing: the conversation is the next
+    /// send's by then, and it saves it itself.
     private func persist(using transport: (any ControlTransport)? = nil) async {
+        guard !Task.isCancelled else { return }
         if usesRemoteConversations, !keptHere.contains(current?.id ?? "") {
             // The Mac keeps the transcript, so the list it publishes is the one worth
             // showing: the title and the count are its answers, not ours.
@@ -507,7 +516,16 @@ public final class ChatModel {
         }
         guard let conversation = current else { return }
         let saved = await store.save(conversation)
-        current = saved
+        // Replaced while the store was written: `current` holds the next question and its
+        // reply now, and this snapshot is from before them.
+        guard !Task.isCancelled else { return }
+        // Only what saving added — the title, the date — goes back into `current`. The
+        // messages in `saved` are the snapshot that was written, and whatever arrived
+        // during the write (an answer check, say) would be written over.
+        if current?.id == saved.id {
+            current?.title = saved.title
+            current?.updatedAt = saved.updatedAt
+        }
         if let index = conversations.firstIndex(where: { $0.id == saved.id }) {
             conversations[index] = saved.summary
         } else {
