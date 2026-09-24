@@ -126,9 +126,12 @@ object MediaJobCenter {
     /**
      * Whether this phone is waiting on a render of this kind, or just was.
      *
-     * The Mac reports an image or a mesh on `/events` too, under the id `image` or
-     * `mesh`. Without this a render started here would be announced twice: once by the
-     * stream, once by the service that held the request.
+     * The Mac reports an image or a mesh on `/events` too, each render under an id of its
+     * own (`image-<job>`, `mesh-<job>`) that nothing in the request's answer ties to the
+     * request — so the claim is by kind. Without it a render started here would be
+     * announced twice: once by the stream, once by the service that held the request. A
+     * render seen running under the claim stays the service's after it lapses: see
+     * `JobAnnouncer`.
      */
     @Synchronized
     fun isRendering(kind: String): Boolean {
