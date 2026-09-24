@@ -495,13 +495,22 @@ public struct ControlClient: ControlTransport {
 
 extension URLSession {
     /// No caching: every answer here is a live reading of a machine.
+    ///
+    /// Each request says how long it may sit silent, and that is the only limit: a
+    /// request's own timeout is the time allowed between bytes. The resource timeout is
+    /// a cap on the whole transfer, however busy, and at 900 seconds it cut every chat
+    /// stream and `/events` off at a quarter of an hour — mid-answer, which the Mac then
+    /// recorded as a failed generation. It is left at a week, where it never decides.
     public static let buddy: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 900
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.waitsForConnectivity = false
         configuration.httpAdditionalHeaders = ["User-Agent": "SiliconBuddy-iOS/0.1"]
         return URLSession(configuration: configuration)
     }()
+
+    /// URLSession's own default, said out loud.
+    static let resourceTimeout: TimeInterval = 7 * 24 * 60 * 60
 }

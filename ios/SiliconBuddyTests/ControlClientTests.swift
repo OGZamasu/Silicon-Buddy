@@ -334,6 +334,23 @@ final class ControlClientTests: XCTestCase {
         )
     }
 
+    // MARK: - How long a request may take
+
+    /// A chat that streams for twenty minutes, and `/events` all day, are healthy. The
+    /// only thing that may end one is silence — each request's own timeout — never a cap
+    /// on the whole transfer. At 900 seconds that cap cut every stream off mid-answer.
+    func testNoStreamIsCutOffForHowLongItHasBeenRunning() {
+        let longest: TimeInterval = 86_400 // `/events`' own idle timeout
+        XCTAssertGreaterThanOrEqual(
+            URLSession.buddy.configuration.timeoutIntervalForResource, longest,
+            "A whole-transfer cap shorter than a day ends healthy streams"
+        )
+        XCTAssertEqual(
+            URLSession.buddy.configuration.timeoutIntervalForRequest, 30,
+            "Silence is still what fails a request that sets no timeout of its own"
+        )
+    }
+
     // MARK: - The host rule, one layer down
 
     func testTheClientRefusesAHostOutsideTheTailnetEvenIfOneGetsIn() async {
