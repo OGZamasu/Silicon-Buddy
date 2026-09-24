@@ -33,7 +33,8 @@ Decided 2026-09-18 with the owner.
 - Tests for all of it.
 
 ### M1 — Foundation: both apps
-- Repo scaffolds (XcodeGen project for iOS; Gradle KTS for Android), CI on the Mac runner.
+- Repo scaffolds (XcodeGen project for iOS; Gradle KTS for Android), and the checks run on
+  the Mac itself by `scripts/ci-android.sh` — no hosted CI.
 - Pairing by QR, tailnet reachability check, token in Keychain / EncryptedSharedPreferences, biometric lock.
 - Dashboard: what is loaded, metrics, swarm and node health. Model picker: installed, catalog, cloud; load/unload/install with progress.
 - Chat with streaming, conversations synced with the Mac, images from camera or photos, markdown rendering.
@@ -111,7 +112,7 @@ Fixed here:
   28.9 MB; restricting to `arm64-v8a` takes it to **12.7 MB** (debug 94 → 74.6 MB). The
   keep rules are the substance: a Glance `ActionCallback` is reached by class *name*, so
   without one the widget's button becomes a no-op on release and nothing reports it.
-  CI asserts both callbacks and all 48 serializers appear in R8's own `seeds.txt`, and
+  The gate asserts both callbacks and all 48 serializers appear in R8's own `seeds.txt`, and
   an instrumented test (`testBuildType = "release"`) resolves them through the real
   classloader on the minified APK — three tests, green on an Android 16 emulator.
   Minifying the *test* APK against an already-shrunk app is awkward in both directions:
@@ -335,7 +336,7 @@ stream letting go of its socket, a 401 stopping the dashboard, the masking, and 
 second review's probe) and 7 instrumented; iOS 270, with a round trip for every new
 fixture part and the same strict read of `errorVariants`. Every fix from both reviews was
 checked by undoing it and seeing a test fail — the touch guard's wiring, the overlay
-hiding and the receiver's lock reading on the emulator. CI's floor on kept serializers
+hiding and the receiver's lock reading on the emulator. The gate's floor on kept serializers
 rises from 48 to 75, and it checks the agent frame types by name. Release APK 13.9 MB.
 
 Not done, and why:
