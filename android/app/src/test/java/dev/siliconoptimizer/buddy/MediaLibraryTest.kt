@@ -76,4 +76,41 @@ class MediaLibraryTest {
         assertEquals("row-1", result.getOrNull())
         assertEquals(listOf("row-1"), published)
     }
+
+    // MARK: - Where a render goes
+
+    /**
+     * A mesh is not a picture. MediaStore's image collection refuses a `.glb` on Android 11
+     * and later — the insert throws before a byte is fetched — so "Save the file" on a mesh
+     * could never work on the phone this app is for. It goes to Downloads, which takes any
+     * file, typed so that a 3D viewer is what opens it.
+     */
+    @Test
+    fun `a mesh goes to Downloads as the model it is`() {
+        val glb = MediaLibrary.destination("mesh", MediaLibrary.nameFor("mesh", "Kettle", "/Users/you/out/kettle.glb"))
+        assertEquals(MediaLibrary.Destination.Collection.Downloads, glb.collection)
+        assertEquals("model/gltf-binary", glb.mimeType)
+
+        val obj = MediaLibrary.destination("mesh", "kettle-1758000000.obj")
+        assertEquals(MediaLibrary.Destination.Collection.Downloads, obj.collection)
+        assertEquals("model/obj", obj.mimeType)
+
+        assertEquals(
+            "a mesh without a path is still a mesh",
+            "glb",
+            MediaLibrary.nameFor("mesh", "Kettle", null).substringAfterLast('.'),
+        )
+    }
+
+    @Test
+    fun `pictures and clips still go where a gallery finds them`() {
+        assertEquals(
+            MediaLibrary.Destination.Collection.Images,
+            MediaLibrary.destination("image", "Lisbon-1758000000.png").collection,
+        )
+        assertEquals(
+            MediaLibrary.Destination.Collection.Video,
+            MediaLibrary.destination("video", "Lisbon-1758000000.mp4").collection,
+        )
+    }
 }

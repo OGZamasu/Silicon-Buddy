@@ -693,7 +693,7 @@ class MediaViewModel : ViewModel() {
         viewModelScope.launch {
             saving = mediaID
             val name = MediaLibrary.nameFor(kind, title, path)
-            MediaLibrary.save(context, transport, mediaID, name, video = kind == "video")
+            MediaLibrary.save(context, transport, mediaID, name, kind)
                 .onSuccess { message = "Saved $name to this phone." }
                 .onFailure { failure ->
                     error = (failure as? TransportError)?.message
