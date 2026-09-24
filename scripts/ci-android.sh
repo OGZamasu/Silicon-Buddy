@@ -238,9 +238,12 @@ fi
 # --- On a device ------------------------------------------------------------------
 if $connected; then
     # Two passes. The main one, and then — on the fresh install every run begins with —
-    # the one class that is about a phone where notifications were never granted, which
-    # another class grants for the whole of the run above.
-    notice=dev.siliconoptimizer.buddy.NotificationsOffTest
+    # the classes that need a permission to be, or to stay, one way: the one about a phone
+    # where notifications were never granted, which another class grants for the whole of
+    # the run above, and the scanner's, which allows the camera for the rest of its run —
+    # taking a permission back kills the process the tests run in, and ManualPairingTest
+    # needs the camera never asked for.
+    notice=dev.siliconoptimizer.buddy.NotificationsOffTest,dev.siliconoptimizer.buddy.QrScannerTest
     ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
         "-Pandroid.testInstrumentationRunnerArguments.standin=$standin" \
         "-Pandroid.testInstrumentationRunnerArguments.notClass=$notice"
@@ -272,7 +275,7 @@ for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
         tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
         skip = re.search(r'<testsuite [^>]*skipped="(\d+)"', text)
         skipped += int(skip.group(1)) if skip else 0
-print(f"instrumented tests (fresh install, notifications never granted): {tests}, failures: {failures}, skipped: {skipped}")
+print(f"instrumented tests (fresh install, notifications never granted, camera allowed): {tests}, failures: {failures}, skipped: {skipped}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 fi
