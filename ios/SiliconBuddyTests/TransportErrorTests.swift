@@ -10,7 +10,12 @@ final class TransportErrorTests: XCTestCase {
         let error = URLError(.cannotConnectToHost)
         XCTAssertEqual(TransportError.from(urlError: error), .appNotRunning)
         XCTAssertTrue(TransportError.appNotRunning.errorDescription!.contains("address and port"))
-        XCTAssertTrue(TransportError.appNotRunning.recoverySuggestion!.contains("control.json"))
+        // The advice a paired iPhone gets too, where the app being closed is the likely
+        // cause and neither the Simulator nor control.json means anything.
+        XCTAssertEqual(
+            TransportError.appNotRunning.recoverySuggestion,
+            "Open Silicon Optimizer and check the address and port."
+        )
     }
 
     func testTimeoutIsItsOwnThing() {

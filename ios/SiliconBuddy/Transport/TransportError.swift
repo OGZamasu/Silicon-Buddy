@@ -106,7 +106,7 @@ extension TransportError: LocalizedError {
     public var recoverySuggestion: String? {
         switch self {
         case .unreachable: "Open Tailscale, then pull to refresh."
-        case .appNotRunning: "Check the Mac's address and port. For a local Simulator connection, use the current port in control.json."
+        case .appNotRunning: "Open Silicon Optimizer and check the address and port."
         case .unauthorized: "Settings → Silicon Buddy → Pair a device."
         case .forbidden: "Pair again from the Mac with full control."
         case .conflict: "Wait for the answer, or start another conversation."

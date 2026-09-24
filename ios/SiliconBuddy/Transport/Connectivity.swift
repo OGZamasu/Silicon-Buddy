@@ -3,7 +3,8 @@ import Foundation
 /// What a reachability probe found.
 ///
 /// Three failures, three different fixes, and the app says which one it is instead of
-/// spinning: the tailnet is off, the Mac app is closed, or this device is no longer paired.
+/// spinning: the tailnet is off, nothing is listening at that address and port, or this
+/// device is no longer paired.
 public enum Reachability: Sendable, Equatable {
     case unknown
     case checking
