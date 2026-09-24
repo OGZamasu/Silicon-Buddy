@@ -46,6 +46,36 @@ final class OneShotAskTests: XCTestCase {
         XCTAssertEqual(transport.chatCallCount, 0, "And never again on /chat")
     }
 
+    /// Siri or Shortcuts giving up on the question, or the share sheet closing, cancels the
+    /// ask. The stream it was reading then ends with nothing — which is not a route with
+    /// nothing to say, and the next two routes must not be asked the same question.
+    func testACancelledAskTriesNoOtherRoute() async throws {
+        let transport = StubTransport()
+        transport.createdConversation = BuddyAPI.ConversationSummary(
+            id: "C1", title: "Shared", updatedAt: Date(), messageCount: 0
+        )
+        transport.streamHangs = true
+        let suite = self.suite!
+        let asking = Task {
+            try await OneShotAsk.send(
+                message: "Why is the sky blue?", using: transport,
+                defaults: UserDefaults(suiteName: suite)!
+            )
+        }
+        for _ in 0..<200 where transport.streamCallCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        asking.cancel()
+        do {
+            _ = try await asking.value
+            XCTFail("A cancelled ask has no answer")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Got \(error)")
+        }
+        XCTAssertEqual(transport.streamCallCount, 1, "Not /chat/stream as well")
+        XCTAssertEqual(transport.chatCallCount, 0, "Nor /chat")
+    }
+
     func testAMacWithoutConversationsIsAskedOnThePlainStream() async throws {
         let transport = StubTransport()
         transport.streamEvents = [

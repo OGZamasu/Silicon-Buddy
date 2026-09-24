@@ -142,8 +142,15 @@ public enum OneShotAsk {
         } catch let error as TransportError where error.isMissingRoute {
             return nil
         } catch let error as TransportError {
+            // Given up on — Siri or Shortcuts stopped waiting, the sheet was closed — the
+            // socket closed under the read, and that failure is the cancellation's.
+            try Task.checkCancellation()
             throw Failure.refused(error.localizedDescription)
         }
+        // A stream ends with nothing, not an error, for a consumer that was cancelled. That
+        // is an ask that is over, not a route with nothing to say: the next two routes
+        // would be asked the same question for nobody.
+        try Task.checkCancellation()
         // Closed without `finished`. A stream with nothing in it is a route with nothing
         // to say, and the next one may answer; anything else was generated here.
         guard sawAnything else { return nil }
