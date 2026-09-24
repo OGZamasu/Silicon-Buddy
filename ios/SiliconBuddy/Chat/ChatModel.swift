@@ -245,6 +245,10 @@ public final class ChatModel {
         case missingRoute
         /// A Mac that keeps conversations, and not this one (404 on the conversation).
         case noSuchConversation
+        /// The route answered and closed without a word: a Mac that quit or gave up before
+        /// its first token. Worth trying the next route for this reply — and no evidence at
+        /// all about which routes the Mac has.
+        case silent
         /// The Mac is already answering in this conversation (409).
         case busy(String)
         case failed(String)
@@ -286,6 +290,11 @@ public final class ChatModel {
                     // goes as plain history instead and this device keeps the
                     // transcript; the Mac goes on keeping every other one.
                     keptHere.insert(id)
+                case .silent:
+                    // Plain streaming next. The Mac listed its conversations a moment ago,
+                    // so its silence says nothing about whether it keeps them, and reading
+                    // it as "it keeps none" moved every one of them onto the phone.
+                    break
                 case .busy(let message):
                     // The Mac is still answering the previous message in this
                     // conversation. Sending it again would only be refused again.
@@ -314,6 +323,9 @@ public final class ChatModel {
                 return
             case .missingRoute, .noSuchConversation:
                 usesStreaming = false
+            case .silent:
+                // One request, one answer, for this reply only: the route is there.
+                break
             case .busy(let message):
                 finishStreamingMessage(failure: message)
                 error = message
@@ -376,7 +388,7 @@ public final class ChatModel {
             // its streaming off for the rest of the session.
             if Task.isCancelled { return .stopped }
             // A stream that ends without one event is not an answer; try the next thing.
-            return sawAnything ? .answered : .missingRoute
+            return sawAnything ? .answered : .silent
         } catch let error as TransportError where error.isMissingRoute {
             return .missingRoute
         } catch let error as TransportError where error == .cancelled {

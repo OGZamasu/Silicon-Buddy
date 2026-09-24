@@ -112,6 +112,34 @@ final class ChatModelTests: XCTestCase {
         XCTAssertNil(model.error)
     }
 
+    /// The Mac writes its 200 only once the answer has started, and ends the body by
+    /// closing the connection. A Mac that quits or gives up before the first token therefore
+    /// answers 200 with nothing in it — a route that is there, saying nothing.
+    func testASilentAnswerIsNotAMacWithoutConversationsOrStreaming() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.streamEvents = []
+        transport.chatResult = .success(
+            ControlAPI.ChatResponse(
+                content: "Answered on /chat.", reasoning: nil, promptTokens: 1,
+                generatedTokens: 3, tokensPerSecond: 10
+            )
+        )
+        await model.loadConversations(using: transport)
+        XCTAssertTrue(model.usesRemoteConversations)
+
+        model.draft = "hello"
+        model.send(using: transport)
+        try await waitForIdle(model)
+
+        XCTAssertTrue(model.usesRemoteConversations, "Silence is not a Mac that keeps no conversations")
+        XCTAssertTrue(model.usesStreaming, "Nor one that cannot stream")
+        XCTAssertEqual(transport.streamCallCount, 2, "The conversation route, then plain streaming")
+        XCTAssertEqual(transport.chatCallCount, 1, "And /chat, for this reply")
+        XCTAssertEqual(model.current?.messages.last?.content, "Answered on /chat.")
+    }
+
     func testARePairWhileWaitingLeavesTheNewMacsRoutesAlone() async throws {
         let (model, _) = makeModel()
         let transport = StubTransport()
