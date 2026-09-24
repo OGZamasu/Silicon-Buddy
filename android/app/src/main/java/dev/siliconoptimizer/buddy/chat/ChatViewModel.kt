@@ -403,11 +403,16 @@ class ChatViewModel(
 
     fun delete(id: String) {
         viewModelScope.launch {
+            try {
+                if (OnDeviceIds.isOnDevice(id)) phone.conversations.delete(id) else store.delete(id)
+            } catch (failure: java.io.IOException) {
+                // Nothing was taken out; it stays in the list, where it still is.
+                error = NOT_DELETED
+                return@launch
+            }
             if (OnDeviceIds.isOnDevice(id)) {
-                phone.conversations.delete(id)
                 phoneConversations.removeAll { it.id == id }
             } else {
-                store.delete(id)
                 conversations.removeAll { it.id == id }
             }
             if (current?.id == id) current = null
@@ -768,7 +773,14 @@ class ChatViewModel(
             return
         }
         val conversation = current ?: return
-        val saved = store.save(conversation)
+        val saved = try {
+            store.save(conversation)
+        } catch (failure: java.io.IOException) {
+            // The store wrote nothing and kept its file. The conversation is still on screen,
+            // and the next save writes all of it.
+            error = NOT_SAVED
+            return
+        }
         current = saved
         val index = conversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) conversations[index] = saved else conversations.add(0, saved)
@@ -1086,7 +1098,12 @@ class ChatViewModel(
 
     private suspend fun persistPhone() {
         val conversation = current?.takeIf { it.onDevice } ?: return
-        val saved = phone.conversations.save(conversation)
+        val saved = try {
+            phone.conversations.save(conversation)
+        } catch (failure: java.io.IOException) {
+            error = NOT_SAVED
+            return
+        }
         current = saved
         val index = phoneConversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) phoneConversations[index] = saved else phoneConversations.add(0, saved)
@@ -1167,6 +1184,14 @@ class ChatViewModel(
     }
 
     companion object {
+        /** Said when this phone could not write a conversation down. It is still on screen. */
+        const val NOT_SAVED =
+            "This phone couldn't save the conversation just now. It's still here, and the " +
+                "next message saves it again."
+
+        /** Said when this phone could not take a conversation out of its store. */
+        const val NOT_DELETED = "This phone couldn't delete that conversation just now. Try again."
+
         /**
          * A reasoning model can spend its whole budget thinking and answer nothing. An
          * empty bubble would look like a bug; saying what happened is the honest version.

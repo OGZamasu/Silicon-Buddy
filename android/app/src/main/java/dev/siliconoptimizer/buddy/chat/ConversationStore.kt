@@ -114,7 +114,8 @@ data class Conversation(
  *
  * It is the only copy — the app is out of backups — so it is written the way a file that
  * cannot be lost is written: one change at a time, into a file beside it that is renamed
- * over it once it is whole, and never over a file this store could not read.
+ * over it once it is whole, and never over a file this store could not read. A save or a
+ * delete that could not be made throws an [IOException] and leaves the file as it was.
  */
 class ConversationStore(val directory: File) {
 
@@ -130,50 +131,73 @@ class ConversationStore(val directory: File) {
      */
     private val lock: Mutex = locks.computeIfAbsent(file.absolutePath) { Mutex() }
 
-    suspend fun all(): List<Conversation> = withContext(Dispatchers.IO) { read().orEmpty() }
+    /** Every conversation here; none, for a file that is damaged or cannot be read now. */
+    suspend fun all(): List<Conversation> =
+        withContext(Dispatchers.IO) { runCatching { read() }.getOrNull().orEmpty() }
 
     suspend fun conversation(id: String): Conversation? =
-        withContext(Dispatchers.IO) { read()?.firstOrNull { it.id == id } }
+        withContext(Dispatchers.IO) { runCatching { read() }.getOrNull()?.firstOrNull { it.id == id } }
 
+    /** Writes [conversation] in; throws [IOException], having written nothing, when it cannot. */
     suspend fun save(conversation: Conversation): Conversation = withContext(Dispatchers.IO) {
         lock.withLock {
             val updated = conversation.titledFromFirstMessage()
                 .copy(updatedAt = System.currentTimeMillis())
             val stored = read()
-            // A file that is there and cannot be read is still the owner's conversations —
+            // A file that is there and does not decode is still the owner's conversations —
             // cut short by a crash, or written by a newer version of this app. It goes
             // aside, whole, rather than under a list that has only this one in it.
-            if (stored == null && !setAside()) return@withLock updated
+            if (stored == null) setAside()
             val others = stored.orEmpty().filterNot { it.id == updated.id }
             write((others + updated).sortedByDescending { it.updatedAt })
             updated
         }
     }
 
+    /** Takes [id] out; throws [IOException], having written nothing, when it cannot. */
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         lock.withLock {
-            // Nothing can be taken out of a file that could not be read, and writing what
-            // is left would be writing nothing over it.
+            // Nothing can be taken out of a file that does not decode, and writing what is
+            // left would be writing nothing over it.
             val stored = read() ?: return@withLock
             write(stored.filterNot { it.id == id })
         }
     }
 
-    /** What the file holds: empty when there is no file, null when it could not be read. */
+    /**
+     * What the file holds: empty when there is no file, null when it is there and does not
+     * decode.
+     *
+     * A file that could not be *read* is neither, and is thrown as an [IOException]: an I/O
+     * error, too many files open, a file of pictures larger than the memory there is at that
+     * moment. That says nothing about what is in the file — it is most likely all of the
+     * owner's conversations, intact — so it is not set aside as damaged, and nothing is
+     * written over it.
+     */
     private fun read(): List<Conversation>? {
         if (!file.exists()) return emptyList()
-        return runCatching {
+        return try {
             json.decodeFromString<List<Conversation>>(file.readText())
                 .sortedByDescending { it.updatedAt }
-        }.getOrNull()
+        } catch (undecodable: IllegalArgumentException) {
+            // kotlinx.serialization's SerializationException is one of these.
+            null
+        } catch (failure: Throwable) {
+            throw failure as? IOException ?: IOException("${file.name} could not be read", failure)
+        }
     }
 
     /**
-     * Moves an unreadable file out of the way under a name of its own, where it is kept.
-     * False when it could not be moved, and then nothing is written over it.
+     * Moves a file that does not decode out of the way, under a name no other file has, where
+     * it is kept. Throws when it could not be moved, and then nothing is written over it.
      */
-    private fun setAside(): Boolean =
-        file.renameTo(File(directory, "conversations.unreadable-${System.currentTimeMillis()}.json"))
+    private fun setAside() {
+        val stamp = System.currentTimeMillis()
+        val aside = generateSequence(0) { it + 1 }
+            .map { File(directory, "conversations.unreadable-$stamp" + (if (it == 0) "" else "-$it") + ".json") }
+            .first { !it.exists() }
+        if (!file.renameTo(aside)) throw IOException("could not set ${file.name} aside")
+    }
 
     /**
      * Written beside the file, flushed to the disk, and renamed over it. A rename in one
@@ -182,14 +206,17 @@ class ConversationStore(val directory: File) {
      */
     private fun write(conversations: List<Conversation>) {
         val temporary = File(directory, file.name + ".tmp")
-        runCatching {
+        try {
             directory.mkdirs()
             FileOutputStream(temporary).use { output ->
                 output.write(json.encodeToString(conversations).toByteArray())
                 output.fd.sync()
             }
             if (!temporary.renameTo(file)) throw IOException("could not replace ${file.name}")
-        }.onFailure { temporary.delete() }
+        } catch (failure: Throwable) {
+            temporary.delete()
+            throw failure as? IOException ?: IOException("${file.name} could not be written", failure)
+        }
     }
 
     private companion object {

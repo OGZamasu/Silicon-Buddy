@@ -11,6 +11,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -253,6 +254,81 @@ class ConversationStoreTest {
         ConversationStore(directory).delete("a")
 
         assertEquals("not json", file.readText())
+    }
+
+    /**
+     * A damaged file, then a burst of saves and deletes from several stores at once. The
+     * damaged bytes survive in exactly one file set aside, and what is written is never an
+     * empty list.
+     */
+    @Test
+    fun `a damaged file under a burst of saves is set aside once and nothing is lost`() = runBlocking {
+        val directory = folder.newFolder()
+        val torn = """[{"id":"a","title":"Lisbon","messages":[{"role":"user","content":"Three da"""
+        File(directory, "conversations.json").writeText(torn)
+        val stores = List(3) { ConversationStore(directory) }
+        (1..60).map { index ->
+            async(Dispatchers.IO) {
+                if (index % 3 == 0) {
+                    stores[index % 3].delete("x$index")
+                } else {
+                    stores[index % 3].save(Conversation(id = "x$index", title = "N$index"))
+                }
+            }
+        }.awaitAll()
+
+        val aside = directory.listFiles().orEmpty().filter { it.name.startsWith("conversations.unreadable-") }
+        assertEquals(1, aside.size)
+        assertEquals(torn, aside.single().readText())
+        assertEquals(40, ConversationStore(directory).all().size)
+    }
+
+    /**
+     * A file that decodes perfectly well but cannot be read at this moment — an I/O error, too
+     * many files open, a file of pictures too large for the memory there is. That says nothing
+     * about what is in it, so it is not set aside as though it were damaged: nothing is written,
+     * the save says it failed, and the file stays where the store reads it.
+     */
+    @Test
+    fun `a file that cannot be read for a moment is left as it is`() = runBlocking {
+        val directory = folder.newFolder()
+        val store = ConversationStore(directory)
+        listOf("a", "b", "c").forEach { store.save(Conversation(id = it, title = it.uppercase())) }
+        val file = File(directory, "conversations.json")
+        val before = file.readText()
+
+        assertTrue(file.setReadable(false, false))
+        val saving = try {
+            runCatching { store.save(Conversation(id = "d", title = "D")) }.exceptionOrNull()
+        } finally {
+            file.setReadable(true, false)
+        }
+
+        assertTrue("the save says it failed, not that it saved: $saving", saving is IOException)
+        assertEquals("nothing was written over the file", before, file.readText())
+        assertEquals("and nothing was set aside", listOf(file.name), directory.list().orEmpty().toList())
+        // Readable again, the same save keeps all of them.
+        store.save(Conversation(id = "d", title = "D"))
+        assertEquals(setOf("a", "b", "c", "d"), store.all().map { it.id }.toSet())
+    }
+
+    @Test
+    fun `a delete from a file that cannot be read for a moment writes nothing`() = runBlocking {
+        val directory = folder.newFolder()
+        val store = ConversationStore(directory)
+        listOf("a", "b").forEach { store.save(Conversation(id = it, title = it.uppercase())) }
+        val file = File(directory, "conversations.json")
+        val before = file.readText()
+
+        assertTrue(file.setReadable(false, false))
+        val deleting = try {
+            runCatching { store.delete("a") }.exceptionOrNull()
+        } finally {
+            file.setReadable(true, false)
+        }
+
+        assertTrue("the delete says it failed: $deleting", deleting is IOException)
+        assertEquals(before, file.readText())
     }
 
     /**
