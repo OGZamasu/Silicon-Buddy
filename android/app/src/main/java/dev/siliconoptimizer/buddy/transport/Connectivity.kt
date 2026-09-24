@@ -99,3 +99,29 @@ class ConnectivityProbe(private val transport: ControlTransport) {
         Reachability.Failed(error.message ?: "Unknown error")
     }
 }
+
+/**
+ * One check of the paired Mac: whether it answers, then — when it does — what it is running.
+ *
+ * A check takes seconds, and the phone can be re-paired or told to forget its Mac while one
+ * is out. What comes back is about the Mac that was asked, so it is handed on only while
+ * that Mac is still the one paired ([stillPaired], asked before each answer is written).
+ * Written after the pairing changed, the old Mac's model went into the snapshot the widget
+ * and the tile read, and "Connected" onto a phone that had just forgotten its Mac.
+ */
+object PairedMacCheck {
+    suspend fun run(
+        transport: ControlTransport,
+        stillPaired: () -> Boolean,
+        reachability: (Reachability) -> Unit,
+        status: (Status?) -> Unit,
+    ) {
+        val result = ConnectivityProbe(transport).check()
+        if (!stillPaired()) return
+        reachability(result)
+        if (!result.isReady) return
+        val answered = runCatching { transport.status() }.getOrNull()
+        if (!stillPaired()) return
+        status(answered)
+    }
+}

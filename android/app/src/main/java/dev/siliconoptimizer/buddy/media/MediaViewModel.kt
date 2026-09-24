@@ -194,7 +194,8 @@ class MediaViewModel : ViewModel() {
     private fun update(next: QueueState, notifier: MediaNotifier?) {
         val previous = queue
         queue = next
-        announcer.notices(previous, next, ::handledByTheService).forEach { notifier?.post(it) }
+        announcer.notices(previous, next, ::handledByTheService, MediaJobCenter::gaveUp)
+            .forEach { notifier?.post(it) }
     }
 
     /**
@@ -462,6 +463,23 @@ class MediaViewModel : ViewModel() {
             } catch (failure: TransportError) {
                 if (mac == generation) error = failure.message
             }
+        }
+    }
+
+    /**
+     * "Clear finished". The renders the video queue does not hold — images, meshes — are
+     * rows on this phone only, and go from here; the finished clips it does hold are the
+     * Mac's to clear, and are asked for only when there are some, from a phone allowed to.
+     */
+    fun clearFinished(
+        transport: ControlTransport?,
+        notifier: MediaNotifier? = null,
+        canControl: Boolean = true,
+    ) {
+        val clipsOnTheMac = queue.finished.any { it.isQueued }
+        queue = queue.clearingFinishedRenders()
+        if (clipsOnTheMac && canControl) {
+            control(VideoQueueControlRequest.CLEAR_FINISHED, transport = transport, notifier = notifier)
         }
     }
 

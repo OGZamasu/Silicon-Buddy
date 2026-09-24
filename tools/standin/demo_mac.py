@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The stand-in's own made-up control token. It is in StandInMac.java too, which is how a
@@ -415,16 +416,74 @@ def queue_worker():
                             stage="video-denoise %d/30" % int(fraction * 30))
 
 
-def render_in_background(kind, title, seconds, on_done):
-    """An image or a mesh: a `job` event stream and then an answer, like the real thing."""
+# Image and 3D renders, as the Mac reports them on /events (silicon-optimizer #104): each
+# render under an id of its own, `image-<job>` / `mesh-<job>`, with `kind` saying which
+# queue it came from. The one running now, and how the last few ended — up to eight a
+# queue, every one until a stream has been sent it and the latest after that — so a phone
+# that opens /events later is told how the last render went, as the real Mac tells it.
+RENDERS_LOCK = threading.Lock()
+RUNNING_RENDERS = {}                      # kind -> the running frame
+RENDER_ENDINGS = {"image": [], "mesh": []}
+# The stand-in's switch for the next render a phone asks for: fail it at once, with this
+# sentence, the way a Mac that cannot start one answers.
+RENDER_KNOBS = {"failNextRequest": None}
+# How many /events streams have been opened, ever: a test watching for a phone to open its
+# stream again counts up, rather than waiting for the stand-in to notice one close.
+STREAMS_OPENED = [0]
+
+
+def render_job_id(kind):
+    return "%s-%s" % (kind, str(uuid.uuid4()).upper())
+
+
+def record_ending(kind, frame):
+    """Keeps an ending for openings: eight at most, and only the latest once it was sent."""
+    with RENDERS_LOCK:
+        RUNNING_RENDERS.pop(kind, None)
+        endings = RENDER_ENDINGS.setdefault(kind, [])
+        endings.append(frame)
+        del endings[:-8]
+    with EVENT_LOCK:
+        sent = bool(EVENT_QUEUES)
+    publish("job", frame)
+    if sent:
+        with RENDERS_LOCK:
+            del RENDER_ENDINGS[kind][:-1]
+
+
+def render_opening():
+    """What a stream that opens now is told about renders: the running ones, then the endings
+    not sent yet and the latest — after which only the latest is kept, as the Mac's reading."""
+    with RENDERS_LOCK:
+        frames = [("job", dict(frame)) for frame in RUNNING_RENDERS.values()]
+        for kind, endings in RENDER_ENDINGS.items():
+            frames += [("job", dict(frame)) for frame in endings]
+            del endings[:-1]
+    return frames
+
+
+def render_in_background(kind, title, seconds, on_done, fail=None):
+    """An image or a mesh: a `job` event stream and then an answer, like the real thing.
+    [fail] is the Mac's sentence for a render that fails at once, before a step is taken."""
+    job_id = render_job_id(kind)
+
     def run():
-        steps = max(1, int(seconds / 0.4))
-        for step in range(steps):
-            publish("job", {"id": kind, "kind": kind, "status": "running",
-                            "title": title, "fraction": (step + 1) / steps})
-            time.sleep(0.4)
-        publish("job", {"id": kind, "kind": kind, "status": "completed",
-                        "title": title, "fraction": 1.0})
+        if fail is None:
+            steps = max(1, int(seconds / 0.4))
+            for step in range(steps):
+                frame = {"id": job_id, "kind": kind, "status": "running",
+                         "title": title, "fraction": (step + 1) / steps}
+                with RENDERS_LOCK:
+                    RUNNING_RENDERS[kind] = frame
+                publish("job", frame)
+                time.sleep(0.4)
+            record_ending(kind, {"id": job_id, "kind": kind, "status": "completed",
+                                 "title": title, "fraction": 1.0,
+                                 "mediaID": keep_placeholder("image") if kind == "image"
+                                 else keep(b"glTF-placeholder", "model/gltf-binary")})
+        else:
+            record_ending(kind, {"id": job_id, "kind": kind, "status": "failed",
+                                 "title": title, "reason": fail})
         on_done()
     threading.Thread(target=run, daemon=True).start()
 
@@ -1486,9 +1545,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/events":
             self.start_stream()
             self.log_request_line("OPEN")
-            queue = [("agent", frame) for frame in opening_frames()]
+            queue = [("agent", frame) for frame in opening_frames()] + render_opening()
             with EVENT_LOCK:
                 EVENT_QUEUES.append(queue)
+                STREAMS_OPENED[0] += 1
             try:
                 beat = 0
                 while True:
@@ -1596,6 +1656,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Only this Mac can do that."}, 403)
             UNREACHABLE["until"] = time.time() + float(body.get("seconds") or 0)
             return self.send_json({"unreachableFor": float(body.get("seconds") or 0)})
+        if path == "/demo/renders":
+            # A render started on the Mac itself — no phone asked — or the next one a phone
+            # asks for failing at once.
+            if not self.is_control():
+                return self.send_json({"error": "Only this Mac can do that."}, 403)
+            if "failNextRequest" in body:
+                RENDER_KNOBS["failNextRequest"] = body["failNextRequest"]
+            kind = body.get("start")
+            if kind in ("image", "mesh"):
+                render_in_background(kind, body.get("title") or "On the Mac",
+                                     float(body.get("seconds") or 1), lambda: None,
+                                     fail=body.get("fail"))
+            with RENDERS_LOCK:
+                endings = {k: [e["id"] for e in v] for k, v in RENDER_ENDINGS.items()}
+                running = {k: v["id"] for k, v in RUNNING_RENDERS.items()}
+            with EVENT_LOCK:
+                opened = STREAMS_OPENED[0]
+            return self.send_json({"knobs": RENDER_KNOBS, "running": running, "endings": endings,
+                                   "streamsOpened": opened})
         if path == "/demo/ondevice":
             if not self.is_control():
                 return self.send_json({"error": "Only this Mac can do that."}, 403)
@@ -1791,9 +1870,12 @@ class Handler(BaseHTTPRequestHandler):
             model = next(
                 (m for m in IMAGE_MODELS if m["id"] == body.get("modelID")), IMAGE_MODELS[0],
             )
+            fail, RENDER_KNOBS["failNextRequest"] = RENDER_KNOBS["failNextRequest"], None
             done = threading.Event()
-            render_in_background("image", model["name"], SYNC_SECONDS, done.set)
+            render_in_background("image", model["name"], SYNC_SECONDS, done.set, fail=fail)
             done.wait(SYNC_SECONDS * 4 + 10)
+            if fail is not None:
+                return self.send_json({"error": fail}, 500)
             picture = keep_placeholder("image")
             return self.send_json({
                 "path": "lisbon-%04d.png" % random.randrange(9999),
@@ -1806,9 +1888,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(dict(MESH_PLAN))
 
         if path == "/mesh/generate":
+            fail, RENDER_KNOBS["failNextRequest"] = RENDER_KNOBS["failNextRequest"], None
             done = threading.Event()
-            render_in_background("mesh", "Hunyuan3D 2", SYNC_SECONDS, done.set)
+            render_in_background("mesh", "Hunyuan3D 2", SYNC_SECONDS, done.set, fail=fail)
             done.wait(SYNC_SECONDS * 4 + 10)
+            if fail is not None:
+                return self.send_json({"error": fail}, 500)
             mesh = keep(b"glTF-placeholder", "model/gltf-binary")
             return self.send_json({
                 "glbPath": "kettle.glb",

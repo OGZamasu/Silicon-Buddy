@@ -107,6 +107,11 @@ final class StandInMac {
         request("POST", "/demo/unreachable", "{\"seconds\":" + seconds + "}");
     }
 
+    /** The stand-in's render switches: a render "at the Mac", or the next request failing. */
+    JSONObject renders(String json) throws Exception {
+        return new JSONObject(request("POST", "/demo/renders", json));
+    }
+
     private String request(String method, String path, String body) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL("http://" + host + ":" + port + path).openConnection();
         connection.setRequestMethod(method);

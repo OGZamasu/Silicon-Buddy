@@ -83,4 +83,59 @@ class UnsavedConversationTest {
         assertEquals("nothing was written over the file", before, file.readText())
         assertEquals(listOf(file.name), directory.list().orEmpty().toList())
     }
+
+    private fun awaitAnswer(what: String, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (!condition()) {
+            if (System.currentTimeMillis() > deadline) fail("never: $what")
+            Thread.sleep(10)
+        }
+    }
+
+    private fun sendUnsaved() {
+        assertTrue(file.setReadable(false, false))
+        model.draft = "Three days in Lisbon?"
+        model.send(Answering())
+        awaitAnswer("the chat said the answer was not saved") { model.error != null && !model.isSending }
+        assertEquals(ChatViewModel.NOT_SAVED, model.error)
+        file.setReadable(true, false)
+    }
+
+    /**
+     * A turn the phone could not write down lives only in memory, and Android may end the
+     * process at any time after the app leaves the screen — with the turn in it. So leaving
+     * the screen tries the save again, and a save that works takes the message away.
+     */
+    @Test
+    fun `a turn the phone could not save is saved when the app leaves the screen`() {
+        sendUnsaved()
+        val id = model.current!!.id
+
+        model.saveUnsaved()
+        awaitAnswer("the turn reached the file") { file.readText().contains("Start in Alfama.") }
+
+        val stored = runBlocking { ConversationStore(directory).conversation(id) }
+        assertEquals(listOf("Three days in Lisbon?", "Start in Alfama."), stored?.messages?.map { it.content })
+        awaitAnswer("the message went") { model.error == null }
+    }
+
+    /**
+     * A conversation owed a save, deleted before the app leaves the screen. What is owed is
+     * the owner's words as they were — and the owner has since thrown them away: the retry
+     * as the app leaves must not write them back.
+     */
+    @Test
+    fun `a deleted conversation is not written back by the retry`() {
+        sendUnsaved()
+        val id = model.current!!.id
+        model.delete(id)
+        awaitAnswer("the delete took it off the screen") { model.current == null }
+
+        model.saveUnsaved()
+        Thread.sleep(1_000)
+
+        val stored = runBlocking { ConversationStore(directory).conversation(id) }
+        assertEquals("the retry wrote the deleted conversation back", null, stored?.id)
+        assertTrue("the retry put the deleted conversation back on the list", model.conversations.none { it.id == id })
+    }
 }
