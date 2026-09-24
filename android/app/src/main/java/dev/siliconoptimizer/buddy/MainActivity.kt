@@ -122,6 +122,8 @@ class MainActivity : ComponentActivity() {
     private val appState: AppState by viewModels()
     private val dashboard: DashboardViewModel by viewModels()
     private val media: MediaViewModel by viewModels()
+    /** The same one the chat screen uses: the activity's, whichever asks for it first. */
+    private val chat: ChatViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -173,6 +175,9 @@ class MainActivity : ComponentActivity() {
         // priority. The watcher holds a stream of its own; these close until the app is back.
         events.pause()
         dashboard.pauseLiveUpdates()
+        // A turn the phone could not write down is only in memory, and from here Android may
+        // end the process whenever it likes: try the save once more while it is still ours.
+        chat.saveUnsaved()
         // An answer on the phone is only written while the app is in front: leaving stops
         // it, and the model is let go after thirty seconds unless the owner comes back.
         OnDeviceEngine.existing()?.appLeftForeground()

@@ -27,6 +27,10 @@ import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.reach.VerdictMatching
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -773,14 +777,9 @@ class ChatViewModel(
             return
         }
         val conversation = current ?: return
-        val saved = try {
-            store.save(conversation)
-        } catch (failure: java.io.IOException) {
-            // The store wrote nothing and kept its file. The conversation is still on screen,
-            // and the next save writes all of it.
-            error = NOT_SAVED
-            return
-        }
+        // The store wrote nothing and kept its file on a failure. The conversation is still
+        // on screen, and is owed a save: the next one, or the one as the app leaves.
+        val saved = savingOwed(conversation) { store.save(it) } ?: return
         current = saved
         val index = conversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) conversations[index] = saved else conversations.add(0, saved)
@@ -788,6 +787,71 @@ class ChatViewModel(
 
     fun clearError() {
         error = null
+    }
+
+    /**
+     * Conversations this phone could not write down, by id, as they were when the save
+     * failed. Only in memory: the turn is lost with the process unless a later save works —
+     * the next one, or [saveUnsaved] as the app leaves the screen.
+     */
+    private val unsaved = mutableMapOf<String, Conversation>()
+
+    /**
+     * One save at a time, from any path. A retry of an older copy must not land after the
+     * newer one a send has just written; inside this, a retry sees that its copy is no longer
+     * the unsaved one and leaves it.
+     */
+    private val saving = Mutex()
+
+    /**
+     * Saves [conversation] under the save lock. A failure is remembered as owed and said; a
+     * save that works settles what was owed for it, and the message goes once nothing is.
+     * Null when it failed.
+     */
+    private suspend fun savingOwed(
+        conversation: Conversation,
+        save: suspend (Conversation) -> Conversation,
+    ): Conversation? = saving.withLock {
+        val saved = try {
+            save(conversation)
+        } catch (failure: java.io.IOException) {
+            unsaved[conversation.id] = conversation
+            error = NOT_SAVED
+            return@withLock null
+        }
+        unsaved.remove(conversation.id)
+        if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+        saved
+    }
+
+    /**
+     * Tries again to write down what this phone could not, now. Called as the app leaves the
+     * screen: after that Android may end the process whenever it likes, and a turn that
+     * lives only in memory goes with it. Not cancelled with the screen — this is the save
+     * the process may end right after.
+     */
+    fun saveUnsaved() {
+        if (unsaved.isEmpty()) return
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                saving.withLock {
+                    for (conversation in unsaved.values.toList()) {
+                        if (unsaved[conversation.id] !== conversation) continue
+                        val target = if (conversation.onDevice) phone.conversations else store
+                        val saved = try {
+                            target.save(conversation)
+                        } catch (failure: java.io.IOException) {
+                            continue
+                        }
+                        unsaved.remove(conversation.id)
+                        val list = if (conversation.onDevice) phoneConversations else conversations
+                        val index = list.indexOfFirst { it.id == saved.id }
+                        if (index >= 0) list[index] = saved else list.add(0, saved)
+                    }
+                    if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+                }
+            }
+        }
     }
 
     /**
@@ -1098,12 +1162,7 @@ class ChatViewModel(
 
     private suspend fun persistPhone() {
         val conversation = current?.takeIf { it.onDevice } ?: return
-        val saved = try {
-            phone.conversations.save(conversation)
-        } catch (failure: java.io.IOException) {
-            error = NOT_SAVED
-            return
-        }
+        val saved = savingOwed(conversation) { phone.conversations.save(it) } ?: return
         current = saved
         val index = phoneConversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) phoneConversations[index] = saved else phoneConversations.add(0, saved)
