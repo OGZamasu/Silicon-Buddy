@@ -205,7 +205,11 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
         try conversationsResult.get()
     }
 
+    /// What `POST /conversations` makes. Nil means the route 404s.
+    var createdConversation: BuddyAPI.ConversationSummary?
+
     func createConversation(title: String?) async throws -> BuddyAPI.ConversationSummary {
+        if let createdConversation { return createdConversation }
         throw TransportError.routeUnavailable("/conversations")
     }
 
