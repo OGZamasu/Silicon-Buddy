@@ -52,13 +52,19 @@ public final class EventFeed {
                         // without asking, so it is written down every time it changes.
                         SnapshotStore.note(status: status, macName: nil)
                     case .download(let progress):
-                        self.downloads[progress.id] = progress
-                        // A download that has arrived stops being news.
-                        if (progress.progress ?? 0) >= 1 {
+                        // Arrived, failed or removed: no longer happening. A failed one
+                        // kept here sat under "Happening now" for good, and stood in for
+                        // the model's Load button in the Models list.
+                        if (progress.progress ?? 0) >= 1 || progress.error != nil {
                             self.downloads.removeValue(forKey: progress.id)
+                        } else {
+                            self.downloads[progress.id] = progress
                         }
                     case .job(let job):
-                        if ["finished", "failed", "cancelled"].contains(job.status.lowercased()) {
+                        // The queue screen's vocabulary for "over", not a second list of
+                        // the Mac's words: this one lacked "completed", which is the word
+                        // the Mac uses, so every finished render stayed "running" here.
+                        if QueuePhase(wire: job.status).isFinished {
                             self.jobs.removeValue(forKey: job.id)
                         } else {
                             self.jobs[job.id] = job
@@ -102,10 +108,11 @@ public final class EventFeed {
         mustPoll = false
     }
 
-    /// The download for a model, whichever spelling of its id the list is holding.
+    /// The download for a model, whichever spelling of its id the list is holding: with
+    /// its quantization or without. Never another quantization's — downloading Q8 of a
+    /// model is not something to show in place of the Load button of the Q4 on disk.
     public func download(forModel id: String) -> BuddyAPI.DownloadProgress? {
         if let exact = downloads[id] { return exact }
-        let base = id.split(separator: "@").first.map(String.init) ?? id
-        return downloads.first { $0.key == base || $0.key.hasPrefix(base + "@") }?.value
+        return downloads.first { ControlAPI.Status.sameModel($0.key, id) }?.value
     }
 }
