@@ -27,6 +27,12 @@ import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.reach.VerdictMatching
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
@@ -401,11 +407,25 @@ class ChatViewModel(
 
     fun delete(id: String) {
         viewModelScope.launch {
+            // Under the save lock, and no longer owed a save: a retry as the app leaves would
+            // otherwise write back the words the owner has just thrown away — and one already
+            // under way finishes before this, so it cannot land after it.
+            val deleted = saving.withLock {
+                unsaved.remove(id)
+                if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+                try {
+                    if (OnDeviceIds.isOnDevice(id)) phone.conversations.delete(id) else store.delete(id)
+                    true
+                } catch (failure: java.io.IOException) {
+                    // Nothing was taken out; it stays in the list, where it still is.
+                    error = NOT_DELETED
+                    false
+                }
+            }
+            if (!deleted) return@launch
             if (OnDeviceIds.isOnDevice(id)) {
-                phone.conversations.delete(id)
                 phoneConversations.removeAll { it.id == id }
             } else {
-                store.delete(id)
                 conversations.removeAll { it.id == id }
             }
             if (current?.id == id) current = null
@@ -436,6 +456,7 @@ class ChatViewModel(
         val images = attachments.toList()
         draft = ""
         attachments.clear()
+        stopSending()
 
         var conversation = current ?: Conversation()
         val placeholderID = java.util.UUID.randomUUID().toString()
@@ -457,7 +478,6 @@ class ChatViewModel(
         refusal = null
         lastFailure = null
 
-        sendJob?.cancel()
         sendJob = viewModelScope.launch {
             run(placeholderID, transport)
             isSending = false
@@ -498,6 +518,16 @@ class ChatViewModel(
         sendingSince = null
         finishStreaming("Stopped.")
         if (current?.onDevice == true) viewModelScope.launch { persistPhone() }
+    }
+
+    /**
+     * Ends the send in flight, if there is one: its reply is closed as stopped, and its
+     * coroutine ends where it is. Before a new send takes its place — the new reply is the
+     * one still streaming after this, and nothing of the old send's ending may land on it.
+     */
+    private fun stopSending() {
+        if (sendJob?.isActive == true) finishStreaming("Stopped.")
+        sendJob?.cancel()
     }
 
     private enum class Outcome {
@@ -602,6 +632,7 @@ class ChatViewModel(
             }
         } catch (failure: Exception) {
             if (failure is kotlinx.coroutines.CancellationException) throw failure
+            currentCoroutineContext().ensureActive()
             lastFailure = failure
             val description = failure.message ?: "The Mac didn't answer."
             finishStreaming(description)
@@ -655,6 +686,9 @@ class ChatViewModel(
         } catch (failure: StreamFinished) {
             return Outcome.Answered
         } catch (failure: TransportError) {
+            // Given up on — Stop, or a new question — the socket closed under the read, and
+            // the failure that comes of it is the cancellation's, not the Mac's.
+            currentCoroutineContext().ensureActive()
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
             // Nothing has been written into the reply yet, so it is still open for the
@@ -671,8 +705,13 @@ class ChatViewModel(
             error = failure.message
             return Outcome.Failed
         } catch (failure: kotlinx.coroutines.CancellationException) {
+            // This send was stopped or replaced. It ends here: whatever it would have done
+            // next — close "the streaming reply", open the composer — is the next send's
+            // to do, and would land on that send's reply.
+            currentCoroutineContext().ensureActive()
             return Outcome.Stopped
         } catch (failure: Exception) {
+            currentCoroutineContext().ensureActive()
             lastFailure = failure
             finishStreaming(failure.message)
             error = failure.message
@@ -747,7 +786,9 @@ class ChatViewModel(
             return
         }
         val conversation = current ?: return
-        val saved = store.save(conversation)
+        // The store wrote nothing and kept its file on a failure. The conversation is still
+        // on screen, and is owed a save: the next one, or the one as the app leaves.
+        val saved = savingOwed(conversation) { store.save(it) } ?: return
         current = saved
         val index = conversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) conversations[index] = saved else conversations.add(0, saved)
@@ -755,6 +796,71 @@ class ChatViewModel(
 
     fun clearError() {
         error = null
+    }
+
+    /**
+     * Conversations this phone could not write down, by id, as they were when the save
+     * failed. Only in memory: the turn is lost with the process unless a later save works —
+     * the next one, or [saveUnsaved] as the app leaves the screen.
+     */
+    private val unsaved = mutableMapOf<String, Conversation>()
+
+    /**
+     * One save at a time, from any path. A retry of an older copy must not land after the
+     * newer one a send has just written; inside this, a retry sees that its copy is no longer
+     * the unsaved one and leaves it.
+     */
+    private val saving = Mutex()
+
+    /**
+     * Saves [conversation] under the save lock. A failure is remembered as owed and said; a
+     * save that works settles what was owed for it, and the message goes once nothing is.
+     * Null when it failed.
+     */
+    private suspend fun savingOwed(
+        conversation: Conversation,
+        save: suspend (Conversation) -> Conversation,
+    ): Conversation? = saving.withLock {
+        val saved = try {
+            save(conversation)
+        } catch (failure: java.io.IOException) {
+            unsaved[conversation.id] = conversation
+            error = NOT_SAVED
+            return@withLock null
+        }
+        unsaved.remove(conversation.id)
+        if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+        saved
+    }
+
+    /**
+     * Tries again to write down what this phone could not, now. Called as the app leaves the
+     * screen: after that Android may end the process whenever it likes, and a turn that
+     * lives only in memory goes with it. Not cancelled with the screen — this is the save
+     * the process may end right after.
+     */
+    fun saveUnsaved() {
+        if (unsaved.isEmpty()) return
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                saving.withLock {
+                    for (conversation in unsaved.values.toList()) {
+                        if (unsaved[conversation.id] !== conversation) continue
+                        val target = if (conversation.onDevice) phone.conversations else store
+                        val saved = try {
+                            target.save(conversation)
+                        } catch (failure: java.io.IOException) {
+                            continue
+                        }
+                        unsaved.remove(conversation.id)
+                        val list = if (conversation.onDevice) phoneConversations else conversations
+                        val index = list.indexOfFirst { it.id == saved.id }
+                        if (index >= 0) list[index] = saved else list.add(0, saved)
+                    }
+                    if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+                }
+            }
+        }
     }
 
     /**
@@ -975,6 +1081,9 @@ class ChatViewModel(
         draft = ""
         refusal = null
         error = null
+        stopSending()
+        // Read again: stopping closed the reply that was still arriving in it.
+        conversation = current?.takeIf { it.id == conversation.id } ?: conversation
         val placeholderID = java.util.UUID.randomUUID().toString()
         conversation = conversation.copy(
             phoneModelID = model.id,
@@ -994,7 +1103,6 @@ class ChatViewModel(
         isSending = true
         sendingSince = System.currentTimeMillis()
 
-        sendJob?.cancel()
         sendJob = viewModelScope.launch {
             // Written down before anything slow happens. Loading a model is the longest
             // minute in this app and the likeliest moment for Android to take the process:
@@ -1063,7 +1171,7 @@ class ChatViewModel(
 
     private suspend fun persistPhone() {
         val conversation = current?.takeIf { it.onDevice } ?: return
-        val saved = phone.conversations.save(conversation)
+        val saved = savingOwed(conversation) { phone.conversations.save(it) } ?: return
         current = saved
         val index = phoneConversations.indexOfFirst { it.id == saved.id }
         if (index >= 0) phoneConversations[index] = saved else phoneConversations.add(0, saved)
@@ -1144,6 +1252,14 @@ class ChatViewModel(
     }
 
     companion object {
+        /** Said when this phone could not write a conversation down. It is still on screen. */
+        const val NOT_SAVED =
+            "This phone couldn't save the conversation just now. It's still here, and the " +
+                "next message saves it again."
+
+        /** Said when this phone could not take a conversation out of its store. */
+        const val NOT_DELETED = "This phone couldn't delete that conversation just now. Try again."
+
         /**
          * A reasoning model can spend its whole budget thinking and answer nothing. An
          * empty bubble would look like a bug; saying what happened is the honest version.

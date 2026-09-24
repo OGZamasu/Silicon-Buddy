@@ -191,6 +191,71 @@ class QueueReducerTest {
         assertNull(state.job("9C2F-0001"))
     }
 
+    // MARK: - Rows the video queue does not hold
+
+    private fun render(n: Int, status: String = "completed", kind: String = "image") =
+        job(id = "$kind-6F1C2A40-0000-4000-8000-${n.toString().padStart(12, '0')}", status = status, kind = kind, title = "FLUX.2 klein")
+
+    /**
+     * An image or a mesh is a row made from `job` events, and the video queue never lists it,
+     * so nothing ever took one away: every render stayed on the Queue screen for the life of
+     * the process, and "Clear finished" only asked the Mac to clear its clips. Now it clears
+     * those rows as well — the finished ones; what is running stays, and so does every clip
+     * the video queue holds, which the Mac's own clear is for.
+     */
+    @Test
+    fun `clearing finished takes the finished renders the video queue does not hold`() {
+        var state = QueueState.empty.applying(view(item(id = "clip-done", status = "completed"), item(id = "clip-waiting")))
+        state = state.applying(render(1)).applying(render(2, "failed", kind = "mesh")).applying(render(3, "running"))
+
+        val cleared = state.clearingFinishedRenders()
+
+        assertEquals(
+            listOf("clip-done", "clip-waiting", render(3, "running").id),
+            cleared.jobs.map { it.id },
+        )
+    }
+
+    /** The Mac tells every phone that opens `/events` how its last renders ended: not again. */
+    @Test
+    fun `a cleared render does not come back with the Mac's next opening`() {
+        val state = QueueState.empty.applying(render(1)).clearingFinishedRenders()
+        assertTrue(state.applying(render(1)).jobs.isEmpty())
+        // A render of its own that is running is still news.
+        assertEquals(1, state.applying(render(2, "running")).jobs.size)
+    }
+
+    /**
+     * A Mac from before per-render ids names every image render `image` and every mesh `mesh`.
+     * There a cleared id is not one render but all of them, and remembering it hid the next
+     * render first heard of as its ending — one that failed at once, or ran while the stream
+     * was reconnecting. Only an id of its own is remembered.
+     */
+    @Test
+    fun `a new render under a cleared fixed id is still listed`() {
+        val fixed = { status: String -> job(id = "image", status = status, kind = "image", title = "FLUX") }
+        val cleared = QueueState.empty.applying(fixed("running")).applying(fixed("completed")).clearingFinishedRenders()
+
+        val next = cleared.applying(fixed("failed"))
+
+        assertEquals("a new render was hidden because an old one under the same id was cleared", 1, next.jobs.size)
+    }
+
+    /** And whether anybody clears them or not, there is a ceiling: the oldest go first. */
+    @Test
+    fun `finished renders are capped, oldest first, and running ones never`() {
+        var state = QueueState.empty.applying(render(0, "running"))
+        for (n in 1..(QueueState.MAX_FINISHED_RENDERS + 6)) state = state.applying(render(n))
+
+        val finished = state.jobs.filter { it.state.isTerminal }
+        assertEquals(QueueState.MAX_FINISHED_RENDERS, finished.size)
+        assertEquals("the newest are kept", render(QueueState.MAX_FINISHED_RENDERS + 6).id, finished.last().id)
+        assertEquals(render(7).id, finished.first().id)
+        assertTrue("running work is never trimmed", state.jobs.any { it.id == render(0, "running").id })
+        // One trimmed away is not brought back by the Mac saying how it ended again.
+        assertNull(state.applying(render(1)).job(render(1).id))
+    }
+
     @Test
     fun `pausing is the queue's state, not a job's`() {
         val state = QueueState.empty.applying(view(item(), paused = true))

@@ -27,6 +27,10 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     /// What `/chat/stream` sends. Nil means the route 404s.
     var streamEvents: [BuddyAPI.ChatStreamEvent]?
     var streamError: Error?
+    /// Set to make both chat streams wait for a first token that never comes, the way
+    /// `ControlClient`'s do: the bytes are read by a task of their own, which a consumer
+    /// that goes away cancels.
+    var streamHangs = false
 
     /// Set to make a call hang for ever instead of answering. A Mac that is awake,
     /// reachable and thinking is not the same as one that is down, and a widget has to
@@ -158,6 +162,19 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
     private func makeStream() -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         let events = streamEvents
         let failure = streamError
+        if streamHangs {
+            return AsyncThrowingStream { continuation in
+                let reader = Task {
+                    do {
+                        try await Task.sleep(for: .seconds(3600))
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: TransportError.cancelled)
+                    }
+                }
+                continuation.onTermination = { _ in reader.cancel() }
+            }
+        }
         return AsyncThrowingStream { continuation in
             if let failure {
                 continuation.finish(throwing: failure)
@@ -184,11 +201,18 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
         }
     }
 
+    private(set) var conversationsReads = 0
+
     func conversations() async throws -> [BuddyAPI.ConversationSummary] {
-        try conversationsResult.get()
+        conversationsReads += 1
+        return try conversationsResult.get()
     }
 
+    /// What `POST /conversations` makes. Nil means the route 404s.
+    var createdConversation: BuddyAPI.ConversationSummary?
+
     func createConversation(title: String?) async throws -> BuddyAPI.ConversationSummary {
+        if let createdConversation { return createdConversation }
         throw TransportError.routeUnavailable("/conversations")
     }
 

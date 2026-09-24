@@ -37,12 +37,32 @@ final class DeveloperConnectionTests: XCTestCase {
         )
     }
 
+    /// The form builds what it probes through here, so the host rule holds here too: the
+    /// control token goes to loopback, and in a build that dials no local Mac, nowhere.
+    func testTheControlTokenIsBuiltOnlyForLoopback() {
+        for host in ["100.64.0.9", "fd7a:115c:a1e0::9", "10.0.2.2"] {
+            XCTAssertThrowsError(
+                try DeveloperConnection.configuration(host: host, port: "53572", token: "full-token"),
+                "\(host) must not get the token"
+            ) { error in
+                XCTAssertEqual(
+                    error as? TransportError, .forbidden(PairingView.developerHostProblem(host) ?? "")
+                )
+            }
+        }
+        XCTAssertThrowsError(
+            try DeveloperConnection.configuration(
+                host: "127.0.0.1", port: "53572", token: "full-token", local: false
+            )
+        )
+    }
+
     func testLocalAddressGuidanceDoesNotMistakeTailnetOrUntrustedHostsForLocal() {
         for host in ["127.0.0.1", "127.1.2.3", "localhost", " LOCALHOST\n", "::1", "[::1]", "10.0.2.2"] {
-            XCTAssertTrue(TailnetHost.isLocalDevelopmentHost(host), host)
+            XCTAssertTrue(TailnetHost.isLocal(host), host)
         }
         for host in ["100.64.0.9", "fd7a:115c:a1e0::9", "127.0.0.1.example.com", "127.000.0.1", "::", ""] {
-            XCTAssertFalse(TailnetHost.isLocalDevelopmentHost(host), host)
+            XCTAssertFalse(TailnetHost.isLocal(host), host)
         }
     }
 }

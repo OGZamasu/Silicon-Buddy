@@ -3,16 +3,16 @@ package dev.siliconoptimizer.buddy.media
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import dev.siliconoptimizer.buddy.transport.ControlTransport
-import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.Uploads
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 
 /**
  * The two directions a picture travels.
@@ -74,7 +74,8 @@ object MediaLibrary {
     }.getOrNull() ?: uri.lastPathSegment
 
     /**
-     * Saves a finished render into the phone's photo library.
+     * Saves a finished render onto the phone: a picture or a clip into its photo library, a
+     * mesh into Downloads (see [destination]).
      *
      * Written through MediaStore's own pending row, so a download that fails leaves
      * nothing half-made in the gallery: the row only becomes visible once the bytes are
@@ -85,54 +86,99 @@ object MediaLibrary {
         transport: ControlTransport,
         mediaID: String,
         name: String,
-        video: Boolean,
+        kind: String,
     ): Result<Uri> = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val collection = if (video) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            } else {
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            }
-        } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            }
+        val destination = destination(kind, name)
+        val (collection, folder) = when (destination.collection) {
+            Destination.Collection.Video ->
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to
+                    Environment.DIRECTORY_MOVIES
+            Destination.Collection.Images ->
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to
+                    Environment.DIRECTORY_PICTURES
+            Destination.Collection.Downloads ->
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to
+                    Environment.DIRECTORY_DOWNLOADS
         }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            destination.mimeType?.let { put(MediaStore.MediaColumns.MIME_TYPE, it) }
             put(MediaStore.MediaColumns.IS_PENDING, 1)
-            put(
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                if (video) {
-                    "${Environment.DIRECTORY_MOVIES}/Silicon Buddy"
-                } else {
-                    "${Environment.DIRECTORY_PICTURES}/Silicon Buddy"
-                },
-            )
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "$folder/Silicon Buddy")
         }
-        var row: Uri? = null
-        runCatching {
-            row = resolver.insert(collection, values)
-                ?: error("This phone would not make room for it.")
-            val destination = row ?: error("This phone would not make room for it.")
-            resolver.openOutputStream(destination)?.use { sink ->
-                transport.media(mediaID, sink)
-            } ?: error("This phone would not open the file it just made.")
-            resolver.update(
-                destination,
-                ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
-                null,
-                null,
-            )
+        written(
+            insert = { resolver.insert(collection, values) },
+            open = { resolver.openOutputStream(it) },
+            publish = { row ->
+                resolver.update(
+                    row,
+                    ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                    null,
+                    null,
+                )
+            },
+            discard = { row -> resolver.delete(row, null, null) },
+            fetch = { sink -> transport.media(mediaID, sink) },
+        )
+    }
+
+    /**
+     * The order a save goes in, apart from MediaStore so it can be checked without one: a
+     * pending row, the Mac's bytes into it, then the row made visible.
+     *
+     * Whatever goes wrong — the Mac answering 404 for a render it has since removed, the
+     * tailnet dropping halfway, the phone running out of room — the row is taken away and
+     * the failure is the result. It is never thrown: a save runs in a view model's
+     * coroutine, where nothing catches, and a throw from there closes the app. Only a
+     * cancelled save goes on as one, because its coroutine is ending anyway.
+     */
+    internal suspend fun <Row : Any> written(
+        insert: () -> Row?,
+        open: (Row) -> OutputStream?,
+        publish: (Row) -> Unit,
+        discard: (Row) -> Unit,
+        fetch: suspend (OutputStream) -> Unit,
+    ): Result<Row> {
+        var row: Row? = null
+        return runCatching {
+            val destination = insert() ?: error("This phone would not make room for it.")
+            row = destination
+            open(destination)?.use { sink -> fetch(sink) }
+                ?: error("This phone would not open the file it just made.")
+            publish(destination)
             destination
         }.onFailure { failure ->
             // Nothing half-made in somebody's gallery.
-            row?.let { runCatching { resolver.delete(it, null, null) } }
-            if (failure is TransportError) throw failure
+            row?.let { runCatching { discard(it) } }
+            if (failure is CancellationException) throw failure
         }
+    }
+
+    /** Which of MediaStore's collections a render goes into, and as what type. */
+    data class Destination(val collection: Collection, val mimeType: String?) {
+        enum class Collection { Images, Video, Downloads }
+    }
+
+    /**
+     * Pictures and clips go where a gallery finds them, typed by their names. A mesh is
+     * neither: MediaStore's image collection refuses a `.glb` outright from Android 11 on —
+     * the insert throws before a byte is fetched — and on Android 10 files it as a picture.
+     * So it goes to Downloads, which takes any file, as the type a 3D viewer opens.
+     */
+    fun destination(kind: String, name: String): Destination = when (kind) {
+        "video" -> Destination(Destination.Collection.Video, null)
+        "mesh" -> Destination(Destination.Collection.Downloads, meshType(name))
+        else -> Destination(Destination.Collection.Images, null)
+    }
+
+    private fun meshType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "glb" -> "model/gltf-binary"
+        "gltf" -> "model/gltf+json"
+        "obj" -> "model/obj"
+        "stl" -> "model/stl"
+        "usdz" -> "model/vnd.usdz+zip"
+        else -> "application/octet-stream"
     }
 
     /** A name a person can find again, with the extension the Mac's own file had. */
@@ -142,7 +188,11 @@ object MediaLibrary {
             .take(40)
             .ifEmpty { kind }
         val extension = path?.substringAfterLast('.', "")?.takeIf { it.length in 1..5 }
-            ?: if (kind == "video") "mp4" else "png"
+            ?: when (kind) {
+                "video" -> "mp4"
+                "mesh" -> "glb"
+                else -> "png"
+            }
         return "$stem-${System.currentTimeMillis() / 1000}.$extension"
     }
 }

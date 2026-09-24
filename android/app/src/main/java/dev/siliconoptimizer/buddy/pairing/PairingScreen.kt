@@ -54,6 +54,34 @@ enum class PairingMode(val label: String) {
     Developer("Developer"),
 }
 
+/**
+ * Where the Developer form may send the Mac's own control token.
+ *
+ * That token is the Mac's, not a device's: whatever the control API can do, it can. The Mac
+ * accepts it on its local listener and nowhere else, so the only place it is any use is this
+ * machine — 10.0.2.2 from the emulator, or loopback — and typed with any other address it
+ * would go to whoever answers there. And a build that does not dial this machine at all
+ * (see [TailnetHost.allowsLocal]) has no use for the form, and does not offer it.
+ */
+object DeveloperConnection {
+    const val LOCAL_ONLY =
+        "The control token only works on the Mac's own listener: 10.0.2.2 from the emulator, " +
+            "or 127.0.0.1. To pair a phone, use Scan or Enter code."
+
+    /** Whether the form is offered at all. */
+    val offered: Boolean get() = TailnetHost.allowsLocal
+
+    /** Why the form's host and port will not do, or null when they will. */
+    fun problem(host: String, port: String, local: Boolean = TailnetHost.allowsLocal): String? {
+        val portNumber = port.toIntOrNull()
+        if (portNumber == null || portNumber !in 1..65535) {
+            return "That port isn't a number between 1 and 65535."
+        }
+        if (!local || !TailnetHost.isLocal(host)) return LOCAL_ONLY
+        return null
+    }
+}
+
 /** What a Mac without `POST /buddy/pair` gets told, from either way of spending a code. */
 const val MAC_TOO_OLD_FOR_CODES =
     "That Mac is too old for pairing codes. Update Silicon Optimizer on it, then pair again."
@@ -78,7 +106,10 @@ fun PairingScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var mode by remember { mutableStateOf(startOn) }
+    // The ways offered here: all three, or — in a build that does not dial this machine —
+    // the two a phone uses.
+    val modes = PairingMode.entries.filter { it != PairingMode.Developer || DeveloperConnection.offered }
+    var mode by remember { mutableStateOf(startOn.takeIf { it in modes } ?: PairingMode.Code) }
     var host by remember { mutableStateOf(app.config?.host ?: "") }
     var code by remember { mutableStateOf("") }
     var codePort by remember { mutableStateOf(PairingInvite.DEFAULT_PORT.toString()) }
@@ -142,15 +173,11 @@ fun PairingScreen(
                 "token and current port from control.json."
             return
         }
-        val portNumber = developerPort.toIntOrNull()
-        if (portNumber == null || portNumber !in 1..65535) {
-            message = "That port isn't a number between 1 and 65535."
+        DeveloperConnection.problem(developerHost.trim(), developerPort)?.let {
+            message = it
             return
         }
-        if (!TailnetHost.isAllowed(developerHost.trim())) {
-            message = TailnetHost.EXPLANATION
-            return
-        }
+        val portNumber = developerPort.toInt()
         connecting = true
         scope.launch {
             val candidate = ServerConfig(developerHost.trim(), portNumber, token.trim())
@@ -236,11 +263,11 @@ fun PairingScreen(
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            PairingMode.entries.forEachIndexed { index, each ->
+            modes.forEachIndexed { index, each ->
                 SegmentedButton(
                     selected = mode == each,
                     onClick = { mode = each },
-                    shape = SegmentedButtonDefaults.itemShape(index, PairingMode.entries.size),
+                    shape = SegmentedButtonDefaults.itemShape(index, modes.size),
                     // Three labels share a phone's width, and the selected one's tick
                     // would cut "Enter code" short. So the choice is marked by a fill
                     // strong enough to see — the default one is a near-white tint.
@@ -320,7 +347,7 @@ fun PairingScreen(
                     placeholder = { Text("100.x.y.z") },
                     supportingText = {
                         val address = runCatching { PairingInvite.typed(host, "000000").host }.getOrNull()
-                        if (address != null && TailnetHost.isLocalDevelopmentHost(address)) {
+                        if (address != null && TailnetHost.isLocal(address)) {
                             Text(
                                 "Use the Mac's Tailscale address shown beside the code. " +
                                     "For a local emulator connection, use Developer with the " +

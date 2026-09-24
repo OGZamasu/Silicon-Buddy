@@ -77,14 +77,7 @@ public struct ChatView: View {
         }
         .onAppear {
             voice.speaksReplies = app.speaksReplies
-            // The question goes through the ordinary composer, so a spoken question and
-            // a typed one end up in the same transcript and the same conversation.
-            let chat = model
-            let transport = app.transport
-            voice.onAsk = { text in
-                chat.draft = text
-                chat.send(using: transport)
-            }
+            voice.onAsk = Self.askAloud(into: model, app: app)
         }
         .onDisappear { voice.interrupt() }
         .onChange(of: app.speaksReplies) { _, enabled in voice.speaksReplies = enabled }
@@ -101,6 +94,20 @@ public struct ChatView: View {
             Button("OK", role: .cancel) { voiceProblem = nil }
         } message: {
             Text(voiceProblem ?? "")
+        }
+    }
+
+    /// What a spoken question does once the button comes up.
+    ///
+    /// It goes through the ordinary composer, so a spoken question and a typed one end up
+    /// in the same transcript and the same conversation — and to the Mac that is paired
+    /// when it is asked. The screen stays up through a re-pair (the confirmation is a
+    /// sheet over it), and a transport read when it appeared would send the question, and
+    /// the old Mac's token, to the Mac this phone was just moved away from.
+    static func askAloud(into chat: ChatModel, app: AppModel) -> (String) -> Void {
+        { text in
+            chat.draft = text
+            chat.send(using: app.transport)
         }
     }
 
@@ -604,15 +611,18 @@ struct PushToTalkButton: View {
                     .onChanged { _ in
                         guard !holding else { return }
                         holding = true
-                        Task {
-                            if !voice.isAuthorized { await voice.requestPermissions() }
-                            if let problem = voice.permissionProblem {
+                        guard voice.isAuthorized else {
+                            Task {
+                                let problem = await voice.askForPermission()
+                                // The system's sheet took the touch, and a cancelled
+                                // gesture does not call onEnded: without this the button
+                                // would stay down and swallow the next press.
                                 holding = false
-                                onProblem(problem)
-                                return
+                                if let problem { onProblem(problem) }
                             }
-                            voice.press()
+                            return
                         }
+                        voice.press()
                     }
                     .onEnded { _ in
                         holding = false

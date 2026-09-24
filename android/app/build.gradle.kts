@@ -31,7 +31,7 @@ android {
             // This applies to *every* variant, debug included, so an x86_64 emulator
             // cannot install the default build. That is deliberate — the Mac here is
             // Apple Silicon and its emulators are arm64 — and `-Pbuddy.abis=x86_64` is
-            // the way back for an Intel emulator or a CI runner.
+            // the way back for an Intel emulator.
             abiFilters += (findProperty("buddy.abis") as String? ?: "arm64-v8a")
                 .split(",")
                 .map(String::trim)
@@ -43,9 +43,8 @@ android {
         // Release is signed with the local debug key when there is one, purely so it can
         // be installed and instrumented. It is not a distribution key and must not become
         // one: anybody's debug keystore has the same password. A real key belongs in the
-        // owner's keychain and in CI secrets, and until then `assembleRelease` on a
-        // machine without `~/.android/debug.keystore` produces an unsigned APK — see
-        // docs/PLAN.md.
+        // owner's keychain, and until then `assembleRelease` on a machine without
+        // `~/.android/debug.keystore` produces an unsigned APK — see docs/PLAN.md.
         create("local") {
             val keystore = File(System.getProperty("user.home"), ".android/debug.keystore")
             if (keystore.exists()) {
@@ -69,11 +68,17 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             testProguardFiles("proguard-androidTest.pro")
             signingConfigs.getByName("local").storeFile?.let { signingConfig = signingConfigs.getByName("local") }
+            // The build the owner installs dials the tailnet and nothing else: on a phone,
+            // loopback is any other app and 10.0.2.2 is an address on whatever Wi-Fi it is
+            // on. See TailnetHost.allowsLocal; scripts/ci-android.sh checks it stays false.
+            buildConfigField("boolean", "LOCAL_MACS", "false")
         }
         debug {
             // The control API is plain HTTP on a tailnet address; see
             // res/xml/network_security_config.xml for the exception this needs.
             isMinifyEnabled = false
+            // Pairs with a Mac on this machine: the stand-in, or the emulator's host.
+            buildConfigField("boolean", "LOCAL_MACS", "true")
         }
         // Release, plus one class: `OnDeviceProbe`, which the instrumented tests call by
         // name to reach the engine inside a minified build. Same R8 rules, same signing,
@@ -84,6 +89,9 @@ android {
             matchingFallbacks += "release"
             isMinifyEnabled = true
             isShrinkResources = true
+            // The one difference in behaviour: the instrumented tests pair with stand-in
+            // Macs on 127.0.0.1 and at 10.0.2.2, which the owner's build refuses to dial.
+            buildConfigField("boolean", "LOCAL_MACS", "true")
         }
     }
 

@@ -1,5 +1,7 @@
 package dev.siliconoptimizer.buddy.transport
 
+import dev.siliconoptimizer.buddy.BuildConfig
+
 /**
  * Which addresses this app will ever dial.
  *
@@ -13,45 +15,62 @@ package dev.siliconoptimizer.buddy.transport
  * Parsed as an address, never scanned for digits: `100.64.0.1.evil.example.com`
  * contains a tailnet address and is a name someone else controls.
  *
- * One name is accepted — `localhost` — because it cannot resolve anywhere but this
- * device. No other name is, including Tailscale's own `*.ts.net`: accepting a name
- * means trusting whatever answers for it, and the Mac advertises an address.
+ * A Mac on the same machine — loopback, or 10.0.2.2 from the emulator — is dialled only
+ * by the builds that are tested against one ([allowsLocal]). There one name is accepted,
+ * `localhost`, because it cannot resolve anywhere but this device. No other name is,
+ * including Tailscale's own `*.ts.net`: accepting a name means trusting whatever answers
+ * for it, and the Mac advertises an address.
  */
 object TailnetHost {
 
-    const val EXPLANATION =
-        "Silicon Buddy only pairs over your tailnet. " +
-            "Use the Mac's Tailscale address (100.x.y.z), or 10.0.2.2 in the emulator."
+    /**
+     * Whether this build dials a Mac on the same machine: loopback, and 10.0.2.2, the
+     * emulator's name for the computer it runs on. The debug build does, and so does the
+     * one the instrumented tests run on — both pair with a stand-in Mac there. The build
+     * the owner installs does not: on a phone, loopback is whichever other app is listening
+     * on it, and 10.0.2.2 is an ordinary private address on whatever Wi-Fi the phone has
+     * joined, so a pairing link naming either would hand a token to somebody else's Mac.
+     */
+    val allowsLocal: Boolean get() = BuildConfig.LOCAL_MACS
+
+    val EXPLANATION: String get() = explanation(allowsLocal)
+
+    fun explanation(local: Boolean): String =
+        "Silicon Buddy only pairs over your tailnet. Use the Mac's Tailscale address (100.x.y.z)" +
+            if (local) ", or 10.0.2.2 in the emulator." else "."
 
     /**
-     * True for the addresses the Mac can actually be listening on:
-     * loopback, 10.0.2.2 (the emulator's name for its host), Tailscale's IPv4 range
-     * 100.64.0.0/10, and Tailscale's IPv6 range fd7a:115c:a1e0::/48.
+     * True for the addresses the Mac can actually be listening on: Tailscale's IPv4 range
+     * 100.64.0.0/10 and its IPv6 range fd7a:115c:a1e0::/48 — and, in a build that dials
+     * one ([local]), a Mac on this machine ([isLocal]).
      */
-    fun isAllowed(host: String): Boolean {
-        val trimmed = host.trim().trim('[', ']').lowercase()
-        if (trimmed == "localhost") return true
-        ipv4Bytes(trimmed)?.let { bytes ->
-            if (bytes[0] == 127) return true
-            if (bytes.contentEquals(intArrayOf(10, 0, 2, 2))) return true
-            return bytes[0] == 100 && bytes[1] in 64..127
-        }
+    fun isAllowed(host: String, local: Boolean = allowsLocal): Boolean {
+        if (isLocal(host)) return local
+        val trimmed = normalized(host)
+        ipv4Bytes(trimmed)?.let { bytes -> return bytes[0] == 100 && bytes[1] in 64..127 }
         ipv6Groups(trimmed)?.let { words ->
-            if (words.contentEquals(intArrayOf(0, 0, 0, 0, 0, 0, 0, 1))) return true
             return words[0] == 0xfd7a && words[1] == 0x115c && words[2] == 0xa1e0
         }
         return false
     }
 
-    /** Loopback or the Android emulator's route to the Mac's local listener. */
-    fun isLocalDevelopmentHost(host: String): Boolean {
-        val trimmed = host.trim().trim('[', ']').lowercase()
+    /**
+     * This device, or the computer the emulator runs on: `localhost`, 127.0.0.0/8, ::1 and
+     * 10.0.2.2. Whether this build may dial them at all is [allowsLocal].
+     */
+    fun isLocal(host: String): Boolean {
+        val trimmed = normalized(host)
         if (trimmed == "localhost") return true
         ipv4Bytes(trimmed)?.let { bytes ->
             return bytes[0] == 127 || bytes.contentEquals(intArrayOf(10, 0, 2, 2))
         }
-        return ipv6Groups(trimmed)?.contentEquals(intArrayOf(0, 0, 0, 0, 0, 0, 0, 1)) == true
+        ipv6Groups(trimmed)?.let { words ->
+            return words.contentEquals(intArrayOf(0, 0, 0, 0, 0, 0, 0, 1))
+        }
+        return false
     }
+
+    private fun normalized(host: String): String = host.trim().trim('[', ']').lowercase()
 
     /**
      * [host] as it goes into a URL or an address line: an IPv6 literal in brackets, which

@@ -36,6 +36,27 @@ public struct PairingView: View {
         /// The Mac's own control token, which the Mac takes only from itself.
         case developer = "Developer"
         var id: String { rawValue }
+
+        /// What this build offers. Developer only in one that dials a Mac on this machine
+        /// — the Simulator's DEBUG build — since that is the only place its token works.
+        static func offered(local: Bool = TailnetHost.allowsLocal) -> [Mode] {
+            local ? allCases : allCases.filter { $0 != .developer }
+        }
+    }
+
+    /// Why the Developer form will not send the Mac's control token to `host`, if it will
+    /// not.
+    ///
+    /// That token is the Mac's own, with every power the control API has, and the Mac
+    /// takes it only on its loopback listener. So it goes to loopback and nowhere else:
+    /// any other address — a tailnet one included — refuses it at best, and at worst is a
+    /// machine that is not the Mac, answering `/health` and keeping the token.
+    static func developerHostProblem(_ host: String, local: Bool = TailnetHost.allowsLocal) -> String? {
+        guard local, TailnetHost.isLoopback(host) else {
+            return "The Mac's control token works only on the Mac itself: use 127.0.0.1 "
+                + "from the Simulator on that Mac. To pair a device, use Scan or Enter code."
+        }
+        return nil
     }
 
     enum Status: Equatable {
@@ -51,7 +72,7 @@ public struct PairingView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("How", selection: $mode) {
-                    ForEach(Mode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                    ForEach(Mode.offered()) { mode in Text(mode.rawValue).tag(mode) }
                 }
                 .pickerStyle(.segmented)
                 .padding()
@@ -211,7 +232,7 @@ public struct PairingView: View {
                         + "to confirm, as a scanned code is."
                 )
                 if let invite = try? PairingInvite.typed(address: host, code: "000000", port: codePort),
-                   TailnetHost.isLocalDevelopmentHost(invite.host) {
+                   TailnetHost.isLocal(invite.host) {
                     Text(
                         "Use the Mac's Tailscale address shown beside the code. For a local "
                             + "Simulator connection, use Developer with the port and full "

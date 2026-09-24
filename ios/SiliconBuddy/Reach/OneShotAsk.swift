@@ -28,6 +28,8 @@ public enum OneShotAsk {
     public enum Failure: Error, Equatable, LocalizedError {
         case notPaired
         case empty
+        /// A reasoning model that spent the whole reply thinking.
+        case onlyThought
         case refused(String)
 
         public var errorDescription: String? {
@@ -36,6 +38,9 @@ public enum OneShotAsk {
                 "Silicon Buddy isn't paired with a Mac. Open the app and pair first."
             case .empty:
                 "Your Mac answered with nothing."
+            case .onlyThought:
+                "The model on your Mac spent the whole answer thinking and never got to "
+                    + "one. Ask more narrowly, or load a model that thinks less."
             case .refused(let message):
                 message
             }
@@ -92,7 +97,9 @@ public enum OneShotAsk {
         do {
             let response = try await transport.chat(request)
             let answer = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !answer.isEmpty else { throw Failure.empty }
+            guard !answer.isEmpty else {
+                throw response.reasoning?.isEmpty == false ? Failure.onlyThought : Failure.empty
+            }
             onToken?(answer)
             SnapshotStore.note(question: text, answer: answer, to: defaults)
             return Outcome(answer: answer)
@@ -104,12 +111,18 @@ public enum OneShotAsk {
     /// Reads a stream to its end and returns the text, or nil when the route was not
     /// there at all. `finished` ends the answer: a `verdict` frame after it is a
     /// decoration, never something to wait for.
+    ///
+    /// A reply with no text in it is still the reply. Nil used to mean "empty" as well as
+    /// "missing", so a reasoning model that spent its budget thinking was asked the same
+    /// question again on the next route, and the next — three generations, and three
+    /// uploads of whatever was shared, for one question.
     private static func drain(
         _ stream: AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error>,
         onToken: (@Sendable (String) -> Void)?
     ) async throws -> String? {
         var answer = ""
         var sawAnything = false
+        var thought = false
         do {
             for try await event in stream {
                 sawAnything = true
@@ -118,19 +131,34 @@ public enum OneShotAsk {
                     answer += piece
                     onToken?(piece)
                 case .finished:
-                    return answer.isEmpty ? nil : answer
+                    guard !answer.isEmpty else { throw thought ? Failure.onlyThought : Failure.empty }
+                    return answer
                 case .failed(let message):
                     throw Failure.refused(message)
                 case .reasoning:
-                    break
+                    thought = true
                 }
             }
         } catch let error as TransportError where error.isMissingRoute {
             return nil
+        } catch TransportError.notFound where !sawAnything {
+            // The conversation this ask made a moment ago is gone already. Nothing is
+            // written yet, so the plain route can still answer.
+            return nil
         } catch let error as TransportError {
+            // Given up on — Siri or Shortcuts stopped waiting, the sheet was closed — the
+            // socket closed under the read, and that failure is the cancellation's.
+            try Task.checkCancellation()
             throw Failure.refused(error.localizedDescription)
         }
-        guard sawAnything, !answer.isEmpty else { return nil }
+        // A stream ends with nothing, not an error, for a consumer that was cancelled. That
+        // is an ask that is over, not a route with nothing to say: the next two routes
+        // would be asked the same question for nobody.
+        try Task.checkCancellation()
+        // Closed without `finished`. A stream with nothing in it is a route with nothing
+        // to say, and the next one may answer; anything else was generated here.
+        guard sawAnything else { return nil }
+        guard !answer.isEmpty else { throw thought ? Failure.onlyThought : Failure.empty }
         return answer
     }
 }

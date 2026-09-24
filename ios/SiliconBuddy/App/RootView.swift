@@ -3,6 +3,7 @@ import SwiftUI
 /// iPhone gets a tab bar, iPad gets a sidebar. Same screens either way.
 public struct RootView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(AppModel.self) private var app
     @Bindable var chat: ChatModel
     let models: ModelsModel
@@ -41,7 +42,16 @@ public struct RootView: View {
         .onChange(of: app.events.status) { _, pushed in
             if let pushed { models.statusChanged(pushed) }
         }
-        .onChange(of: app.events.isLive, initial: true) { _, live in models.eventsLive = live }
+        .onChange(of: app.events.isLive, initial: true) { _, live in
+            models.eventsLive = live
+            // The Mac is answering again. If it never said whether it keeps conversations —
+            // it was out of reach when the list was first asked for — ask now.
+            if live { Task { await chat.askAboutConversationsIfUnanswered(using: app.transport) } }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await chat.askAboutConversationsIfUnanswered(using: app.transport) }
+        }
         // A code spent from a sheet that was closed before the Mac answered. Paired, it
         // shows as the Mac on the dashboard; refused, it is said here, since nothing else
         // is left to.

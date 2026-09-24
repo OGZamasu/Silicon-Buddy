@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The Android checks, run locally: GitHub Actions cannot run on this repository, so this is
-# the CI. Exits non-zero on the first thing that is wrong, so it can gate a merge with &&.
+# The Android checks, run on this machine: this script is the gate, and there is no hosted
+# CI. Exits non-zero on the first thing that is wrong, so it can gate a merge with &&.
 #
 #   scripts/ci-android.sh                 unit tests, minified release, keep rules, size budget
 #   scripts/ci-android.sh --connected     …and the instrumented tests on $ANDROID_SERIAL, which
@@ -29,6 +29,10 @@ done
 export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# This script is the gate. A hosted workflow beside it would be a second gate that drifts
+# from this one — the last one did — and the owner runs no hosted CI.
+[ ! -e "$here/.github/workflows" ] || fail ".github/workflows is back: the gate is this script, run here"
 
 # llama.cpp is a submodule; a clone without --recursive has an empty folder there.
 [ -f "$here/third_party/llama.cpp/CMakeLists.txt" ] ||
@@ -117,6 +121,23 @@ print(f"unit tests: {tests}, failures: {failures}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 
+# --- The release build's own rules -----------------------------------------------
+# The unit tests above run on debug, which dials a stand-in Mac on this machine on purpose.
+# The build the owner installs must not, anywhere: ReleaseBuildRuleTest checks every way in
+# against the release BuildConfig, and is skipped everywhere else — so it has to have run.
+./gradlew --console=plain -q :app:testReleaseUnitTest --rerun \
+    --tests dev.siliconoptimizer.buddy.ReleaseBuildRuleTest
+python3 - "$android/app/build/test-results/testReleaseUnitTest" <<'PY'
+import glob, re, sys
+tests = failures = skipped = 0
+for path in glob.glob(sys.argv[1] + "/*.xml"):
+    head = re.search(r'<testsuite [^>]*>', open(path).read()).group(0)
+    count = lambda name: int(re.search(name + r'="(\d+)"', head).group(1))
+    tests += count("tests"); skipped += count("skipped"); failures += count("failures") + count("errors")
+print(f"release rule tests: {tests}, failures: {failures}, skipped: {skipped}")
+sys.exit(1 if failures or skipped or tests == 0 else 0)
+PY
+
 # --- What R8 kept -----------------------------------------------------------------
 # R8 cannot see an edge that goes through a name: a Glance callback, a serializer, a JNI
 # function, a method native code looks up. Lose one and the build still succeeds.
@@ -153,6 +174,15 @@ probeSeeds="$android/app/build/outputs/mapping/releaseProbe/seeds.txt"
 [ -f "$probeSeeds" ] || fail "no seeds.txt for releaseProbe — did R8 run?"
 grep -q "^dev.siliconoptimizer.buddy.ondevice.OnDeviceProbe$" "$probeSeeds" ||
     fail "OnDeviceProbe was not kept — the instrumented tests reach the engine through it"
+
+# --- Which Macs the release dials -------------------------------------------------
+# Loopback and 10.0.2.2 are where the stand-in Mac the tests pair with lives, and only the
+# debug and releaseProbe builds dial them. The build the owner installs must not: on a
+# phone, loopback is any other app, and 10.0.2.2 is an address on whatever Wi-Fi it is on.
+release_config="$android/app/build/generated/source/buildConfig/release/dev/siliconoptimizer/buddy/BuildConfig.java"
+[ -f "$release_config" ] || fail "no BuildConfig for release — did assembleRelease run?"
+grep -q "boolean LOCAL_MACS = false;" "$release_config" ||
+    fail "the release build dials a Mac on loopback or 10.0.2.2 (LOCAL_MACS is not false)"
 
 # --- What the JNI bridge can reach ------------------------------------------------
 # llama.cpp ships an HTTP client and a Hugging Face downloader in libllama-common. The
@@ -229,9 +259,12 @@ fi
 # --- On a device ------------------------------------------------------------------
 if $connected; then
     # Two passes. The main one, and then — on the fresh install every run begins with —
-    # the one class that is about a phone where notifications were never granted, which
-    # another class grants for the whole of the run above.
-    notice=dev.siliconoptimizer.buddy.NotificationsOffTest
+    # the classes that need a permission to be, or to stay, one way: the one about a phone
+    # where notifications were never granted, which another class grants for the whole of
+    # the run above, and the scanner's, which allows the camera for the rest of its run —
+    # taking a permission back kills the process the tests run in, and ManualPairingTest
+    # needs the camera never asked for.
+    notice=dev.siliconoptimizer.buddy.NotificationsOffTest,dev.siliconoptimizer.buddy.QrScannerTest
     ./gradlew --console=plain -q connectedReleaseProbeAndroidTest \
         "-Pandroid.testInstrumentationRunnerArguments.standin=$standin" \
         "-Pandroid.testInstrumentationRunnerArguments.notClass=$notice"
@@ -263,7 +296,7 @@ for path in glob.glob(sys.argv[1] + "/**/*.xml", recursive=True):
         tests += int(head.group(1)); failures += int(head.group(2)) + int(head.group(3))
         skip = re.search(r'<testsuite [^>]*skipped="(\d+)"', text)
         skipped += int(skip.group(1)) if skip else 0
-print(f"instrumented tests (fresh install, notifications never granted): {tests}, failures: {failures}, skipped: {skipped}")
+print(f"instrumented tests (fresh install, notifications never granted, camera allowed): {tests}, failures: {failures}, skipped: {skipped}")
 sys.exit(1 if failures or tests == 0 else 0)
 PY
 fi
@@ -271,6 +304,21 @@ fi
 if $ios; then
     cd "$here/ios"
     xcodegen generate >/dev/null
+    # The suite runs the Debug build, which dials a Mac on loopback or 10.0.2.2 because it
+    # is compiled with DEBUG. The build the owner installs must not be: on a phone those are
+    # any other app, and an address on whatever Wi-Fi it has joined. The settings go to grep
+    # as a here-string, never through a pipe: `grep -q` stops at the first match, and under
+    # pipefail the `echo` still writing 100 KB of them dies of SIGPIPE, which turned every
+    # match into "no match" — a check that could never fail.
+    release=$(xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
+        -configuration Release -showBuildSettings 2>/dev/null) ||
+        fail "could not read the iOS Release build settings"
+    grep -qE '^ *PRODUCT_BUNDLE_IDENTIFIER = dev\.siliconoptimizer\.buddy$' <<<"$release" ||
+        fail "the iOS Release build settings are not the app's"
+    if grep -qE '^ *SWIFT_ACTIVE_COMPILATION_CONDITIONS = (.* )?DEBUG( |$)|^ *OTHER_SWIFT_FLAGS = (.* )?-D ?DEBUG( |$)' \
+        <<<"$release"; then
+        fail "the iOS Release build is compiled with DEBUG, so it would dial loopback and 10.0.2.2"
+    fi
     xcodebuild -project SiliconBuddy.xcodeproj -scheme SiliconBuddy \
         -destination "${IOS_DESTINATION:-platform=iOS Simulator,name=iPad mini (A17 Pro)}" \
         -derivedDataPath "${IOS_DERIVED_DATA:?set IOS_DERIVED_DATA to a folder on a roomy drive}" \

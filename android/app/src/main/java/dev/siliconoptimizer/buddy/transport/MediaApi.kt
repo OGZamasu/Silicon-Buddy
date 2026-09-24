@@ -111,9 +111,8 @@ data class VideoGenerateRequest(
  * How long a synchronous render may take, from the Mac's own `VideoGenerationBudget`.
  *
  * The Mac allows an accepted node job twelve hours, which is not a number a phone can
- * hold a socket for. What a client can bound is the two things that mean something has
- * gone wrong rather than slow: silence, and a total wait after which the queue is the
- * better place to look. Both are the Mac's constants rather than invented ones.
+ * hold a socket for. What a client can bound is the total wait, after which the queue is
+ * the better place to look — the Mac's constants rather than invented ones.
  */
 object RenderBudget {
     const val NODE_REQUEST_SECONDS = 120
@@ -121,12 +120,21 @@ object RenderBudget {
     const val DOWNLOAD_SECONDS = 600
     const val RESPONSE_OVERHEAD_SECONDS = 60
 
-    /** Nothing at all from the Mac for this long is a broken connection. */
-    const val IDLE_SECONDS = NETWORK_RESOURCE_SECONDS
-
     /** The whole wait a phone will hold before pointing at the queue instead. */
     const val TOTAL_SECONDS = NODE_REQUEST_SECONDS + NETWORK_RESOURCE_SECONDS +
         DOWNLOAD_SECONDS + RESPONSE_OVERHEAD_SECONDS
+
+    /**
+     * The read timeout on a synchronous render.
+     *
+     * The Mac sends nothing on those routes until the render is done — no heartbeat, no
+     * progress — so silence there is not a broken connection. A socket that gave up sooner
+     * than the phone does called a render past that point failed while the Mac was still
+     * making it, and a picture or a mesh has no other way back to the phone. So it waits
+     * the whole of [TOTAL_SECONDS], and a little longer, for the phone's own "still
+     * rendering on the Mac" to be what ends a long one.
+     */
+    const val SILENT_READ_SECONDS = TOTAL_SECONDS + RESPONSE_OVERHEAD_SECONDS
 }
 
 /** What a finished clip is: a file on the Mac, and the ids that fetch it. */

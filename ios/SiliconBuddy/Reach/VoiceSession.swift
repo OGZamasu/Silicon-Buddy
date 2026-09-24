@@ -11,6 +11,9 @@ import Foundation
 public enum VoiceState: Sendable, Equatable {
     /// Nothing happening.
     case idle
+    /// The first press, before this app may listen: the system is asking the person.
+    /// Nothing is recorded, and nothing will be for this press — see `.permissionAnswered`.
+    case askingPermission
     /// The microphone is open. Carries what has been heard so far.
     case listening(String)
     /// The button is up and the Mac is answering.
@@ -40,6 +43,11 @@ public enum VoiceState: Sendable, Equatable {
 public enum VoiceEvent: Sendable, Equatable {
     /// The push-to-talk button went down.
     case pressed
+    /// It went down before this app was allowed to listen, so the system is asked first.
+    case pressedWithoutPermission
+    /// The system's question was answered: nil when both were allowed, otherwise the
+    /// words to show.
+    case permissionAnswered(String?)
     /// The recogniser has heard more.
     case heard(String)
     /// The button came up.
@@ -109,7 +117,31 @@ public struct VoiceSession: Sendable, Equatable {
             state = .listening("")
             return [.startListening]
 
-        case (.listening, .pressed):
+        case (.listening, .pressed), (.askingPermission, .pressed):
+            return []
+
+        // The first press asks. It is a question, not a recording: nothing listens until
+        // the system has its answer.
+        case (.listening, .pressedWithoutPermission), (.askingPermission, .pressedWithoutPermission):
+            return []
+
+        case (.speaking, .pressedWithoutPermission):
+            state = .askingPermission
+            return [.stopSpeaking]
+
+        case (_, .pressedWithoutPermission):
+            state = .askingPermission
+            return []
+
+        // Answering is a tap on the system's sheet, which takes the finger off the button
+        // and swallows the release. So the press that asked never listens, whatever the
+        // answer: opening the microphone now would record a room nobody is talking to and
+        // send what it heard to the Mac. The next press listens.
+        case (.askingPermission, .permissionAnswered(let problem)):
+            state = problem.map { .failed($0) } ?? .idle
+            return []
+
+        case (_, .permissionAnswered):
             return []
 
         case (.listening, .heard(let text)):
@@ -189,6 +221,7 @@ public struct VoiceSession: Sendable, Equatable {
         case .speaking: "Press to interrupt"
         case .failed: "Hold to talk"
         case .idle: "Hold to talk"
+        case .askingPermission: "Asking to use the microphone"
         }
     }
 }

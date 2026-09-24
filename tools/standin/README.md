@@ -65,6 +65,7 @@ bind is what keeps these to your machine.
 | `POST /demo/ondevice` | the switches below |
 | `POST /demo/unreachable` `{"seconds": n}` | drops every connection unanswered for `n` seconds, as a Mac asleep behind a tunnel; `0` brings it back. Its own `/demo` routes still answer |
 | `POST /demo/agents/{engine}/answer` | answers an agent approval "at the Mac" |
+| `POST /demo/renders` | an image or 3D render started "at the Mac", or the next one a phone asks for failing at once; see below |
 
 `POST /demo/ondevice` takes any of:
 
@@ -78,5 +79,21 @@ bind is what keeps these to your machine.
 | `ignoreRange` | the next *n* resumed requests get the whole file with 200 instead of 206 |
 | `driveMissing` | every request for one model is refused with 503, as with the model drive unplugged |
 | `clearRequests` | empties `/demo/ondevice/requests` |
+
+`POST /demo/renders` takes any of:
+
+| Key | Effect |
+|---|---|
+| `start` | `"image"` or `"mesh"`: a render no phone asked for, as one started from the Mac's own window |
+| `seconds`, `title`, `fail` | for `start`: how long it runs, its title, and — when given — the sentence it fails with at once |
+| `failNextRequest` | the next `/image/generate` or `/mesh/generate` fails at once with this sentence, and answers 500 |
+
+It answers with the switches, the render running now and the endings kept, by kind, and
+`streamsOpened`: how many `/events` streams have been opened since it started.
+
+Image and 3D renders are reported on `/events` as the Mac reports them: each under an id of its
+own, `image-<job>` or `mesh-<job>`, with `kind` saying which. A stream that opens is told the
+render running now and how the last ones ended — up to eight a kind, every one no stream has been
+sent yet, and the latest after that.
 
 It also forgets every paired phone while a file named `revoked` exists in its state folder.

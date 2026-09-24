@@ -299,6 +299,115 @@ class NotificationTest {
         assertEquals("Your image is ready", announcer.notices(running, done).single().title)
     }
 
+    // MARK: - Renders first seen already over
+
+    private fun render(status: String, id: String = "image-6F1C2A40-0000-4000-8000-000000000001") =
+        JobProgress(id = id, kind = "image", status = status, title = "FLUX.2 klein")
+
+    /**
+     * The Mac says how its last image and mesh renders ended to every phone that opens
+     * `/events` — a cold start, or the app coming back to the screen. An ending that is the
+     * first this phone hears of a render happened while it was not looking, and was said at
+     * the time or not at all: announcing it rang "Your image is ready" for a picture made an
+     * hour ago, on every start.
+     */
+    @Test
+    fun `a render first seen already over is history, not news`() {
+        for (primedFirst in listOf(true, false)) {
+            val announcer = JobAnnouncer()
+            if (primedFirst) announcer.prime(QueueState.empty)
+            val opening = QueueState.empty.applying(render("completed"))
+            val said = announcer.notices(QueueState.empty, opening)
+            if (!primedFirst) announcer.prime(opening)
+            assertTrue("primed first: $primedFirst", said.isEmpty())
+            // Heard again in the next opening: still nothing.
+            assertTrue(announcer.notices(opening, opening.applying(render("completed"))).isEmpty())
+        }
+    }
+
+    /** One the phone watched start is still news when it ends, the same as ever. */
+    @Test
+    fun `a render seen running is announced when it ends`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running)
+        val done = running.applying(render("completed"))
+        assertEquals("Your image is ready", announcer.notices(running, done).single().title)
+    }
+
+    /**
+     * A render this phone asked for, seen running while the service held its request. The
+     * service says when it is done. The stream's word for the same ending can come much
+     * later — the app back on the screen after a minute or more — and it is still the
+     * service's render, not a second piece of news.
+     */
+    @Test
+    fun `a render the service held is left to it, however late its ending arrives`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true })
+
+        // The service's claim has lapsed by the time the ending is heard.
+        val done = running.applying(render("completed"))
+        assertTrue(announcer.notices(running, done, handledElsewhere = { false }).isEmpty())
+    }
+
+    /**
+     * The service gave up on this phone's request without the Mac's answer — its 23-minute
+     * wait ran out ("The Mac kept going"), the owner pressed Stop waiting, or the tailnet
+     * dropped mid-render. It has said its last word, and it was not how the render ended.
+     * When the Mac finishes it later, the announcer is the only thing left that can say so:
+     * the claim the render was taken under goes with the request the service gave up on.
+     */
+    @Test
+    fun `a render the service gave up on is announced when the Mac finishes it`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        var gaveUp = 0
+        val mesh = { status: String ->
+            JobProgress(id = "mesh-6F1C2A40-0000-4000-8000-000000000009", kind = "mesh", status = status, title = "Hunyuan3D")
+        }
+        val running = QueueState.empty.applying(mesh("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true }, gaveUp = { gaveUp })
+
+        gaveUp = 1 // The service ends without the Mac's answer.
+        val done = running.applying(mesh("completed"))
+        assertEquals(
+            "the Mac's finished mesh was never announced",
+            listOf("Your mesh is ready"),
+            announcer.notices(running, done, handledElsewhere = { false }, gaveUp = { gaveUp }).map { it.title },
+        )
+    }
+
+    /** One the service answered stays the service's, whatever else it gave up on of another kind. */
+    @Test
+    fun `giving up on one kind leaves the claims on another`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val gaveUp = mapOf("image" to 0, "mesh" to 1)
+        val running = QueueState.empty.applying(render("running"))
+        announcer.notices(QueueState.empty, running, handledElsewhere = { true }, gaveUp = { gaveUp.getValue("image") })
+        val done = running.applying(render("completed"))
+        assertTrue(announcer.notices(running, done, handledElsewhere = { false }, gaveUp = { gaveUp.getValue(it) }).isEmpty())
+    }
+
+    /**
+     * This phone's own request, failing at once: the stream's first word about the render is
+     * its failure. That is not left unsaid — the service that held the request posts it, from
+     * the Mac's answer to the request — so the announcer leaves it to the service, as it leaves
+     * every render the service holds. Announcing it here as well would say it twice.
+     * (RenderNotificationTest checks the whole path on a device: said once.)
+     */
+    @Test
+    fun `a failure of this phone's own request is the service's to say, even as a first word`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val failed = QueueState.empty.applying(render("failed"))
+        assertTrue(announcer.notices(QueueState.empty, failed, handledElsewhere = { true }).isEmpty())
+    }
+
     @Test
     fun `forgetting a Mac forgets what was said about its work`() {
         val announcer = JobAnnouncer()

@@ -5,7 +5,13 @@ import dev.siliconoptimizer.buddy.chat.ChatViewModel
 import dev.siliconoptimizer.buddy.chat.Conversation
 import dev.siliconoptimizer.buddy.chat.ConversationStore
 import dev.siliconoptimizer.buddy.chat.Markdown
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -216,6 +222,161 @@ class ConversationStoreTest {
         store.save(conversation)
         store.delete(conversation.id)
         assertTrue(store.all().isEmpty())
+    }
+
+    /**
+     * A file this store cannot read is somebody's conversations all the same. Read as "none",
+     * the next save used to write the one conversation it had over all of them.
+     */
+    @Test
+    fun `a file that cannot be read is set aside, not written over`() = runBlocking {
+        val directory = folder.newFolder()
+        val file = File(directory, "conversations.json")
+        val torn = """[{"id":"a","title":"Lisbon","messages":[{"role":"user","content":"Three da"""
+        file.writeText(torn)
+        val store = ConversationStore(directory)
+        assertTrue(store.all().isEmpty())
+
+        store.save(Conversation(title = "New"))
+
+        val aside = directory.listFiles().orEmpty().filter { it.name != file.name }
+        assertEquals("the unreadable file is kept, beside the new one", 1, aside.size)
+        assertEquals(torn, aside.single().readText())
+        assertEquals(listOf("New"), store.all().map { it.title })
+    }
+
+    @Test
+    fun `deleting from a file that cannot be read leaves it as it was`() = runBlocking {
+        val directory = folder.newFolder()
+        val file = File(directory, "conversations.json")
+        file.writeText("not json")
+
+        ConversationStore(directory).delete("a")
+
+        assertEquals("not json", file.readText())
+    }
+
+    /**
+     * A damaged file, then a burst of saves and deletes from several stores at once. The
+     * damaged bytes survive in exactly one file set aside, and what is written is never an
+     * empty list.
+     */
+    @Test
+    fun `a damaged file under a burst of saves is set aside once and nothing is lost`() = runBlocking {
+        val directory = folder.newFolder()
+        val torn = """[{"id":"a","title":"Lisbon","messages":[{"role":"user","content":"Three da"""
+        File(directory, "conversations.json").writeText(torn)
+        val stores = List(3) { ConversationStore(directory) }
+        (1..60).map { index ->
+            async(Dispatchers.IO) {
+                if (index % 3 == 0) {
+                    stores[index % 3].delete("x$index")
+                } else {
+                    stores[index % 3].save(Conversation(id = "x$index", title = "N$index"))
+                }
+            }
+        }.awaitAll()
+
+        val aside = directory.listFiles().orEmpty().filter { it.name.startsWith("conversations.unreadable-") }
+        assertEquals(1, aside.size)
+        assertEquals(torn, aside.single().readText())
+        assertEquals(40, ConversationStore(directory).all().size)
+    }
+
+    /**
+     * A file that decodes perfectly well but cannot be read at this moment — an I/O error, too
+     * many files open, a file of pictures too large for the memory there is. That says nothing
+     * about what is in it, so it is not set aside as though it were damaged: nothing is written,
+     * the save says it failed, and the file stays where the store reads it.
+     */
+    @Test
+    fun `a file that cannot be read for a moment is left as it is`() = runBlocking {
+        val directory = folder.newFolder()
+        val store = ConversationStore(directory)
+        listOf("a", "b", "c").forEach { store.save(Conversation(id = it, title = it.uppercase())) }
+        val file = File(directory, "conversations.json")
+        val before = file.readText()
+
+        assertTrue(file.setReadable(false, false))
+        val saving = try {
+            runCatching { store.save(Conversation(id = "d", title = "D")) }.exceptionOrNull()
+        } finally {
+            file.setReadable(true, false)
+        }
+
+        assertTrue("the save says it failed, not that it saved: $saving", saving is IOException)
+        assertEquals("nothing was written over the file", before, file.readText())
+        assertEquals("and nothing was set aside", listOf(file.name), directory.list().orEmpty().toList())
+        // Readable again, the same save keeps all of them.
+        store.save(Conversation(id = "d", title = "D"))
+        assertEquals(setOf("a", "b", "c", "d"), store.all().map { it.id }.toSet())
+    }
+
+    @Test
+    fun `a delete from a file that cannot be read for a moment writes nothing`() = runBlocking {
+        val directory = folder.newFolder()
+        val store = ConversationStore(directory)
+        listOf("a", "b").forEach { store.save(Conversation(id = it, title = it.uppercase())) }
+        val file = File(directory, "conversations.json")
+        val before = file.readText()
+
+        assertTrue(file.setReadable(false, false))
+        val deleting = try {
+            runCatching { store.delete("a") }.exceptionOrNull()
+        } finally {
+            file.setReadable(true, false)
+        }
+
+        assertTrue("the delete says it failed: $deleting", deleting is IOException)
+        assertEquals(before, file.readText())
+    }
+
+    /**
+     * Saves arrive together — Stop saves the reply it cut short while the next question is
+     * being saved — and each one is a read, a change and a write. Two of them interleaved
+     * used to lose one, whichever store instance made them.
+     */
+    @Test
+    fun `saves made at the same time keep every conversation`() = runBlocking {
+        val directory = folder.newFolder()
+        val stores = listOf(ConversationStore(directory), ConversationStore(directory))
+        (1..48).map { index ->
+            async(Dispatchers.IO) {
+                stores[index % 2].save(Conversation(id = "c$index", title = "Conversation $index"))
+            }
+        }.awaitAll()
+
+        assertEquals(48, ConversationStore(directory).all().size)
+    }
+
+    /**
+     * What is on disk is always a whole file: the old one or the new one, never the first
+     * half of the new one. Read while a save was writing, it used to be half, and half a
+     * file decodes as nothing at all.
+     */
+    @Test
+    fun `the file on disk is never half written`() = runBlocking {
+        val directory = folder.newFolder()
+        val file = File(directory, "conversations.json")
+        val store = ConversationStore(directory)
+        val long = ChatMessage(role = ChatMessage.ROLE_ASSISTANT, content = "Alfama. ".repeat(40_000))
+        var conversation = store.save(Conversation(id = "c", messages = listOf(long)))
+        val decoder = Json { ignoreUnknownKeys = true }
+        val torn = java.util.concurrent.atomic.AtomicInteger()
+        val writing = java.util.concurrent.atomic.AtomicBoolean(true)
+        val reader = kotlin.concurrent.thread {
+            while (writing.get()) {
+                val text = runCatching { file.readText() }.getOrNull() ?: continue
+                if (runCatching { decoder.decodeFromString<List<Conversation>>(text) }.isFailure) {
+                    torn.incrementAndGet()
+                }
+            }
+        }
+        repeat(60) { conversation = store.save(conversation.copy(title = "Take $it")) }
+        writing.set(false)
+        reader.join()
+
+        assertEquals("reads that found half a file", 0, torn.get())
     }
 
     @Test

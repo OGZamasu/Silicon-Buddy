@@ -58,6 +58,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -88,6 +89,7 @@ import dev.siliconoptimizer.buddy.ui.Pill
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 
 /**
  * One agent session: its transcript, what is waiting for a person, and a composer.
@@ -165,21 +167,27 @@ fun SessionScreen(
         HideOverlays(active = waiting != null)
         val card: @Composable (Modifier, Boolean) -> Unit = { cardModifier, fillHeight ->
             waiting?.let { approval ->
-                ApprovalCard(
-                    engine = engine,
-                    approval = approval,
-                    more = session.pending.size - 1,
-                    answering = model.answering[approval.id],
-                    note = session.notes[approval.id],
-                    problem = model.cardProblems[approval.id],
-                    enabled = !model.unpaired,
-                    bodyMax = cardBody,
-                    fillHeight = fillHeight,
-                    tight = tight,
-                    onAnswer = { accept -> model.answer(engine, approval.id, accept) },
-                    onObscured = { model.refuseObscured(approval.id) },
-                    modifier = cardModifier,
-                )
+                // A composition of its own for each approval. When one is answered the next
+                // takes its place, and it has to be a new card — armed afresh, its own touches
+                // and scroll — not the last one with different words under a finger that is
+                // already on its way down.
+                key(approval.id) {
+                    ApprovalCard(
+                        engine = engine,
+                        approval = approval,
+                        more = session.pending.size - 1,
+                        answering = model.answering[approval.id],
+                        note = session.notes[approval.id],
+                        problem = model.cardProblems[approval.id],
+                        enabled = !model.unpaired,
+                        bodyMax = cardBody,
+                        fillHeight = fillHeight,
+                        tight = tight,
+                        onAnswer = { accept -> model.answer(engine, approval.id, accept) },
+                        onObscured = { model.refuseObscured(approval.id) },
+                        modifier = cardModifier,
+                    )
+                }
             }
         }
 
@@ -616,6 +624,14 @@ private fun ApprovalCard(
     // One modifier for the card's life: a new pointer filter on every recomposition would
     // start the press it is watching over.
     val guard = remember(touches) { Modifier.obscuredTouches(touches) }
+    // Armed a moment after the card appears, not in the frame it appears in. Answering one
+    // card brings the next up in the same place: without this, the second tap of a double
+    // tap — or a press a beat late — answers a command nobody has read.
+    var armed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(APPROVAL_ARMING_MS)
+        armed = true
+    }
     Card(
         modifier = modifier.padding(horizontal = 12.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
@@ -695,12 +711,12 @@ private fun ApprovalCard(
             ) {
                 OutlinedButton(
                     onClick = { if (touches.take()) onObscured() else onAnswer(false) },
-                    enabled = enabled && answering == null,
+                    enabled = enabled && answering == null && armed,
                     modifier = guard,
                 ) { Text("Decline") }
                 Button(
                     onClick = { if (touches.take()) onObscured() else onAnswer(true) },
-                    enabled = enabled && answering == null,
+                    enabled = enabled && answering == null && armed,
                     modifier = guard,
                 ) { Text("Accept") }
                 if (answering != null) {
@@ -710,6 +726,13 @@ private fun ApprovalCard(
         }
     }
 }
+
+/**
+ * How long an approval card is on screen before Accept and Decline take a press: longer than
+ * a double tap (300 ms on Android) and a hurried second press, too short to be noticed by
+ * somebody reading what the card asks.
+ */
+private const val APPROVAL_ARMING_MS = 700L
 
 /** Feeds every touch on a guarded button to [touches], and lets the button have it. */
 @OptIn(ExperimentalComposeUiApi::class)

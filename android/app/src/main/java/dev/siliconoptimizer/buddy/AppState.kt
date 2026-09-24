@@ -15,9 +15,11 @@ import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.PendingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.reach.SnapshotStore
+import dev.siliconoptimizer.buddy.shortcuts.BuddyShortcuts
+import dev.siliconoptimizer.buddy.tile.BuddyTileService
 import dev.siliconoptimizer.buddy.widget.BuddyWidget
 import androidx.glance.appwidget.updateAll
-import dev.siliconoptimizer.buddy.transport.ConnectivityProbe
+import dev.siliconoptimizer.buddy.transport.PairedMacCheck
 import dev.siliconoptimizer.buddy.transport.DeviceScope
 import dev.siliconoptimizer.buddy.transport.TailnetHost
 import dev.siliconoptimizer.buddy.transport.TransportError
@@ -151,6 +153,7 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
         // A widget showing the last Mac's model after a re-pair would be showing the
         // wrong machine, so the snapshot goes with the pairing.
         snapshots.clear()
+        refreshSurfaces()
         status = null
         reachability = Reachability.Unknown
         connectionGeneration++
@@ -169,6 +172,7 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
     fun forget() {
         tokens.forget()
         snapshots.clear()
+        refreshSurfaces()
         // And redraw, so "forget this Mac" is true on the home screen too rather than
         // at the widget's next scheduled refresh half an hour later.
         viewModelScope.launch {
@@ -178,6 +182,17 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
         status = null
         reachability = Reachability.Unknown
         connectionGeneration++
+    }
+
+    /**
+     * The launcher's shortcuts and the quick-settings tile, drawn again from the snapshot just
+     * cleared. They are otherwise redrawn when a Mac's status arrives, and a phone that has
+     * forgotten its Mac — or paired one that has not answered yet — hears none: without this,
+     * the launcher went on offering "Ask" the forgotten Mac's model.
+     */
+    private fun refreshSurfaces() {
+        BuddyShortcuts.refresh(getApplication())
+        BuddyTileService.refresh(getApplication())
     }
 
     fun noteMacName(name: String) {
@@ -194,14 +209,20 @@ class AppState(application: Application, saved: SavedStateHandle) : AndroidViewM
             reachability = Reachability.Unknown
             return
         }
+        // The Mac this check asks. A re-pair or Forget while it is out makes its answer
+        // someone else's: see PairedMacCheck.
+        val asked = connectionGeneration
         viewModelScope.launch {
             reachability = Reachability.Checking
-            val result = ConnectivityProbe(client).check()
-            reachability = result
-            if (result.isReady) {
-                status = runCatching { client.status() }.getOrNull()
-                status?.let { snapshots.note(it, config?.macName) }
-            }
+            PairedMacCheck.run(
+                client,
+                stillPaired = { connectionGeneration == asked },
+                reachability = { reachability = it },
+                status = { answered ->
+                    status = answered
+                    answered?.let { snapshots.note(it, config?.macName) }
+                },
+            )
         }
     }
 

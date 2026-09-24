@@ -180,9 +180,13 @@ class OnDeviceChatTest {
 
         val loadsCancelled = java.util.concurrent.atomic.AtomicInteger(0)
 
+        /** Set to leave every answer half written, the model still going. */
+        @Volatile var keepsWriting = false
+
         override fun answer(model: InstalledPhoneModel, history: List<ChatMessage>, maxTokens: Int) = flow {
             answered += model.id to history
             emit(ChatStreamEvent.Token("Hello "))
+            if (keepsWriting) kotlinx.coroutines.awaitCancellation()
             emit(ChatStreamEvent.Token("from the phone."))
             emit(ChatStreamEvent.Finished(ChatMetrics(12, 4, 18.5, timeToFirstToken = 0.4)))
         }
@@ -358,6 +362,37 @@ class OnDeviceChatTest {
         assertTrue(chat.conversations.none { it.id == conversation.id })
         runBlocking { assertNotNull("kept on the phone", phone.conversations.conversation(conversation.id)) }
         assertNull(chat.offer)
+    }
+
+    /**
+     * A second question while the phone is still writing the first answer. The first send is
+     * cancelled, and used to end as though its model had finished: the new question's reply
+     * was closed before a word of it arrived, and the words then went on arriving into a
+     * reply the screen said was done.
+     */
+    @Test
+    fun `a question asked while the phone is answering keeps its own reply going`() {
+        phone.keepsWriting = true
+        chat.noteReachability(Reachability.Unreachable("100.64.0.9"), paired = true)
+        chat.answerOnPhone()
+        chat.draft = "First question"
+        chat.send(mac)
+        await("the phone is writing") { chat.current?.messages?.lastOrNull()?.content == "Hello " }
+
+        chat.draft = "Second question"
+        chat.send(mac)
+        await("the second answer has begun") {
+            phone.answered.size == 2 && chat.current?.messages?.getOrNull(3)?.content == "Hello "
+        }
+        // Every chance for the cancelled send to run its ending over this one.
+        Thread.sleep(300)
+
+        assertTrue("the second question is still being answered", holds { chat.isSending })
+        val messages = chat.current!!.messages
+        assertTrue("its reply is still arriving", messages[3].isStreaming)
+        assertNull(messages[3].failure)
+        assertFalse("the first reply is over, not left spinning", messages[1].isStreaming)
+        assertEquals("Hello ", messages[1].content)
     }
 
     @Test

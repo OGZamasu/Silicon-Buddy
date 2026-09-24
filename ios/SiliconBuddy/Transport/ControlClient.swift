@@ -189,7 +189,9 @@ public struct ControlClient: ControlTransport {
     }
 
     public func install(_ request: ControlAPI.LoadRequest) async throws -> String {
-        try await post(ControlAPI.StatusMessage.self, "/install", body: request, timeout: 60).status
+        // Not 60: that is URLRequest's default, and URLSession reads it as "not set" and
+        // uses the session's 30 instead.
+        try await post(ControlAPI.StatusMessage.self, "/install", body: request, timeout: 90).status
     }
 
     public func unload() async throws {
@@ -239,16 +241,24 @@ public struct ControlClient: ControlTransport {
     public func sendMessage(
         conversationID: String, message: ControlAPI.ChatRequest.Message, maxTokens: Int?
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
+        // A 404 here is about the conversation, not the route: only a Mac that serves
+        // `/conversations` is asked this — it listed them, or has just made one — and the
+        // Mac shipped these routes together. Reported as a missing route
+        // it would mean "this Mac keeps no conversations", and one deleted thread would
+        // move every conversation onto the phone.
         chatEventStream(
             path: "/conversations/\(Self.pathComponent(conversationID))/messages",
             body: BuddyAPI.NewMessageRequest(
                 content: message.content, images: message.images, maxTokens: maxTokens
-            )
+            ),
+            notFound: "That conversation isn't on your Mac any more."
         )
     }
 
+    /// `notFound`, when given, is what a 404 means on this route: a thing that is not
+    /// there rather than a route that is not.
     private func chatEventStream(
-        path: String, body: some Encodable & Sendable
+        path: String, body: some Encodable & Sendable, notFound: String? = nil
     ) -> AsyncThrowingStream<BuddyAPI.ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -280,6 +290,8 @@ public struct ControlClient: ControlTransport {
                         }
                     }
                     continuation.finish()
+                } catch let error as TransportError where error.isMissingRoute && notFound != nil {
+                    continuation.finish(throwing: TransportError.notFound(notFound ?? ""))
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -296,6 +308,17 @@ public struct ControlClient: ControlTransport {
     /// resume. It ends for one reason only — the route is not there — which is what
     /// tells the caller to go back to polling.
     public func events() -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
+        events(idleTimeout: Self.eventsIdleTimeout)
+    }
+
+    /// How long `/events` may be silent before it counts as dropped: three of the Mac's
+    /// 15-second heartbeats. A Mac that goes away without its goodbye reaching the phone —
+    /// Tailscale restarted on it, its network changed, it lost power — leaves a connection
+    /// that looks open and says nothing, and this is what notices; the stream then opens
+    /// again like after any other drop. (Not 60: URLSession reads that as "not set".)
+    static let eventsIdleTimeout: TimeInterval = 45
+
+    func events(idleTimeout: TimeInterval) -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 var lastEventID: String?
@@ -308,7 +331,7 @@ public struct ControlClient: ControlTransport {
                     let openedAt = Date()
                     do {
                         var urlRequest = try makeRequest(
-                            "GET", "/events", accept: "text/event-stream", timeout: 86_400
+                            "GET", "/events", accept: "text/event-stream", timeout: idleTimeout
                         )
                         if let lastEventID {
                             urlRequest.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
@@ -486,13 +509,24 @@ public struct ControlClient: ControlTransport {
 
 extension URLSession {
     /// No caching: every answer here is a live reading of a machine.
+    ///
+    /// Each request says how long it may sit silent, and that is the only limit: a
+    /// request's own timeout is the time allowed between bytes. The resource timeout is
+    /// a cap on the whole transfer, however busy, and at 900 seconds it cut every chat
+    /// stream and `/events` off at a quarter of an hour — mid-answer, which the Mac then
+    /// recorded as a failed generation. It is left at a week, where it never decides;
+    /// a stream to a Mac that has quietly gone is ended by its own idle timeout
+    /// (`eventsIdleTimeout` for `/events`).
     public static let buddy: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 900
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.waitsForConnectivity = false
         configuration.httpAdditionalHeaders = ["User-Agent": "SiliconBuddy-iOS/0.1"]
         return URLSession(configuration: configuration)
     }()
+
+    /// URLSession's own default, said out loud.
+    static let resourceTimeout: TimeInterval = 7 * 24 * 60 * 60
 }

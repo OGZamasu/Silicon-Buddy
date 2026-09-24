@@ -91,18 +91,22 @@ fun QueueList(
                         modifier = Modifier.padding(start = 6.dp),
                     )
                 }
+                // Finished renders the video queue does not hold are this phone's own rows,
+                // and any pairing may clear those; clips are the Mac's, and take control.
+                val clearable = model.queue.finished.filter { !it.isQueued || app.canControl }
                 OutlinedButton(
                     onClick = {
                         confirming = Pending(null, VideoQueueControlRequest.CLEAR_FINISHED)
                     },
-                    enabled = app.canControl && model.queue.finished.isNotEmpty(),
+                    enabled = clearable.isNotEmpty(),
                 ) { Text("Clear finished") }
             }
             if (confirming?.action == VideoQueueControlRequest.CLEAR_FINISHED) {
+                val count = model.queue.finished.count { !it.isQueued || app.canControl }
                 Text(
-                    "This takes ${model.queue.finished.size} finished " +
-                        (if (model.queue.finished.size == 1) "item" else "items") +
-                        " off the Mac's queue. The files it already wrote stay where " +
+                    "This takes $count finished " +
+                        (if (count == 1) "item" else "items") +
+                        " off the queue. The files the Mac already wrote stay where " +
                         "they are.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -110,11 +114,7 @@ fun QueueList(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
                         confirming = null
-                        model.control(
-                            VideoQueueControlRequest.CLEAR_FINISHED,
-                            transport = app.transport,
-                            notifier = notifier,
-                        )
+                        model.clearFinished(app.transport, notifier, canControl = app.canControl)
                     }) { Text("Clear them") }
                     TextButton(onClick = { confirming = null }) { Text("Keep them") }
                 }
