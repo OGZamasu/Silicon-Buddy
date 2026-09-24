@@ -232,6 +232,35 @@ class EventFeedTest {
         assertEquals(1, feed.jobs.size)
     }
 
+    // MARK: - Which model a download is
+
+    /**
+     * The Models list asks for each installed model's download, and shows it in place of the
+     * model's Load button. The Mac downloading the Q8 of a model is not the Q4 on disk: matched
+     * by base name, the Q8's progress hid the Q4's Load button until the Q8 arrived.
+     */
+    @Test
+    fun `a download stands in only for its own quantization`() = runTest {
+        feed.start(
+            Scripted(
+                listOf(
+                    ServerEvent.Download(DownloadProgress(id = "qwen3-8b@Q8_0", name = "Qwen3 8B", bytesReceived = 40, bytesExpected = 100)),
+                    ServerEvent.Download(DownloadProgress(id = "qwen3-coder-30b", name = "Qwen3-Coder 30B A3B", bytesReceived = 40, bytesExpected = 100)),
+                ),
+            ),
+        )
+
+        assertNull("the Q8 download stood in for the Q4's Load button", feed.download("qwen3-8b@Q4_K_M"))
+        assertEquals("qwen3-8b@Q8_0", feed.download("qwen3-8b@Q8_0")?.id)
+        assertEquals("the same model, spelled without its quantization", "qwen3-8b@Q8_0", feed.download("qwen3-8b")?.id)
+        assertEquals(
+            "a download the Mac names without its quantization is the model's",
+            "qwen3-coder-30b",
+            feed.download("qwen3-coder-30b@Q4_K_M")?.id,
+        )
+        assertNull(feed.download("qwen3"))
+    }
+
     // MARK: - The agent sessions' path
 
     private fun frame(seq: Long) = ServerEvent.Agent(

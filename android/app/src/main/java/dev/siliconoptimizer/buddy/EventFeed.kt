@@ -306,13 +306,14 @@ class EventFeed : ViewModel() {
         super.onCleared()
     }
 
-    /** The download for a model, whichever spelling of its id the list is holding. */
+    /**
+     * The download for a model, whichever spelling of its id the list is holding: with its
+     * quantization or without. Never another quantization's — the Mac fetching the Q8 of a
+     * model is not something to show in place of the Load button of the Q4 on disk.
+     */
     fun download(modelID: String): DownloadProgress? {
         downloads[modelID]?.let { return it }
-        val base = modelID.substringBefore('@')
-        return downloads.entries.firstOrNull {
-            it.key == base || it.key.startsWith("$base@")
-        }?.value
+        return downloads.entries.firstOrNull { Status.sameModel(it.key, modelID) }?.value
     }
 }
 
