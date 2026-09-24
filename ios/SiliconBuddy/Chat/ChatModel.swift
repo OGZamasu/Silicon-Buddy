@@ -43,7 +43,9 @@ public final class ChatModel {
     public private(set) var sendingSince: Date?
 
     private let store: ConversationStore
-    private var sendTask: Task<Void, Never>?
+    /// The reply being written. Readable by tests, which need to know when a stopped
+    /// send has finished unwinding — `isSending` goes false the moment Stop is tapped.
+    private(set) var sendTask: Task<Void, Never>?
 
     public init(store: ConversationStore = ConversationStore()) {
         self.store = store
@@ -323,6 +325,11 @@ public final class ChatModel {
                 // finished answer waiting for a check it can get from `/events` instead.
                 if case .finished = event { return .answered }
             }
+            // Stop ends this loop exactly the way an empty stream does: a stream returns
+            // nil to a consumer that was cancelled rather than throwing. Read as a missing
+            // route, one Stop before the first token turned the Mac's conversations and
+            // its streaming off for the rest of the session.
+            if Task.isCancelled { return .stopped }
             // A stream that ends without one event is not an answer; try the next thing.
             return sawAnything ? .answered : .missingRoute
         } catch let error as TransportError where error.isMissingRoute {

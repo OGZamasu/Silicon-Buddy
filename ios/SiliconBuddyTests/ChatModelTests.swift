@@ -86,6 +86,55 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(transport.lastSentMaxTokens, model.maxTokens)
     }
 
+    func testStopBeforeTheFirstTokenLeavesTheMacsRoutesAlone() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.streamHangs = true
+        await model.loadConversations(using: transport)
+        XCTAssertTrue(model.usesRemoteConversations)
+
+        model.draft = "Think hard about this"
+        model.send(using: transport)
+        let running = try XCTUnwrap(model.sendTask)
+        for _ in 0..<200 where transport.streamCallCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(transport.streamCallCount, 1, "The conversation route was asked")
+        model.cancel()
+        await running.value
+
+        XCTAssertTrue(model.usesRemoteConversations, "Stop is not a Mac without conversations")
+        XCTAssertTrue(model.usesStreaming, "Stop is not a Mac without streaming")
+        XCTAssertEqual(transport.streamCallCount, 1, "A stopped reply tries no other route")
+        XCTAssertEqual(transport.chatCallCount, 0)
+        XCTAssertEqual(model.current?.messages.last?.failure, "Stopped.")
+        XCTAssertNil(model.error)
+    }
+
+    func testARePairWhileWaitingLeavesTheNewMacsRoutesAlone() async throws {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .success([])
+        transport.streamHangs = true
+        await model.loadConversations(using: transport)
+
+        model.draft = "Still thinking"
+        model.send(using: transport)
+        let running = try XCTUnwrap(model.sendTask)
+        for _ in 0..<200 where transport.streamCallCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.macChanged()
+        await running.value
+
+        // The next Mac starts from "not asked yet", not from what the last one's
+        // cancelled reply concluded about it.
+        XCTAssertTrue(model.usesStreaming)
+        XCTAssertEqual(transport.chatCallCount, 0)
+        XCTAssertNil(model.current)
+    }
+
     // MARK: - What a device may send
 
     func testTooManyPicturesIsRefusedBeforeSending() {
