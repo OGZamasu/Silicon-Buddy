@@ -59,10 +59,10 @@ public final class ChatModel {
 
     public func loadConversations(using transport: (any ControlTransport)?) async {
         if let transport, usesRemoteConversations || !askedAboutConversations {
-            askedAboutConversations = true
             do {
                 let remote = try await transport.conversations()
                 usesRemoteConversations = true
+                askedAboutConversations = true
                 // The ones the Mac has never heard of are still this device's to show.
                 let here = await store.all()
                     .filter { stored in
@@ -78,10 +78,14 @@ public final class ChatModel {
             } catch let failure as TransportError where failure.isMissingRoute {
                 // This Mac has no /conversations at all; the device keeps them.
                 usesRemoteConversations = false
+                askedAboutConversations = true
             } catch {
                 // A timeout, a dropped tailnet, a Mac mid-restart. The Mac still owns
                 // these conversations — moving them to the device over a bad minute
-                // would fork the transcript, and nothing would merge it back.
+                // would fork the transcript, and nothing would merge it back. Nor is it
+                // an answer: the question stays open, and is put again the next time
+                // anything loads the list. Taking it as "no" left a phone that launched
+                // before Tailscale was up device-only for the whole session.
                 self.error = (error as? TransportError)?.localizedDescription
                     ?? error.localizedDescription
                 if usesRemoteConversations { return }
@@ -93,6 +97,13 @@ public final class ChatModel {
         if let current, !conversations.contains(where: { $0.id == current.id }) {
             conversations.insert(current.summary, at: 0)
         }
+    }
+
+    /// Asks the Mac whether it keeps conversations, if it has never answered — when the app
+    /// comes back to the front, or `/events` reconnects. Once it has answered, nothing.
+    public func askAboutConversationsIfUnanswered(using transport: (any ControlTransport)?) async {
+        guard transport != nil, !askedAboutConversations else { return }
+        await loadConversations(using: transport)
     }
 
     public func newConversation(using transport: (any ControlTransport)?) async {

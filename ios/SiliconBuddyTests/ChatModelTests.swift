@@ -472,6 +472,39 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(transport.streamCallCount, 0)
     }
 
+    /// Right after the phone unlocks Tailscale may not be up yet. A list that could not be
+    /// fetched is not an answer: the Mac is asked again, and once it answers the phone uses
+    /// its conversations.
+    func testAMacOutOfReachAtLaunchIsAskedAgainAboutItsConversations() async {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        transport.conversationsResult = .failure(TransportError.unreachable("100.64.0.9"))
+        await model.loadConversations(using: transport)
+        XCTAssertFalse(model.usesRemoteConversations)
+
+        transport.conversationsResult = .success([
+            BuddyAPI.ConversationSummary(id: "M1", title: "On the Mac", updatedAt: Date(), messageCount: 2)
+        ])
+        await model.askAboutConversationsIfUnanswered(using: transport)
+        XCTAssertTrue(model.usesRemoteConversations, "Asked again once the Mac was back")
+        XCTAssertEqual(model.conversations.map(\.id), ["M1"])
+        XCTAssertEqual(transport.conversationsReads, 2)
+
+        // Answered now: coming back to the front does not ask again.
+        await model.askAboutConversationsIfUnanswered(using: transport)
+        XCTAssertEqual(transport.conversationsReads, 2)
+    }
+
+    func testAMacWithoutConversationsIsAnAnswerAndIsNotAskedAgain() async {
+        let (model, _) = makeModel()
+        let transport = StubTransport()
+        await model.loadConversations(using: transport)
+        XCTAssertFalse(model.usesRemoteConversations)
+        await model.askAboutConversationsIfUnanswered(using: transport)
+        await model.loadConversations(using: transport)
+        XCTAssertEqual(transport.conversationsReads, 1, "A 404 is a definite answer")
+    }
+
     func testConversationsFallBackToTheDeviceWhenTheMacHasNone() async {
         let (model, _) = makeModel()
         let transport = StubTransport()

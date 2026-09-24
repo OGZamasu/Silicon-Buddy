@@ -201,8 +201,11 @@ final class StubTransport: ControlTransport, @unchecked Sendable {
         }
     }
 
+    private(set) var conversationsReads = 0
+
     func conversations() async throws -> [BuddyAPI.ConversationSummary] {
-        try conversationsResult.get()
+        conversationsReads += 1
+        return try conversationsResult.get()
     }
 
     /// What `POST /conversations` makes. Nil means the route 404s.
