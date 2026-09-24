@@ -27,6 +27,8 @@ import dev.siliconoptimizer.buddy.reach.SnapshotStore
 import dev.siliconoptimizer.buddy.reach.VerdictMatching
 import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
@@ -436,6 +438,7 @@ class ChatViewModel(
         val images = attachments.toList()
         draft = ""
         attachments.clear()
+        stopSending()
 
         var conversation = current ?: Conversation()
         val placeholderID = java.util.UUID.randomUUID().toString()
@@ -457,7 +460,6 @@ class ChatViewModel(
         refusal = null
         lastFailure = null
 
-        sendJob?.cancel()
         sendJob = viewModelScope.launch {
             run(placeholderID, transport)
             isSending = false
@@ -498,6 +500,16 @@ class ChatViewModel(
         sendingSince = null
         finishStreaming("Stopped.")
         if (current?.onDevice == true) viewModelScope.launch { persistPhone() }
+    }
+
+    /**
+     * Ends the send in flight, if there is one: its reply is closed as stopped, and its
+     * coroutine ends where it is. Before a new send takes its place — the new reply is the
+     * one still streaming after this, and nothing of the old send's ending may land on it.
+     */
+    private fun stopSending() {
+        if (sendJob?.isActive == true) finishStreaming("Stopped.")
+        sendJob?.cancel()
     }
 
     private enum class Outcome {
@@ -602,6 +614,7 @@ class ChatViewModel(
             }
         } catch (failure: Exception) {
             if (failure is kotlinx.coroutines.CancellationException) throw failure
+            currentCoroutineContext().ensureActive()
             lastFailure = failure
             val description = failure.message ?: "The Mac didn't answer."
             finishStreaming(description)
@@ -655,6 +668,9 @@ class ChatViewModel(
         } catch (failure: StreamFinished) {
             return Outcome.Answered
         } catch (failure: TransportError) {
+            // Given up on — Stop, or a new question — the socket closed under the read, and
+            // the failure that comes of it is the cancellation's, not the Mac's.
+            currentCoroutineContext().ensureActive()
             if (failure.isMissingRoute) return Outcome.MissingRoute
             if (failure is TransportError.Cancelled) return Outcome.Stopped
             // Nothing has been written into the reply yet, so it is still open for the
@@ -671,8 +687,13 @@ class ChatViewModel(
             error = failure.message
             return Outcome.Failed
         } catch (failure: kotlinx.coroutines.CancellationException) {
+            // This send was stopped or replaced. It ends here: whatever it would have done
+            // next — close "the streaming reply", open the composer — is the next send's
+            // to do, and would land on that send's reply.
+            currentCoroutineContext().ensureActive()
             return Outcome.Stopped
         } catch (failure: Exception) {
+            currentCoroutineContext().ensureActive()
             lastFailure = failure
             finishStreaming(failure.message)
             error = failure.message
@@ -975,6 +996,9 @@ class ChatViewModel(
         draft = ""
         refusal = null
         error = null
+        stopSending()
+        // Read again: stopping closed the reply that was still arriving in it.
+        conversation = current?.takeIf { it.id == conversation.id } ?: conversation
         val placeholderID = java.util.UUID.randomUUID().toString()
         conversation = conversation.copy(
             phoneModelID = model.id,
@@ -994,7 +1018,6 @@ class ChatViewModel(
         isSending = true
         sendingSince = System.currentTimeMillis()
 
-        sendJob?.cancel()
         sendJob = viewModelScope.launch {
             // Written down before anything slow happens. Loading a model is the longest
             // minute in this app and the likeliest moment for Android to take the process:
