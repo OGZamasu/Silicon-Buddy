@@ -66,6 +66,12 @@ data class PairingInvite(
     }
 
     companion object {
+        /** A short pairing code must never be sent as a control bearer token. */
+        fun looksLikePairingCode(text: String): Boolean {
+            val digits = text.filterNot { it.isWhitespace() || it == '-' }
+            return digits.length == 6 && digits.all { it.digitToIntOrNull() != null }
+        }
+
         /**
          * Parses the scanned text. Strict on purpose: a QR code is scanned from whatever
          * happens to be in frame, so anything that is not exactly our invite is rejected

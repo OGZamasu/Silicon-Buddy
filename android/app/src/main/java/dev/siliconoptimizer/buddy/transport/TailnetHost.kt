@@ -43,6 +43,16 @@ object TailnetHost {
         return false
     }
 
+    /** Loopback or the Android emulator's route to the Mac's local listener. */
+    fun isLocalDevelopmentHost(host: String): Boolean {
+        val trimmed = host.trim().trim('[', ']').lowercase()
+        if (trimmed == "localhost") return true
+        ipv4Bytes(trimmed)?.let { bytes ->
+            return bytes[0] == 127 || bytes.contentEquals(intArrayOf(10, 0, 2, 2))
+        }
+        return ipv6Groups(trimmed)?.contentEquals(intArrayOf(0, 0, 0, 0, 0, 0, 0, 1)) == true
+    }
+
     /**
      * [host] as it goes into a URL or an address line: an IPv6 literal in brackets, which
      * `http://fd7a:115c:a1e0::9:8788/` without them is not a URL at all; anything else as

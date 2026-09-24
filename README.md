@@ -200,6 +200,17 @@ request is checked against `TailnetHost` first — loopback, `10.0.2.2` for the 
 emulator, Tailscale's `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. A scanned QR or a
 `siliconbuddy://` link never pairs on its own; it names the machine and asks.
 
+For the real Mac app, **Enter code** uses the six-digit code and the Tailscale address
+shown together in Silicon Optimizer → Settings → Silicon Buddy. Its default port is
+8788. Keep that address when using a code in a simulator too.
+
+For a local connection from a simulator on the Mac, use **Developer** with `127.0.0.1`
+on iOS or `10.0.2.2` on Android. Copy the **port and full token** from
+`~/Library/Application Support/SiliconOptimizer/control.json` after starting the Mac
+app. The local port can change when the Mac app restarts; substituting port 8788 or
+the six-digit pairing code will not work. A refused connection means to check the
+address and port as well as whether the app is running.
+
 ```
 # iOS — Xcode 26, xcodegen 2.46
 cd ios && xcodegen generate

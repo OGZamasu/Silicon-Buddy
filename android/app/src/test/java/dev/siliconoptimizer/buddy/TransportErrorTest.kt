@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.transport.TransportError
+import dev.siliconoptimizer.buddy.transport.Reachability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -19,8 +20,8 @@ class TransportErrorTest {
     // MARK: - Socket failures
 
     @Test
-    fun `connection refused means the app is not running`() {
-        // The Mac answered the SYN with a RST: the machine is up, the port is closed.
+    fun `connection refused identifies a port with no listener`() {
+        // A refused port does not prove the app is closed: it may listen elsewhere.
         assertEquals(
             TransportError.AppNotRunning,
             TransportError.from(ConnectException("ECONNREFUSED"), "mac"),
@@ -44,7 +45,7 @@ class TransportErrorTest {
     }
 
     @Test
-    fun `a plain IO failure that mentions refusal is still the app being closed`() {
+    fun `a plain IO failure that mentions refusal also identifies no listener`() {
         assertEquals(
             TransportError.AppNotRunning,
             TransportError.from(IOException("failed to connect: ECONNREFUSED"), "mac"),
@@ -172,6 +173,20 @@ class TransportErrorTest {
     }
 
     // MARK: - What the person is told
+
+    @Test
+    fun `connection refusal asks to check the address and port without claiming the app is closed`() {
+        assertEquals("Connection refused", Reachability.AppNotRunning.headline)
+        assertEquals(
+            "Nothing is listening at this address and port. Open Silicon Optimizer and check the address and port.",
+            Reachability.AppNotRunning.detail,
+        )
+        assertEquals(TransportError.AppNotRunning.message, Reachability.AppNotRunning.detail)
+        assertEquals(
+            "Open Silicon Optimizer and check the address and port.",
+            TransportError.AppNotRunning.recovery,
+        )
+    }
 
     @Test
     fun `every error has something to say`() {

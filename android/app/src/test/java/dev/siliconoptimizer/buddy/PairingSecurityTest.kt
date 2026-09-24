@@ -35,6 +35,14 @@ class PairingSecurityTest {
     }
 
     @Test
+    fun `local development guidance only applies to loopback and emulator hosts`() {
+        listOf("127.0.0.1", "127.1.2.3", " localhost ", "LOCALHOST", "::1", "[::1]", "10.0.2.2")
+            .forEach { assertTrue(it, TailnetHost.isLocalDevelopmentHost(it)) }
+        listOf("100.64.0.1", "fd7a:115c:a1e0::1", "192.168.1.10", "10.0.2.3", "127.0.0.1.example.com", "")
+            .forEach { assertFalse(it, TailnetHost.isLocalDevelopmentHost(it)) }
+    }
+
+    @Test
     fun `everything else is refused`() {
         listOf(
             "evil.example.com", "example.com", "192.168.1.10", "10.0.0.5", "172.16.0.1",

@@ -136,6 +136,12 @@ fun PairingScreen(
     }
 
     fun connect() {
+        if (PairingInvite.looksLikePairingCode(token)) {
+            message = "That is a pairing code. Choose Enter code and use the Mac's " +
+                "Tailscale address shown beside it. Developer needs the full control " +
+                "token and current port from control.json."
+            return
+        }
         val portNumber = developerPort.toIntOrNull()
         if (portNumber == null || portNumber !in 1..65535) {
             message = "That port isn't a number between 1 and 65535."
@@ -312,6 +318,16 @@ fun PairingScreen(
                     },
                     label = { Text("Mac's address") },
                     placeholder = { Text("100.x.y.z") },
+                    supportingText = {
+                        val address = runCatching { PairingInvite.typed(host, "000000").host }.getOrNull()
+                        if (address != null && TailnetHost.isLocalDevelopmentHost(address)) {
+                            Text(
+                                "Use the Mac's Tailscale address shown beside the code. " +
+                                    "For a local emulator connection, use Developer with the " +
+                                    "port and full token from control.json.",
+                            )
+                        }
+                    },
                     singleLine = true,
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
@@ -356,7 +372,7 @@ fun PairingScreen(
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
-                    "This is the Mac's own control token, from ~/Library/Application Support/" +
+                    "Use the full control token, not the six-digit pairing code, from ~/Library/Application Support/" +
                         "SiliconOptimizer/control.json. The Mac accepts it only on its local " +
                         "listener, so it works from the Android emulator on that Mac (host " +
                         "10.0.2.2, the port in control.json) and never from a phone over " +

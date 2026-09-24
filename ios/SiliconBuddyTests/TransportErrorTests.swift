@@ -5,10 +5,12 @@ final class TransportErrorTests: XCTestCase {
 
     // MARK: - URLSession failures
 
-    func testConnectionRefusedMeansTheAppIsNotRunning() {
-        // The Mac answered the SYN with a RST: the machine is up, the port is closed.
+    func testConnectionRefusedDoesNotProveTheAppIsClosed() {
+        // A wrong port and a closed app produce the same transport error.
         let error = URLError(.cannotConnectToHost)
         XCTAssertEqual(TransportError.from(urlError: error), .appNotRunning)
+        XCTAssertTrue(TransportError.appNotRunning.errorDescription!.contains("address and port"))
+        XCTAssertTrue(TransportError.appNotRunning.recoverySuggestion!.contains("control.json"))
     }
 
     func testTimeoutIsItsOwnThing() {

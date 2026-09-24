@@ -2,6 +2,7 @@ package dev.siliconoptimizer.buddy;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
@@ -148,6 +149,41 @@ public class ManualPairingTest {
             device.wait(Until.gone(By.text("Pairing code")), WAIT));
         assertNotNull("Settings names the Mac the code paired with",
             device.wait(Until.findObject(By.text("Test Mac")), WAIT));
+    }
+
+    @Test
+    public void aPairingCodeInDeveloperIsExplainedBeforeAnyRequest() {
+        openCodeForm();
+        List<UiObject2> fields = device.wait(Until.findObjects(By.clazz("android.widget.EditText")), WAIT);
+        assertNotNull(fields);
+        fields.get(1).setText("127.0.0.1");
+        hideKeyboard();
+        assertNotNull("local addresses explain which listener takes a code",
+            device.wait(Until.findObject(By.textStartsWith("Use the Mac's Tailscale address shown beside the code.")), WAIT));
+
+        device.findObject(By.text("Developer")).click();
+        assertNotNull(device.wait(Until.findObject(By.text("Control token")), WAIT));
+        fields = device.wait(Until.findObjects(By.clazz("android.widget.EditText")), WAIT);
+        assertNotNull(fields);
+        assertTrue(fields.size() >= 3);
+        fields.get(0).setText("127.0.0.1");
+        fields.get(1).setText(String.valueOf(mac.port()));
+        fields.get(2).setText("123-456");
+        hideKeyboard();
+        UiObject2 connect = device.wait(Until.findObject(By.text(Pattern.compile("Connect|Replace this Mac…"))), WAIT);
+        assertNotNull(connect);
+        boolean replacing = connect.getText().startsWith("Replace");
+        connect.click();
+        if (replacing) {
+            UiObject2 replace = device.wait(Until.findObject(By.textStartsWith("Replace with")), WAIT);
+            assertNotNull(replace);
+            replace.click();
+        }
+        assertNotNull("the code needs Enter code and the address displayed on the Mac",
+            device.wait(Until.findObject(By.textStartsWith("That is a pairing code. Choose Enter code")), WAIT));
+        assertFalse("the invalid token must not start a probe", mac.saw("GET", "/health"));
+        assertFalse("the pairing code must not be sent as a bearer token", mac.saw("GET", "/status"));
+        assertFalse("Developer must not spend a pairing code", mac.saw("POST", "/buddy/pair"));
     }
 
     /**

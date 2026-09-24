@@ -52,6 +52,14 @@ class ManualPairingTest {
     }
 
     @Test
+    fun `formatted pairing codes are recognized before treating them as bearer tokens`() {
+        listOf("418203", "418 203", " 418-203 ", "418\t203", "４１８２０３", "٤١٨٢٠٣")
+            .forEach { assertTrue(it, PairingInvite.looksLikePairingCode(it)) }
+        listOf("", "41820", "4182031", "abc123", "418-20x", "418203-long-control-token")
+            .forEach { assertFalse(it, PairingInvite.looksLikePairingCode(it)) }
+    }
+
+    @Test
     fun `a port can be given, in its field or after the address`() {
         assertEquals(8924, PairingInvite.typed("10.0.2.2", "418203", "8924").port)
         assertEquals(8924, PairingInvite.typed("100.64.0.9:8924", "418203", "8788").port)

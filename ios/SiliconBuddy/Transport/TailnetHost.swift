@@ -17,6 +17,18 @@ import Foundation
 /// means trusting whatever answers for it, and the Mac advertises an address.
 public enum TailnetHost {
 
+    /// Local addresses used by simulators and development servers, not the Mac's tailnet listener.
+    public static func isLocalDevelopmentHost(_ host: String) -> Bool {
+        let bare = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        if bare == "localhost" { return true }
+        if let bytes = ipv4Bytes(bare) {
+            return bytes[0] == 127 || bytes == [10, 0, 2, 2]
+        }
+        return ipv6Groups(bare) == [0, 0, 0, 0, 0, 0, 0, 1]
+    }
+
     public static let explanation =
         "Silicon Buddy only pairs over your tailnet. "
         + "Use the Mac's Tailscale address (100.x.y.z), or 127.0.0.1 in the Simulator."

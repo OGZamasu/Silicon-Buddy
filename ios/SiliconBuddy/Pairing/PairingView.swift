@@ -11,12 +11,17 @@ public struct PairingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
+    #if targetEnvironment(simulator)
+    @State private var mode: Mode = .developer
+    @State private var developerHost = "127.0.0.1"
+    #else
     @State private var mode: Mode = .scan
+    @State private var developerHost = ""
+    #endif
     @State private var cameraState: QRScannerView.CameraState = .scanning
     @State private var host = ""
     @State private var code = ""
     @State private var codePort = String(PairingInvite.defaultPort)
-    @State private var developerHost = ""
     @State private var developerPort = ""
     @State private var token = ""
     @State private var status: Status = .idle
@@ -205,6 +210,14 @@ public struct PairingView: View {
                         + "otherwise. A pairing link pasted into the address field is shown to you "
                         + "to confirm, as a scanned code is."
                 )
+                if let invite = try? PairingInvite.typed(address: host, code: "000000", port: codePort),
+                   TailnetHost.isLocalDevelopmentHost(invite.host) {
+                    Text(
+                        "Use the Mac's Tailscale address shown beside the code. For a local "
+                            + "Simulator connection, use Developer with the port and full "
+                            + "token from control.json. Port 8788 is normally the tailnet listener."
+                    )
+                }
             }
 
             Section {
@@ -315,7 +328,9 @@ public struct PairingView: View {
                         + "SiliconOptimizer/control.json. The Mac accepts it only on its local "
                         + "listener, so it works from the iOS Simulator on that Mac (127.0.0.1, "
                         + "the port in control.json) and never from an iPhone or iPad over "
-                        + "Tailscale. To pair a device, use Scan or Enter code."
+                        + "Tailscale. Copy the port and full token after the Mac app starts; "
+                        + "the local port can change on restart. The six-digit pairing code "
+                        + "belongs in Enter code with the Mac's Tailscale address."
                 )
             }
 
@@ -357,22 +372,17 @@ public struct PairingView: View {
 
     private func connect() {
         app.pairing.acknowledge()
-        guard let portNumber = Int(developerPort), (1...65535).contains(portNumber) else {
-            status = .failed("That port isn't a number between 1 and 65535.")
-            return
-        }
-        let trimmedHost = developerHost.trimmingCharacters(in: .whitespaces)
-        guard TailnetHost.isAllowed(trimmedHost) else {
-            status = .failed(TailnetHost.explanation)
+        let candidate: ServerConfig
+        do {
+            candidate = try DeveloperConnection.configuration(
+                host: developerHost, port: developerPort, token: token
+            )
+        } catch {
+            status = .failed(error.localizedDescription)
             return
         }
         status = .working
         Task {
-            let candidate = ServerConfig(
-                host: trimmedHost,
-                port: portNumber,
-                token: token.trimmingCharacters(in: .whitespaces)
-            )
             // Prove it works before storing it: a saved address that does not answer is
             // worse than no address at all.
             let probe = ConnectivityProbe(transport: ControlClient(config: candidate))
