@@ -140,7 +140,7 @@ public class AgentsScreenTest {
             device.wait(Until.findObject(By.text("Reasoning")), WAIT));
         assertNotNull(device.wait(Until.findObject(By.text("Codex wants to run a command")), WAIT));
 
-        UiObject2 accept = device.wait(Until.findObject(By.text("Accept")), WAIT);
+        UiObject2 accept = armed("Accept");
         assertNotNull(accept);
         accept.click();
 
@@ -274,7 +274,7 @@ public class AgentsScreenTest {
             device.wait(Until.hasObject(By.text("1 more")), WAIT));
         assertTrue("the app is in front, so the watcher lets go", waitFor(() -> !watcherRunning()));
 
-        UiObject2 accept = device.wait(Until.findObject(By.text("Accept")), WAIT);
+        UiObject2 accept = armed("Accept");
         assertNotNull(accept);
         accept.click();
         assertTrue("accepted in the app, for the card on screen",
@@ -282,6 +282,59 @@ public class AgentsScreenTest {
         assertTrue("and only that one", mac.decision == null);
         assertNotNull("the next card comes to the front",
             device.wait(Until.findObject(By.text("Codex wants to run a command")), WAIT));
+    }
+
+    /**
+     * A double tap on Accept. The first press answers the card in front; the Mac takes it
+     * down at once and the next approval takes its place, under the same finger. The
+     * second press lands a moment later, on a command nobody has read — and must not
+     * answer it: a card's buttons are armed only once it has been on screen for a moment.
+     */
+    @Test
+    public void aSecondTapMeantForTheLastCardDoesNotAnswerTheNext() throws Exception {
+        twoApprovals();
+        pair();
+        openAgents();
+        openCodex();
+        assertNotNull(device.wait(Until.findObject(By.text("Codex wants to run a command")), WAIT));
+        UiObject2 accept = armed("Accept");
+        assertNotNull(accept);
+        accept.click();
+
+        // The second press, the moment the next card is in front. Looked for in the
+        // accessibility tree directly: UiAutomator's own search waits for the screen to be
+        // idle first, which takes longer than a double tap does.
+        long deadline = SystemClock.uptimeMillis() + WAIT;
+        Rect next = null;
+        long appeared = 0;
+        while (next == null && SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = instrumentation.getUiAutomation(
+                androidx.test.uiautomator.Configurator.getInstance().getUiAutomationFlags()).getRootInActiveWindow();
+            if (root == null || withText(root, "Codex wants to change files") == null) continue;
+            if (appeared == 0) appeared = SystemClock.uptimeMillis();
+            AccessibilityNodeInfo button = withText(root, "Accept");
+            if (button != null) {
+                next = new Rect();
+                button.getBoundsInScreen(next);
+            }
+        }
+        assertNotNull("the next card never came to the front", next);
+        device.click(next.centerX(), next.centerY());
+        long late = SystemClock.uptimeMillis() - appeared;
+        assertTrue("the second press came " + late + " ms after the card appeared, after it arms: "
+            + "this run shows nothing", late < 600);
+
+        assertTrue("the first press answered the card it was meant for",
+            waitFor(() -> "accept".equals(mac.decision)));
+        SystemClock.sleep(1_500);
+        assertEquals("the second press answered a card that had only just appeared",
+            null, mac.secondDecision);
+
+        // On screen for a moment, it answers like any other.
+        UiObject2 ready = armed("Accept");
+        assertNotNull("the next card's Accept never armed", ready);
+        ready.click();
+        assertTrue(waitFor(() -> "accept".equals(mac.secondDecision)));
     }
 
     /**
@@ -299,7 +352,7 @@ public class AgentsScreenTest {
         openAgents();
         openCodex();
         assertNotNull(device.wait(Until.findObject(By.text("Codex wants to run a command")), WAIT));
-        UiObject2 accept = device.wait(Until.findObject(By.text("Accept")), WAIT);
+        UiObject2 accept = armed("Accept");
         assertNotNull(accept);
         assertTrue("while a card waits, other apps' overlays are hidden (Android 12+)",
             Build.VERSION.SDK_INT < 31 || waitFor(this::hidingOverlays));
@@ -315,13 +368,23 @@ public class AgentsScreenTest {
             waitFor(() -> "accept".equals(mac.decision)));
 
         assertNotNull(device.wait(Until.findObject(By.text("Codex wants to change files")), WAIT));
-        UiObject2 next = device.wait(Until.findObject(By.text("Accept")), WAIT);
+        UiObject2 next = armed("Accept");
         assertNotNull(next);
         press(next, MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED);
         assertTrue("a window overlapping another part of the screen refuses nothing",
             waitFor(() -> "accept".equals(mac.secondDecision)));
         assertTrue("with no card waiting, overlays are drawn again",
             Build.VERSION.SDK_INT < 31 || waitFor(() -> !hidingOverlays()));
+    }
+
+    /**
+     * The card's {@code label} button once the card has armed it — as a person reading the card
+     * would find it. The button itself, not its text: the text is a node of its own, and
+     * says nothing about whether the button takes a press.
+     */
+    private UiObject2 armed(String label) {
+        return device.wait(Until.findObject(
+            By.clickable(true).enabled(true).hasDescendant(By.text(label))), WAIT);
     }
 
     /**

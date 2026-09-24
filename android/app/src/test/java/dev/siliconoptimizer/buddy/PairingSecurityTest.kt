@@ -1,6 +1,7 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.chat.SendLimits
+import dev.siliconoptimizer.buddy.pairing.DeveloperConnection
 import dev.siliconoptimizer.buddy.pairing.PairingInvite
 import dev.siliconoptimizer.buddy.pairing.TokenStore
 import dev.siliconoptimizer.buddy.transport.DeviceScope
@@ -24,14 +25,47 @@ class PairingSecurityTest {
     // MARK: - Which hosts exist at all
 
     @Test
-    fun `the tailnet and the loopbacks are allowed`() {
+    fun `the tailnet is allowed in every build`() {
         listOf(
-            "127.0.0.1", "127.1.2.3", "localhost", "::1",
-            "10.0.2.2", // the emulator's name for its host
             "100.64.0.1", "100.100.100.100", "100.127.255.254",
             "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12:4843:cd96:625a:1",
             "[fd7a:115c:a1e0::1]",
-        ).forEach { assertTrue("$it should be reachable", TailnetHost.isAllowed(it)) }
+        ).forEach {
+            assertTrue("$it should be reachable", TailnetHost.isAllowed(it, local = false))
+            assertTrue("$it should be reachable", TailnetHost.isAllowed(it, local = true))
+        }
+    }
+
+    /** Where the stand-in Mac the tests pair with lives: this device, or the emulator's host. */
+    @Test
+    fun `a build tested against a stand-in Mac dials this machine`() {
+        listOf(
+            "127.0.0.1", "127.1.2.3", "localhost", "::1",
+            "10.0.2.2", // the emulator's name for its host
+        ).forEach { assertTrue("$it should be reachable", TailnetHost.isAllowed(it, local = true)) }
+    }
+
+    /**
+     * The build the owner installs does not. On a phone, loopback is whichever other app is
+     * listening there, and 10.0.2.2 is an ordinary private address on whatever Wi-Fi the phone
+     * has joined: a pairing link naming either — any app can open one — would have the phone
+     * pair with, and send its token in the clear to, a Mac that is not the owner's.
+     */
+    @Test
+    fun `the build the owner installs dials the tailnet and nothing else`() {
+        listOf("127.0.0.1", "127.1.2.3", "localhost", " LOCALHOST ", "::1", "[::1]", "10.0.2.2")
+            .forEach { assertFalse("$it must not be dialled", TailnetHost.isAllowed(it, local = false)) }
+        assertFalse(
+            "the refusal does not point at the emulator",
+            TailnetHost.explanation(local = false).contains("10.0.2.2"),
+        )
+    }
+
+    /** The unit tests run on the debug build, which is one of the builds that does. */
+    @Test
+    fun `the debug build dials a Mac on this machine`() {
+        assertTrue(BuildConfig.LOCAL_MACS)
+        assertTrue(TailnetHost.isAllowed("10.0.2.2"))
     }
 
     @Test
@@ -53,6 +87,40 @@ class PairingSecurityTest {
         assertFalse(TailnetHost.isAllowed("100.64.0.1.2"))
         assertFalse(TailnetHost.isAllowed("100.64.0.256"))
         assertFalse("A zone is an interface", TailnetHost.isAllowed("fd7a:115c:a1e0::1%wlan0"))
+    }
+
+    // MARK: - The Developer form
+
+    /**
+     * The Developer form sends the Mac's own control token — the key to everything its control
+     * API does, which the Mac accepts on its local listener and nowhere else. It used to send
+     * it to any host a pairing link could name, tailnet addresses included, and so to whoever
+     * answered there.
+     */
+    @Test
+    fun `the control token goes only to this machine`() {
+        listOf("100.64.0.9", "100.100.100.100", "fd7a:115c:a1e0::9").forEach {
+            assertEquals("$it must not be sent the control token", DeveloperConnection.LOCAL_ONLY, DeveloperConnection.problem(it, "8765"))
+        }
+        listOf("10.0.2.2", "127.0.0.1", "localhost", "::1").forEach {
+            assertNull("$it is the Mac's own listener", DeveloperConnection.problem(it, "8765", local = true))
+        }
+    }
+
+    /** And in the build the owner installs, which dials no Mac on this machine, nowhere. */
+    @Test
+    fun `a build that dials no local Mac sends the token nowhere`() {
+        listOf("10.0.2.2", "127.0.0.1", "100.64.0.9").forEach {
+            assertEquals(DeveloperConnection.LOCAL_ONLY, DeveloperConnection.problem(it, "8765", local = false))
+        }
+    }
+
+    @Test
+    fun `the form still checks its port first`() {
+        assertEquals(
+            "That port isn't a number between 1 and 65535.",
+            DeveloperConnection.problem("10.0.2.2", "70000", local = true),
+        )
     }
 
     // MARK: - What a QR may say

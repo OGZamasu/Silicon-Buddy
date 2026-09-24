@@ -405,7 +405,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     // menu all show, so it is written down every time this app learns it.
     val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(events.status, app.config) {
-        events.status?.let {
+        events.statusFor(app.connectionGeneration)?.let {
             SnapshotStore(context).note(it, app.config?.macName)
             BuddyShortcuts.refresh(context)
             BuddyWidget().updateAll(context)
@@ -472,6 +472,7 @@ fun BuddyApp(arriving: androidx.compose.runtime.MutableState<LinkArrival?> = rem
     // the Mac arriving — and a different Mac means everything on screen belongs to the
     // wrong machine.
     LaunchedEffect(app.connectionGeneration) {
+        events.paired(app.connectionGeneration)
         dashboard.reset()
         models.reset()
         chat.macChanged()

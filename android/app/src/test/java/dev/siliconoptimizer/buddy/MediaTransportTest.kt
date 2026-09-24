@@ -5,6 +5,7 @@ import dev.siliconoptimizer.buddy.media.VideoRequest
 import dev.siliconoptimizer.buddy.transport.ControlClient
 import dev.siliconoptimizer.buddy.transport.ImageRequest
 import dev.siliconoptimizer.buddy.transport.MeshRequest
+import dev.siliconoptimizer.buddy.transport.RenderBudget
 import dev.siliconoptimizer.buddy.transport.ServerConfig
 import dev.siliconoptimizer.buddy.transport.TransportError
 import dev.siliconoptimizer.buddy.transport.Uploads
@@ -205,6 +206,58 @@ class MediaTransportTest {
                 "A cancelled render must reach its connection, not wait for the read",
                 abandoned.await(5, java.util.concurrent.TimeUnit.SECONDS),
             )
+        } finally {
+            scope.cancel()
+            listener.interrupt()
+            runCatching { accepted.poll()?.close() }
+            silent.close()
+        }
+    }
+
+    /**
+     * A synchronous render says nothing until it is done: no heartbeat, no progress. So
+     * silence on one is not a dropped line, and a socket that gave up after ten quiet
+     * minutes called every longer render failed while the Mac was still making it — and a
+     * picture or a mesh made that way has no other route back to the phone. The socket
+     * waits as long as the phone does, so the phone's own "still rendering" is what ends a
+     * long wait. Read off the connection itself, which the client hands over as it gives up.
+     */
+    @Test
+    fun `a render's socket waits as long as the phone does`() {
+        val calls: Map<String, suspend (ControlClient) -> Unit> = mapOf(
+            "/image/generate" to { it.generateImage(ImageRequest(prompt = "A tram", modelID = "flux2-klein")) },
+            "/mesh/generate" to { it.generateMesh(MeshRequest(uploadID = "0B7D", modelID = "hunyuan3d-2")) },
+            "/video/generate" to { it.generateVideo(VideoGenerateRequest(prompt = "A tram")) },
+        )
+        for ((route, call) in calls) {
+            val timeout = readTimeoutOf(call)
+            assertTrue(
+                "$route gives up after ${timeout / 1000} s of silence; the phone waits " +
+                    "${RenderBudget.TOTAL_SECONDS} s for it",
+                timeout > RenderBudget.TOTAL_SECONDS * 1000,
+            )
+        }
+    }
+
+    /** The read timeout [call] opened its connection with, against a Mac that never answers. */
+    private fun readTimeoutOf(call: suspend (ControlClient) -> Unit): Int {
+        val silent = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = java.util.concurrent.LinkedBlockingQueue<java.net.Socket>()
+        val timeouts = java.util.concurrent.LinkedBlockingQueue<Int>()
+        val listener = kotlin.concurrent.thread(isDaemon = true) {
+            runCatching { accepted.put(silent.accept()) }
+        }
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
+        try {
+            val waiting = ControlClient(
+                ServerConfig("127.0.0.1", silent.localPort, token = "device-token"),
+                abandon = { timeouts.put(it.readTimeout); runCatching { it.disconnect() } },
+            )
+            val running = scope.launch { runCatching { call(waiting) } }
+            assertNotNull("the request never left", accepted.poll(10, java.util.concurrent.TimeUnit.SECONDS))
+            running.cancel()
+            return timeouts.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+                ?: throw AssertionError("the connection was never handed over")
         } finally {
             scope.cancel()
             listener.interrupt()

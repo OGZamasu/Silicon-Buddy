@@ -11,8 +11,9 @@
   cannot be listed — and would suggest a name-based path that the app does not accept.
 
   The narrowing lives in the app instead, at the one place every request passes through:
-  TailnetHost, which refuses any host that is not loopback, 10.0.2.2, 100.64.0.0/10 or
-  fd7a:115c:a1e0::/48, and which PairingInvite applies before a scanned code can name a
+  TailnetHost, which refuses any host that is not in 100.64.0.0/10 or fd7a:115c:a1e0::/48
+  (and loopback or 10.0.2.2 only in the debug and test builds, which pair with a stand-in
+  Mac on this machine), and which PairingInvite applies before a scanned code can name a
   machine. That gate is the security boundary; this file is not. See TailnetHostTest,
   PairingSecurityTest and ControlClientTest.
 -->

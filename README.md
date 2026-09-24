@@ -209,9 +209,9 @@ xcodebuild -scheme SiliconBuddy -destination 'platform=iOS Simulator,name=iPad m
 git submodule update --init --depth 1 third_party/llama.cpp
 cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug
 
-# The local CI (GitHub Actions cannot run here): unit tests, the minified release, the keep
-# rules R8 cannot see, the native libraries and the 30 MB APK budget; --connected adds the
-# instrumented tests on $ANDROID_SERIAL, --ios the iOS suite.
+# The gate, run on this machine — there is no hosted CI: unit tests, the minified release,
+# the keep rules R8 cannot see, the native libraries and the 30 MB APK budget; --connected
+# adds the instrumented tests on $ANDROID_SERIAL, --ios the iOS suite.
 scripts/ci-android.sh
 
 # The instrumented tests pair with a stand-in Mac on this machine and fetch real model
