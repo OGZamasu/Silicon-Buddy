@@ -191,6 +191,53 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(model.storageNote, "Synced with the Mac.")
     }
 
+    // MARK: - A spoken question
+
+    /// The chat screen stays up through a re-pair — the confirmation is a sheet over it —
+    /// so push-to-talk has to find the Mac when it asks, not when the screen appeared.
+    func testASpokenQuestionGoesToTheMacPairedWhenItIsAsked() async throws {
+        let left = try LoopbackServer()
+        let paired = try LoopbackServer()
+        defer { left.stop(); paired.stop() }
+        for mac in [left, paired] {
+            mac.events("/chat/stream", """
+            event: token
+            data: {"text":"Hello."}
+
+            event: finished
+            data: {"promptTokens":4,"generatedTokens":2,"tokensPerSecond":10}
+
+            """)
+        }
+        let app = makeAppModel()
+        try app.connect(ServerConfig(host: "127.0.0.1", port: left.port, token: "left-mac-token"))
+        let (chat, _) = makeModel()
+        let ask = ChatView.askAloud(into: chat, app: app)
+
+        try app.connect(ServerConfig(host: "127.0.0.1", port: paired.port, token: "paired-mac-token"))
+        chat.macChanged()
+        ask("Which Mac is this")
+        try await waitForIdle(chat)
+
+        XCTAssertEqual(chat.current?.messages.last?.content, "Hello.")
+        XCTAssertEqual(paired.requestCount("/chat/stream"), 1)
+        XCTAssertEqual(
+            paired.request(to: "/chat/stream")?.headers["authorization"], "Bearer paired-mac-token"
+        )
+        XCTAssertTrue(left.requests.isEmpty, "Neither the question nor its token goes to the Mac left behind")
+    }
+
+    private func makeAppModel() -> AppModel {
+        let suite = "buddy.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let tokens = TokenStore(service: "dev.siliconoptimizer.buddy.tests.\(UUID().uuidString)")
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suite)
+            tokens.delete()
+        }
+        return AppModel(defaults: defaults, tokens: tokens)
+    }
+
     // MARK: - What a device may send
 
     func testTooManyPicturesIsRefusedBeforeSending() {
