@@ -120,13 +120,13 @@ Fixed here:
   to go, because R8 renames them and that is R8 working correctly.
 
   Two things to know about that `abiFilters` line. It sits in `defaultConfig`, so it
-  applies to **every variant including debug**: an x86_64 emulator or an Intel CI runner
-  cannot install this build at all. `-Pbuddy.abis=x86_64` is the way back, and CI uses
-  it. And `assembleRelease` signs with the local **debug keystore** when there is one,
-  purely so the build can be installed and instrumented — that is not a distribution key
-  and must not become one, since every debug keystore shares a password. A real key, in
-  the owner's keychain and in CI secrets, is still outstanding; on a machine without
-  `~/.android/debug.keystore` the release APK comes out unsigned.
+  applies to **every variant including debug**: an x86_64 emulator cannot install this
+  build at all, and `-Pbuddy.abis=x86_64` is the way back. And `assembleRelease` signs
+  with the local **debug keystore** when there is one, purely so the build can be
+  installed and instrumented — that is not a distribution key and must not become one,
+  since every debug keystore shares a password. A real key, kept in the owner's
+  keychain, is still outstanding; on a machine without `~/.android/debug.keystore` the
+  release APK comes out unsigned.
 
 Not done, and why:
 

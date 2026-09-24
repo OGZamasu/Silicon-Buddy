@@ -39,16 +39,12 @@ xcodebuild -scheme SiliconBuddy -destination 'platform=iOS Simulator,name=iPad m
 
 ## What has to be green
 
-`.github/workflows/android.yml` is set to run on every pull request — unit tests, the
-R8-minified release, a check that the keep rules R8 cannot infer actually kept what they
-claim, and the APK size budget.
+`scripts/ci-android.sh` is the gate, and it runs here, on the machine you build on — there
+is no hosted CI. It runs the unit tests, the R8-minified release, a check that the keep
+rules R8 cannot infer actually kept what they claim, and the APK size budget. Run it before
+you send a change, and say the result in the pull request.
 
-**It is not running at the moment.** Hosted runners are unavailable to this account, so
-every job fails at start with no steps executed, on pull requests and on `main` alike. A
-red cross on your PR right now says nothing about your change. Until that is fixed, run
-`scripts/ci-android.sh` yourself and say the result in the PR.
-
-Two suites could never run there, and are run locally before a merge either way:
+Two suites need more than a checkout, and are run before a merge as well:
 
 - the **instrumented** tests, which need an arm64 device or emulator, and the stand-in Mac
   in `tools/standin/` running on the same machine — the emulator reaches it at
@@ -58,11 +54,11 @@ Two suites could never run there, and are run locally before a merge either way:
   port when 8916 is taken (and `BUDDY_STANDIN` to tell the tests).
 - the **iOS** suite, which needs Xcode
 
-`scripts/ci-android.sh` runs the same checks the workflow does, and takes `--connected`
-(instrumented tests on `$ANDROID_SERIAL`, once it has checked that the stand-in answers)
-and `--ios` (which also wants `IOS_DERIVED_DATA`, a folder with a few gigabytes free for
-the build, and runs on `IOS_DESTINATION`, the iPad mini above unless you say otherwise).
-It exits non-zero on the first failure, so it chains onto a merge with `&&`.
+`scripts/ci-android.sh` takes `--connected` (instrumented tests on `$ANDROID_SERIAL`, once
+it has checked that the stand-in answers) and `--ios` (which also wants `IOS_DERIVED_DATA`,
+a folder with a few gigabytes free for the build, and runs on `IOS_DESTINATION`, the iPad
+mini above unless you say otherwise). It exits non-zero on the first failure, so it chains
+onto a merge with `&&`.
 
 ## The contract is generated
 

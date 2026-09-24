@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The Android checks, run locally: GitHub Actions cannot run on this repository, so this is
-# the CI. Exits non-zero on the first thing that is wrong, so it can gate a merge with &&.
+# The Android checks, run on this machine: this script is the gate, and there is no hosted
+# CI. Exits non-zero on the first thing that is wrong, so it can gate a merge with &&.
 #
 #   scripts/ci-android.sh                 unit tests, minified release, keep rules, size budget
 #   scripts/ci-android.sh --connected     …and the instrumented tests on $ANDROID_SERIAL, which
@@ -29,6 +29,10 @@ done
 export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# This script is the gate. A hosted workflow beside it would be a second gate that drifts
+# from this one — the last one did — and the owner runs no hosted CI.
+[ ! -e "$here/.github/workflows" ] || fail ".github/workflows is back: the gate is this script, run here"
 
 # llama.cpp is a submodule; a clone without --recursive has an empty folder there.
 [ -f "$here/third_party/llama.cpp/CMakeLists.txt" ] ||

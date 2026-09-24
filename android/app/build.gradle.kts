@@ -31,7 +31,7 @@ android {
             // This applies to *every* variant, debug included, so an x86_64 emulator
             // cannot install the default build. That is deliberate — the Mac here is
             // Apple Silicon and its emulators are arm64 — and `-Pbuddy.abis=x86_64` is
-            // the way back for an Intel emulator or a CI runner.
+            // the way back for an Intel emulator.
             abiFilters += (findProperty("buddy.abis") as String? ?: "arm64-v8a")
                 .split(",")
                 .map(String::trim)
@@ -43,9 +43,8 @@ android {
         // Release is signed with the local debug key when there is one, purely so it can
         // be installed and instrumented. It is not a distribution key and must not become
         // one: anybody's debug keystore has the same password. A real key belongs in the
-        // owner's keychain and in CI secrets, and until then `assembleRelease` on a
-        // machine without `~/.android/debug.keystore` produces an unsigned APK — see
-        // docs/PLAN.md.
+        // owner's keychain, and until then `assembleRelease` on a machine without
+        // `~/.android/debug.keystore` produces an unsigned APK — see docs/PLAN.md.
         create("local") {
             val keystore = File(System.getProperty("user.home"), ".android/debug.keystore")
             if (keystore.exists()) {
