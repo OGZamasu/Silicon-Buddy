@@ -189,7 +189,9 @@ public struct ControlClient: ControlTransport {
     }
 
     public func install(_ request: ControlAPI.LoadRequest) async throws -> String {
-        try await post(ControlAPI.StatusMessage.self, "/install", body: request, timeout: 60).status
+        // Not 60: that is URLRequest's default, and URLSession reads it as "not set" and
+        // uses the session's 30 instead.
+        try await post(ControlAPI.StatusMessage.self, "/install", body: request, timeout: 90).status
     }
 
     public func unload() async throws {
@@ -305,6 +307,17 @@ public struct ControlClient: ControlTransport {
     /// resume. It ends for one reason only — the route is not there — which is what
     /// tells the caller to go back to polling.
     public func events() -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
+        events(idleTimeout: Self.eventsIdleTimeout)
+    }
+
+    /// How long `/events` may be silent before it counts as dropped: three of the Mac's
+    /// 15-second heartbeats. A Mac that goes away without its goodbye reaching the phone —
+    /// Tailscale restarted on it, its network changed, it lost power — leaves a connection
+    /// that looks open and says nothing, and this is what notices; the stream then opens
+    /// again like after any other drop. (Not 60: URLSession reads that as "not set".)
+    static let eventsIdleTimeout: TimeInterval = 45
+
+    func events(idleTimeout: TimeInterval) -> AsyncThrowingStream<BuddyAPI.ServerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 var lastEventID: String?
@@ -317,7 +330,7 @@ public struct ControlClient: ControlTransport {
                     let openedAt = Date()
                     do {
                         var urlRequest = try makeRequest(
-                            "GET", "/events", accept: "text/event-stream", timeout: 86_400
+                            "GET", "/events", accept: "text/event-stream", timeout: idleTimeout
                         )
                         if let lastEventID {
                             urlRequest.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
@@ -500,7 +513,9 @@ extension URLSession {
     /// request's own timeout is the time allowed between bytes. The resource timeout is
     /// a cap on the whole transfer, however busy, and at 900 seconds it cut every chat
     /// stream and `/events` off at a quarter of an hour — mid-answer, which the Mac then
-    /// recorded as a failed generation. It is left at a week, where it never decides.
+    /// recorded as a failed generation. It is left at a week, where it never decides;
+    /// a stream to a Mac that has quietly gone is ended by its own idle timeout
+    /// (`eventsIdleTimeout` for `/events`).
     public static let buddy: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
