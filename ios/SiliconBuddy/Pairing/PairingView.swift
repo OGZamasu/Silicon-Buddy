@@ -72,6 +72,19 @@ public struct PairingView: View {
         return nil
     }
 
+    /// What Enter code says under an address on this machine: a code is spent at the Mac's
+    /// tailnet listener, and the local one takes the control token, on the Developer form.
+    /// Nil for any other address, and in a build without that form.
+    static func codeAddressHint(_ address: String, local: Bool = TailnetHost.allowsLocal) -> String? {
+        guard Mode.offered(local: local).contains(.developer),
+              let invite = try? PairingInvite.typed(address: address, code: "000000"),
+              TailnetHost.isLocal(invite.host)
+        else { return nil }
+        return "Use the Mac's Tailscale address shown beside the code. For a local "
+            + "Simulator connection, use Developer with the port and full "
+            + "token from control.json. Port 8788 is normally the tailnet listener."
+    }
+
     enum Status: Equatable {
         case idle
         case working
@@ -244,13 +257,8 @@ public struct PairingView: View {
                         + "otherwise. A pairing link pasted into the address field is shown to you "
                         + "to confirm, as a scanned code is."
                 )
-                if let invite = try? PairingInvite.typed(address: host, code: "000000", port: codePort),
-                   TailnetHost.isLocal(invite.host) {
-                    Text(
-                        "Use the Mac's Tailscale address shown beside the code. For a local "
-                            + "Simulator connection, use Developer with the port and full "
-                            + "token from control.json. Port 8788 is normally the tailnet listener."
-                    )
+                if let hint = Self.codeAddressHint(host) {
+                    Text(hint)
                 }
             }
 

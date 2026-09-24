@@ -9,6 +9,7 @@ import dev.siliconoptimizer.buddy.transport.TransportError
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
@@ -34,6 +35,7 @@ class ReleaseBuildRuleTest {
             } catch (expected: PairingInvite.ParseError.HostNotOnTailnet) {
             }
             assertEquals(DeveloperConnection.LOCAL_ONLY, DeveloperConnection.problem(host, "8765"))
+            assertNull("Enter code points $host at Developer", DeveloperConnection.codeAddressHint(host))
             // Port 1 — tcpmux, never a Mac — so that even a rule broken past the assertion
             // above could not reach anything real on the machine running the test.
             val refused = runCatching {

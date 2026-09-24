@@ -123,6 +123,18 @@ class PairingSecurityTest {
         }
     }
 
+    /** The note under Enter code's address names Developer, so it is shown only where Developer is. */
+    @Test
+    fun `a code typed with a local address is pointed at the tailnet only where Developer is offered`() {
+        listOf("127.0.0.1", "localhost", "::1", "10.0.2.2", "10.0.2.2:8916").forEach {
+            assertEquals(it, DeveloperConnection.CODE_WANTS_TAILNET, DeveloperConnection.codeAddressHint(it, local = true))
+            assertNull(it, DeveloperConnection.codeAddressHint(it, local = false))
+        }
+        listOf("100.64.0.9", "100.64.0.9:8788", "fd7a:115c:a1e0::9", "", "evil.example.com").forEach {
+            assertNull(it, DeveloperConnection.codeAddressHint(it, local = true))
+        }
+    }
+
     @Test
     fun `the form still checks its port first`() {
         assertEquals(

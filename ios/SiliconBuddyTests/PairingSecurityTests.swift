@@ -105,6 +105,18 @@ final class PairingSecurityTests: XCTestCase {
         XCTAssertEqual(PairingView.opening(simulator: false, local: true).mode, .scan)
     }
 
+    /// The note under Enter code's address names Developer, so it is shown only where
+    /// Developer is.
+    func testACodeTypedWithALocalAddressIsPointedAtTheTailnetOnlyWhereDeveloperIsOffered() {
+        for address in ["127.0.0.1", "localhost", "::1", "10.0.2.2", "127.0.0.1:8788"] {
+            XCTAssertNotNil(PairingView.codeAddressHint(address, local: true), address)
+            XCTAssertNil(PairingView.codeAddressHint(address, local: false), address)
+        }
+        for address in ["100.64.0.9", "100.64.0.9:8788", "fd7a:115c:a1e0::9", "", "evil.example.com"] {
+            XCTAssertNil(PairingView.codeAddressHint(address, local: true), address)
+        }
+    }
+
     func testAnAddressIsParsedNotScannedForDigits() {
         XCTAssertFalse(TailnetHost.isAllowed("100.064.0.1"), "No octal-looking octets")
         XCTAssertFalse(TailnetHost.isAllowed("100.64.0"), "Three parts is not an address")

@@ -80,6 +80,21 @@ object DeveloperConnection {
         if (!local || !TailnetHost.isLocal(host)) return LOCAL_ONLY
         return null
     }
+
+    const val CODE_WANTS_TAILNET =
+        "Use the Mac's Tailscale address shown beside the code. For a local emulator " +
+            "connection, use Developer with the port and full token from control.json."
+
+    /**
+     * What Enter code says under an address on this machine: a code is spent at the Mac's
+     * tailnet listener, and the local one takes the control token, on this form. Null for
+     * any other address, and in a build that does not offer this form.
+     */
+    fun codeAddressHint(address: String, local: Boolean = TailnetHost.allowsLocal): String? {
+        if (!local) return null
+        val host = runCatching { PairingInvite.typed(address, "000000").host }.getOrNull()
+        return if (host != null && TailnetHost.isLocal(host)) CODE_WANTS_TAILNET else null
+    }
 }
 
 /** What a Mac without `POST /buddy/pair` gets told, from either way of spending a code. */
@@ -345,15 +360,8 @@ fun PairingScreen(
                     },
                     label = { Text("Mac's address") },
                     placeholder = { Text("100.x.y.z") },
-                    supportingText = {
-                        val address = runCatching { PairingInvite.typed(host, "000000").host }.getOrNull()
-                        if (address != null && TailnetHost.isLocal(address)) {
-                            Text(
-                                "Use the Mac's Tailscale address shown beside the code. " +
-                                    "For a local emulator connection, use Developer with the " +
-                                    "port and full token from control.json.",
-                            )
-                        }
+                    supportingText = DeveloperConnection.codeAddressHint(host)?.let { hint ->
+                        { Text(hint) }
                     },
                     singleLine = true,
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
