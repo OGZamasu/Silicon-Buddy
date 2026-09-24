@@ -118,4 +118,24 @@ class UnsavedConversationTest {
         assertEquals(listOf("Three days in Lisbon?", "Start in Alfama."), stored?.messages?.map { it.content })
         awaitAnswer("the message went") { model.error == null }
     }
+
+    /**
+     * A conversation owed a save, deleted before the app leaves the screen. What is owed is
+     * the owner's words as they were — and the owner has since thrown them away: the retry
+     * as the app leaves must not write them back.
+     */
+    @Test
+    fun `a deleted conversation is not written back by the retry`() {
+        sendUnsaved()
+        val id = model.current!!.id
+        model.delete(id)
+        awaitAnswer("the delete took it off the screen") { model.current == null }
+
+        model.saveUnsaved()
+        Thread.sleep(1_000)
+
+        val stored = runBlocking { ConversationStore(directory).conversation(id) }
+        assertEquals("the retry wrote the deleted conversation back", null, stored?.id)
+        assertTrue("the retry put the deleted conversation back on the list", model.conversations.none { it.id == id })
+    }
 }

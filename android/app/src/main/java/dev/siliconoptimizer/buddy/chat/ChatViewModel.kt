@@ -407,13 +407,22 @@ class ChatViewModel(
 
     fun delete(id: String) {
         viewModelScope.launch {
-            try {
-                if (OnDeviceIds.isOnDevice(id)) phone.conversations.delete(id) else store.delete(id)
-            } catch (failure: java.io.IOException) {
-                // Nothing was taken out; it stays in the list, where it still is.
-                error = NOT_DELETED
-                return@launch
+            // Under the save lock, and no longer owed a save: a retry as the app leaves would
+            // otherwise write back the words the owner has just thrown away — and one already
+            // under way finishes before this, so it cannot land after it.
+            val deleted = saving.withLock {
+                unsaved.remove(id)
+                if (unsaved.isEmpty() && error == NOT_SAVED) error = null
+                try {
+                    if (OnDeviceIds.isOnDevice(id)) phone.conversations.delete(id) else store.delete(id)
+                    true
+                } catch (failure: java.io.IOException) {
+                    // Nothing was taken out; it stays in the list, where it still is.
+                    error = NOT_DELETED
+                    false
+                }
             }
+            if (!deleted) return@launch
             if (OnDeviceIds.isOnDevice(id)) {
                 phoneConversations.removeAll { it.id == id }
             } else {
