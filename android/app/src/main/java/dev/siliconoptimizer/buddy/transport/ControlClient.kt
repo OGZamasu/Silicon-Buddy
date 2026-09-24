@@ -439,7 +439,7 @@ class ControlClient(
         send(
             "POST", "/video/generate",
             body = json.encodeToString(request),
-            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+            readTimeoutMs = RenderBudget.SILENT_READ_SECONDS * 1000,
         ),
         "/video/generate",
     )
@@ -453,7 +453,7 @@ class ControlClient(
         send(
             "POST", "/image/generate",
             body = json.encodeToString(request),
-            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+            readTimeoutMs = RenderBudget.SILENT_READ_SECONDS * 1000,
         ),
         "/image/generate",
     )
@@ -467,7 +467,7 @@ class ControlClient(
         send(
             "POST", "/mesh/generate",
             body = json.encodeToString(request),
-            readTimeoutMs = RenderBudget.IDLE_SECONDS * 1000,
+            readTimeoutMs = RenderBudget.SILENT_READ_SECONDS * 1000,
         ),
         "/mesh/generate",
     )
