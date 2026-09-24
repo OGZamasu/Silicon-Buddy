@@ -354,6 +354,21 @@ class NotificationTest {
         assertTrue(announcer.notices(running, done, handledElsewhere = { false }).isEmpty())
     }
 
+    /**
+     * This phone's own request, failing at once: the stream's first word about the render is
+     * its failure. That is not left unsaid — the service that held the request posts it, from
+     * the Mac's answer to the request — so the announcer leaves it to the service, as it leaves
+     * every render the service holds. Announcing it here as well would say it twice.
+     * (RenderNotificationTest checks the whole path on a device: said once.)
+     */
+    @Test
+    fun `a failure of this phone's own request is the service's to say, even as a first word`() {
+        val announcer = JobAnnouncer()
+        announcer.prime(QueueState.empty)
+        val failed = QueueState.empty.applying(render("failed"))
+        assertTrue(announcer.notices(QueueState.empty, failed, handledElsewhere = { true }).isEmpty())
+    }
+
     @Test
     fun `forgetting a Mac forgets what was said about its work`() {
         val announcer = JobAnnouncer()
