@@ -1,6 +1,8 @@
 package dev.siliconoptimizer.buddy
 
 import dev.siliconoptimizer.buddy.transport.AgentEvent
+import dev.siliconoptimizer.buddy.transport.DownloadProgress
+import dev.siliconoptimizer.buddy.transport.JobProgress
 import dev.siliconoptimizer.buddy.transport.ServerEvent
 import dev.siliconoptimizer.buddy.transport.Status
 import kotlinx.coroutines.Dispatchers
@@ -161,6 +163,73 @@ class EventFeedTest {
         assertNull(feed.lastDropSummary)
         assertEquals(0, feed.reconnectAttempt)
         assertFalse(feed.isLive)
+    }
+
+    // MARK: - Another Mac
+
+    /** Mac A, part way through a download, a phone model and a render. */
+    private val macA = listOf(
+        ServerEvent.StatusChanged(status),
+        ServerEvent.Download(DownloadProgress(id = "qwen3-8b", name = "Qwen3 8B", bytesReceived = 40, bytesExpected = 100)),
+        ServerEvent.Download(DownloadProgress(id = "ondevice:smollm2-135m-q8_0", name = "SmolLM2", bytesReceived = 10, bytesExpected = 100)),
+        ServerEvent.Job(JobProgress(id = "r1", kind = "image", status = "running")),
+    )
+
+    /**
+     * Pairing with another Mac. What the last one was running, fetching and rendering is not
+     * what this one is: left in place, its download hid the Load button on the new Mac's row
+     * for the same model, and its render sat under "Happening now" with nothing behind it.
+     */
+    @Test
+    fun `a new pairing starts with nothing the last Mac said`() = runTest {
+        feed.paired(1)
+        feed.start(Scripted(macA))
+        assertEquals("qwen3", feed.status?.loadedModelID)
+        assertNotNull(feed.download("qwen3-8b"))
+        assertEquals(1, feed.phoneModels.size)
+        assertEquals(1, feed.jobs.size)
+
+        feed.paired(2)
+        feed.start(Scripted(emptyList()))
+
+        assertNull(feed.status)
+        assertTrue(feed.downloads.isEmpty())
+        assertTrue(feed.phoneModels.isEmpty())
+        assertTrue(feed.jobs.isEmpty())
+        assertNull(feed.download("qwen3-8b"))
+    }
+
+    /**
+     * Forget. The pairing changes at once and the feed hears of it a moment later, and in
+     * between the widget, the tile and the launcher shortcut were written again with the
+     * forgotten Mac's model. Asked for this pairing's status, the feed has none until the
+     * stream for it has said so.
+     */
+    @Test
+    fun `a forgotten Mac's status is not this pairing's`() = runTest {
+        feed.paired(1)
+        feed.start(Scripted(macA))
+        assertEquals("qwen3", feed.statusFor(1)?.loadedModelID)
+
+        assertNull("the next pairing is not told the last Mac's model", feed.statusFor(2))
+
+        feed.paired(2)
+        feed.start(null)
+        assertNull(feed.status)
+        assertNull(feed.statusFor(2))
+    }
+
+    /** The same pairing met again — the screen composed afresh — loses nothing. */
+    @Test
+    fun `the same pairing keeps what it heard`() = runTest {
+        feed.paired(1)
+        feed.start(Scripted(macA))
+
+        feed.paired(1)
+
+        assertEquals("qwen3", feed.statusFor(1)?.loadedModelID)
+        assertNotNull(feed.download("qwen3-8b"))
+        assertEquals(1, feed.jobs.size)
     }
 
     // MARK: - The agent sessions' path

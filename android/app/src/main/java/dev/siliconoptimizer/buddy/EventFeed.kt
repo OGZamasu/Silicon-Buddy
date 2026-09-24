@@ -272,15 +272,34 @@ class EventFeed : ViewModel() {
         reconnectAttempt = 0
     }
 
-    fun clear() {
-        stop()
+    /** The pairing everything here was heard under: the app's connection generation. */
+    private var pairing: Int? = null
+
+    /**
+     * A new pairing — another Mac, or none — given the app's connection generation. What
+     * the last Mac was running, fetching and rendering, and the answer checks it published,
+     * are not this one's, and go. The same generation again is the same Mac met by a screen
+     * composed afresh, and keeps everything.
+     */
+    fun paired(generation: Int) {
+        if (generation == pairing) return
+        pairing = generation
         status = null
         downloads.clear()
         phoneModels.clear()
         jobs.clear()
+        verdicts.clear()
         lastEvent = null
-        mustPoll = false
     }
+
+    /**
+     * What the Mac is running, if that Mac is still the one paired as [generation].
+     *
+     * Forgetting a Mac, or pairing another, changes the pairing at once, and this feed hears
+     * of it a moment later. Anything that writes the status down — the widget, the tile, the
+     * launcher's shortcut — asks here, so that in between it is not handed the last Mac's.
+     */
+    fun statusFor(generation: Int): Status? = status.takeIf { pairing == generation }
 
     override fun onCleared() {
         stop()
